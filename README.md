@@ -248,10 +248,9 @@ production depth buffer, and **no** full render graph or synchronization.
 
 ### License
 
-No license has been declared for the GOTOT-NEXT source yet (pending Owner decision).
-Dependency/third-party licensing (permissive-only runtime policy, legal review process,
-dependency register, SBOM) is governed by
-[`docs/open_source_system_strategy_v1.md`](docs/open_source_system_strategy_v1.md).
+GOTOT-NEXT source is licensed under the **MIT License** — see [`LICENSE`](LICENSE).
+
+Dependency/third-party licensing (permissive-only runtime policy, legal review process, dependency register, SBOM) is governed by [`docs/open_source_system_strategy_v1.md`](docs/open_source_system_strategy_v1.md).
 
 ### Author
 
