@@ -84,9 +84,29 @@ class GototRenderServer : public Object {
 	RID quad_index_buffer;
 	RID quad_index_array;
 
+	// GOTOT-008A: independent REAL MESH path (real vertex buffer + real index
+	// buffer + real vertex format + indexed indirect draw). Additive only: the
+	// GOTOT-005 billboard path above is never replaced or modified.
+	bool gpu_mesh_valid = false;
+	int mesh_vertex_count = 0;
+	int mesh_index_count = 0;
+	int64_t mesh_vertex_format = -1;
+	RID mesh_vertex_buffer;
+	RID mesh_index_buffer;
+	RID mesh_vertex_array;
+	RID mesh_index_array;
+	RID mesh_shader;
+	RID mesh_pipeline;
+	RID mesh_uniform_set;
+	RID mesh_drawargs_shader;
+	RID mesh_drawargs_pipeline;
+	RID mesh_drawargs_uniform_set;
+
 	void _destroy_gpu_scene();
+	void _destroy_mesh();
 	bool _create_hzb_passes();
 	bool _create_raster_pipeline();
+	bool _create_mesh_pipeline();
 	void _run_compute_pass(RID p_pipeline, RID p_uniform_set, const void *p_push_data, uint32_t p_push_size, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z);
 	static float _projection_tan_half_fov_v(const Projection &p_projection);
 
@@ -137,6 +157,13 @@ public:
 	bool gpu_raster_indirect_draw();
 	PackedByteArray gpu_raster_read_pixels();
 	PackedFloat32Array gpu_scene_get_vp();
+
+	// GOTOT-008A: independent real-mesh (indexed indirect) API.
+	bool gpu_mesh_create();
+	bool gpu_mesh_drawargs_finalize();
+	bool gpu_mesh_indirect_draw();
+	int gpu_mesh_get_index_count() const;
+	int gpu_mesh_get_vertex_count() const;
 };
 
 #endif

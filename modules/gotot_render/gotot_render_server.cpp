@@ -416,6 +416,93 @@ void main() {
 	out_color = vec4(0.95, 0.18, 0.9, 1.0);
 }
 )";
+
+// GOTOT-008A: real-mesh draw args. Reuses the exact GOTOT-003 indirect argument
+// system/buffer (set 0 binding 0 = args, binding 1 = visible count), but the
+// index_count is supplied at dispatch time instead of being hardcoded, so the
+// mesh path can generalize later without introducing a mesh table now.
+const char *gpu_mesh_drawargs_compute_glsl = R"(
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform MeshArgsParams {
+	uint index_count;
+}
+params;
+
+layout(std430, set = 0, binding = 0) buffer IndirectArgsBlock {
+	uint args[5];
+}
+indirect;
+
+layout(std430, set = 0, binding = 1) buffer CountBuffer {
+	uint count;
+}
+counter;
+
+void main() {
+	if (gl_GlobalInvocationID.x != 0u) {
+		return;
+	}
+	uint n = counter.count;
+	indirect.args[0] = params.index_count; // index_count (real mesh)
+	indirect.args[1] = n;                  // instance_count (existing visible count)
+	indirect.args[2] = 0u;                 // first_index
+	indirect.args[3] = 0u;                 // vertex_offset
+	indirect.args[4] = 0u;                 // first_instance
+}
+)";
+
+// GOTOT-008A: real geometry vertex transform. The original scene index comes
+// from the existing compacted list; the position is a REAL vertex attribute
+// fetched from a REAL vertex buffer (not a procedural gl_VertexIndex expansion).
+const char *gpu_mesh_vert_glsl = R"(
+#version 450
+
+layout(location = 0) in vec3 vertex_position;
+
+layout(std430, set = 0, binding = 0) buffer CompactBuffer {
+	uint row[];
+}
+compact;
+
+layout(std430, set = 0, binding = 1) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std140, set = 0, binding = 2) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+void main() {
+	uint orig = compact.row[gl_InstanceIndex];
+	vec4 ts = transforms.position_scale[orig];
+	vec3 world = ts.xyz + vertex_position * ts.w;
+	gl_Position = viewdata.vp * vec4(world, 1.0);
+}
+)";
+
+// GOTOT-008A: flat green real geometry (visually distinct from the magenta
+// billboard path). No lighting, no materials, no textures.
+const char *gpu_mesh_frag_glsl = R"(
+#version 450
+
+layout(location = 0) out vec4 out_color;
+
+void main() {
+	out_color = vec4(0.15, 0.85, 0.35, 1.0);
+}
+)";
 } // namespace
 
 void GototRenderServer::_bind_methods() {
@@ -451,6 +538,12 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_raster_indirect_draw"), &GototRenderServer::gpu_raster_indirect_draw);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_pixels"), &GototRenderServer::gpu_raster_read_pixels);
 	ClassDB::bind_method(D_METHOD("gpu_scene_get_vp"), &GototRenderServer::gpu_scene_get_vp);
+
+	ClassDB::bind_method(D_METHOD("gpu_mesh_create"), &GototRenderServer::gpu_mesh_create);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_drawargs_finalize"), &GototRenderServer::gpu_mesh_drawargs_finalize);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_indirect_draw"), &GototRenderServer::gpu_mesh_indirect_draw);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_index_count"), &GototRenderServer::gpu_mesh_get_index_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_vertex_count"), &GototRenderServer::gpu_mesh_get_vertex_count);
 }
 
 GototRenderServer::GototRenderServer() {
@@ -492,7 +585,58 @@ bool GototRenderServer::ensure_gpu_device() {
 	return true;
 }
 
+void GototRenderServer::_destroy_mesh() {
+	if (rendering_device != nullptr) {
+		if (mesh_drawargs_uniform_set.is_valid()) {
+			rendering_device->free_rid(mesh_drawargs_uniform_set);
+			mesh_drawargs_uniform_set = RID();
+		}
+		if (mesh_uniform_set.is_valid()) {
+			rendering_device->free_rid(mesh_uniform_set);
+			mesh_uniform_set = RID();
+		}
+		if (mesh_drawargs_pipeline.is_valid()) {
+			rendering_device->free_rid(mesh_drawargs_pipeline);
+			mesh_drawargs_pipeline = RID();
+		}
+		if (mesh_drawargs_shader.is_valid()) {
+			rendering_device->free_rid(mesh_drawargs_shader);
+			mesh_drawargs_shader = RID();
+		}
+		if (mesh_pipeline.is_valid()) {
+			rendering_device->free_rid(mesh_pipeline);
+			mesh_pipeline = RID();
+		}
+		if (mesh_shader.is_valid()) {
+			rendering_device->free_rid(mesh_shader);
+			mesh_shader = RID();
+		}
+		if (mesh_index_array.is_valid()) {
+			rendering_device->free_rid(mesh_index_array);
+			mesh_index_array = RID();
+		}
+		if (mesh_vertex_array.is_valid()) {
+			rendering_device->free_rid(mesh_vertex_array);
+			mesh_vertex_array = RID();
+		}
+		if (mesh_index_buffer.is_valid()) {
+			rendering_device->free_rid(mesh_index_buffer);
+			mesh_index_buffer = RID();
+		}
+		if (mesh_vertex_buffer.is_valid()) {
+			rendering_device->free_rid(mesh_vertex_buffer);
+			mesh_vertex_buffer = RID();
+		}
+	}
+	mesh_vertex_format = -1;
+	mesh_vertex_count = 0;
+	mesh_index_count = 0;
+	gpu_mesh_valid = false;
+}
+
 void GototRenderServer::_destroy_gpu_scene() {
+	_destroy_mesh();
+
 	if (rendering_device == nullptr) {
 		gpu_scene_valid = false;
 		gpu_instance_count = 0;
@@ -1494,6 +1638,272 @@ bool GototRenderServer::_create_raster_pipeline() {
 	}
 
 	return true;
+}
+
+// GOTOT-008A: builds the real-mesh pipeline + uniform set. Uses a REAL vertex
+// format so the vertex shader reads a REAL vertex attribute from a vertex buffer.
+bool GototRenderServer::_create_mesh_pipeline() {
+	String error;
+
+	Vector<uint8_t> vert_spirv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_VERTEX, String(gpu_mesh_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+	if (vert_spirv.is_empty()) {
+		print_error("[GOTOT-NEXT] mesh vertex shader compile failed:");
+		print_error(error);
+		return false;
+	}
+
+	Vector<uint8_t> frag_spirv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_FRAGMENT, String(gpu_mesh_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+	if (frag_spirv.is_empty()) {
+		print_error("[GOTOT-NEXT] mesh fragment shader compile failed:");
+		print_error(error);
+		return false;
+	}
+
+	Vector<RD::ShaderStageSPIRVData> stages;
+	RD::ShaderStageSPIRVData vs;
+	vs.shader_stage = RD::SHADER_STAGE_VERTEX;
+	vs.spirv = vert_spirv;
+	stages.push_back(vs);
+	RD::ShaderStageSPIRVData fs;
+	fs.shader_stage = RD::SHADER_STAGE_FRAGMENT;
+	fs.spirv = frag_spirv;
+	stages.push_back(fs);
+
+	mesh_shader = rendering_device->shader_create_from_spirv(stages, "gotot_mesh");
+	if (mesh_shader.is_null()) {
+		print_error("[GOTOT-NEXT] mesh shader_create_from_spirv failed.");
+		return false;
+	}
+
+	RD::PipelineRasterizationState rs;
+	RD::PipelineMultisampleState ms;
+	RD::PipelineDepthStencilState ds;
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(1);
+	mesh_pipeline = rendering_device->render_pipeline_create(
+			mesh_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
+	if (mesh_pipeline.is_null()) {
+		print_error("[GOTOT-NEXT] mesh render_pipeline_create failed.");
+		return false;
+	}
+
+	Vector<RD::Uniform> uniforms;
+	RD::Uniform u0;
+	u0.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	u0.binding = 0;
+	u0.append_id(compact_buffer);
+	uniforms.push_back(u0);
+	RD::Uniform u1;
+	u1.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	u1.binding = 1;
+	u1.append_id(transform_buffer);
+	uniforms.push_back(u1);
+	RD::Uniform u2;
+	u2.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+	u2.binding = 2;
+	u2.append_id(view_ubo);
+	uniforms.push_back(u2);
+
+	mesh_uniform_set = rendering_device->uniform_set_create(uniforms, mesh_shader, 0);
+	if (mesh_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] mesh uniform_set_create failed.");
+		return false;
+	}
+
+	return true;
+}
+
+bool GototRenderServer::gpu_mesh_create() {
+	if (!gpu_scene_valid || !gpu_raster_valid) {
+		print_error("[GOTOT-NEXT] gpu_mesh_create: no gpu scene/raster. Call gpu_scene_create first.");
+		return false;
+	}
+
+	_destroy_mesh();
+
+	// GOTOT-008A: a single real CUBE mesh (positions only). No normals, no UVs,
+	// no materials, no textures, no mesh table, no mesh IDs.
+	const float cube_positions[8][3] = {
+		{ -0.5f, -0.5f, -0.5f },
+		{ 0.5f, -0.5f, -0.5f },
+		{ 0.5f, 0.5f, -0.5f },
+		{ -0.5f, 0.5f, -0.5f },
+		{ -0.5f, -0.5f, 0.5f },
+		{ 0.5f, -0.5f, 0.5f },
+		{ 0.5f, 0.5f, 0.5f },
+		{ -0.5f, 0.5f, 0.5f },
+	};
+	const uint32_t cube_indices[36] = {
+		4, 5, 6, 4, 6, 7, // +Z
+		1, 0, 3, 1, 3, 2, // -Z
+		0, 4, 7, 0, 7, 3, // -X
+		5, 1, 2, 5, 2, 6, // +X
+		3, 7, 6, 3, 6, 2, // +Y
+		0, 1, 5, 0, 5, 4, // -Y
+	};
+
+	Vector<uint8_t> vertex_bytes;
+	vertex_bytes.resize(sizeof(cube_positions));
+	memcpy(vertex_bytes.ptrw(), cube_positions, sizeof(cube_positions));
+
+	Vector<uint8_t> index_bytes;
+	index_bytes.resize(sizeof(cube_indices));
+	memcpy(index_bytes.ptrw(), cube_indices, sizeof(cube_indices));
+
+	RD::VertexAttribute attr;
+	attr.binding = 0;
+	attr.location = 0;
+	attr.offset = 0;
+	attr.format = RD::DATA_FORMAT_R32G32B32_SFLOAT;
+	attr.stride = sizeof(float) * 3;
+	attr.frequency = RD::VERTEX_FREQUENCY_VERTEX;
+	Vector<RD::VertexAttribute> attrs;
+	attrs.push_back(attr);
+	mesh_vertex_format = rendering_device->vertex_format_create(attrs);
+	if (mesh_vertex_format < 0) {
+		print_error("[GOTOT-NEXT] gpu_mesh_create: vertex_format_create failed.");
+		_destroy_mesh();
+		return false;
+	}
+
+	mesh_vertex_buffer = rendering_device->vertex_buffer_create((uint32_t)vertex_bytes.size(), vertex_bytes);
+	mesh_index_buffer = rendering_device->index_buffer_create(36, RD::INDEX_BUFFER_FORMAT_UINT32, index_bytes);
+	if (mesh_vertex_buffer.is_null() || mesh_index_buffer.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_mesh_create: vertex/index buffer_create failed.");
+		_destroy_mesh();
+		return false;
+	}
+
+	Vector<RID> src_buffers;
+	src_buffers.push_back(mesh_vertex_buffer);
+	mesh_vertex_array = rendering_device->vertex_array_create(8, mesh_vertex_format, src_buffers);
+	mesh_index_array = rendering_device->index_array_create(mesh_index_buffer, 0, 36);
+	if (mesh_vertex_array.is_null() || mesh_index_array.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_mesh_create: vertex/index array_create failed.");
+		_destroy_mesh();
+		return false;
+	}
+
+	mesh_vertex_count = 8;
+	mesh_index_count = 36;
+
+	if (!_create_mesh_pipeline()) {
+		_destroy_mesh();
+		return false;
+	}
+
+	// GOTOT-008A: mesh indirect draw args. Reuses the exact GOTOT-003 indirect
+	// argument system/buffer; a distinct pipeline is used because the mesh path
+	// pushes its real index_count instead of hardcoding it.
+	String drawargs_error;
+	Vector<uint8_t> drawargs_spirv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_COMPUTE, String(gpu_mesh_drawargs_compute_glsl), RD::SHADER_LANGUAGE_GLSL, &drawargs_error);
+	if (drawargs_spirv.is_empty()) {
+		print_error("[GOTOT-NEXT] gpu_mesh_create: mesh drawargs shader compile failed:");
+		print_error(drawargs_error);
+		_destroy_mesh();
+		return false;
+	}
+
+	RD::ShaderStageSPIRVData da_stage;
+	da_stage.shader_stage = RD::SHADER_STAGE_COMPUTE;
+	da_stage.spirv = drawargs_spirv;
+	Vector<RD::ShaderStageSPIRVData> da_stages;
+	da_stages.push_back(da_stage);
+
+	mesh_drawargs_shader = rendering_device->shader_create_from_spirv(da_stages, "gotot_mesh_drawargs");
+	if (mesh_drawargs_shader.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_mesh_create: mesh drawargs shader_create_from_spirv failed.");
+		_destroy_mesh();
+		return false;
+	}
+
+	mesh_drawargs_pipeline = rendering_device->compute_pipeline_create(mesh_drawargs_shader);
+
+	Vector<RD::Uniform> da_uniforms;
+	RD::Uniform da_u0;
+	da_u0.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	da_u0.binding = 0;
+	da_u0.append_id(indirect_args_buffer);
+	da_uniforms.push_back(da_u0);
+	RD::Uniform da_u1;
+	da_u1.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	da_u1.binding = 1;
+	da_u1.append_id(visible_count_buffer);
+	da_uniforms.push_back(da_u1);
+
+	mesh_drawargs_uniform_set = rendering_device->uniform_set_create(da_uniforms, mesh_drawargs_shader, 0);
+	if (mesh_drawargs_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_mesh_create: mesh drawargs uniform_set_create failed.");
+		_destroy_mesh();
+		return false;
+	}
+
+	gpu_mesh_valid = true;
+	print_line("[GOTOT-NEXT] GPU Mesh created. vertices=" + itos(mesh_vertex_count) +
+			" indices=" + itos(mesh_index_count) +
+			" vertex_format=" + itos((int)mesh_vertex_format));
+	return true;
+}
+
+bool GototRenderServer::gpu_mesh_drawargs_finalize() {
+	if (!gpu_scene_valid || !gpu_mesh_valid) {
+		print_error("[GOTOT-NEXT] gpu_mesh_drawargs_finalize: no gpu mesh. Call gpu_mesh_create first.");
+		return false;
+	}
+
+	uint32_t index_count = (uint32_t)mesh_index_count;
+
+	RD::ComputeListID list = rendering_device->compute_list_begin();
+	rendering_device->compute_list_bind_compute_pipeline(list, mesh_drawargs_pipeline);
+	rendering_device->compute_list_bind_uniform_set(list, mesh_drawargs_uniform_set, 0);
+	rendering_device->compute_list_set_push_constant(list, &index_count, sizeof(index_count));
+	rendering_device->compute_list_dispatch(list, 1, 1, 1);
+	rendering_device->compute_list_end();
+
+	rendering_device->submit();
+	rendering_device->sync();
+
+	return true;
+}
+
+bool GototRenderServer::gpu_mesh_indirect_draw() {
+	if (!gpu_scene_valid || !gpu_mesh_valid) {
+		print_error("[GOTOT-NEXT] gpu_mesh_indirect_draw: no gpu mesh. Call gpu_mesh_create first.");
+		return false;
+	}
+	if (!frustum_valid) {
+		print_error("[GOTOT-NEXT] gpu_mesh_indirect_draw: no camera. Call gpu_scene_set_camera first.");
+		return false;
+	}
+
+	Vector<Color> clear_colors;
+	clear_colors.push_back(Color(0, 0, 0, 0));
+	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0, clear_colors, 1.0f, 0, Rect2(), 0);
+	if (dl == RD::INVALID_ID) {
+		print_error("[GOTOT-NEXT] gpu_mesh_indirect_draw: draw_list_begin failed.");
+		return false;
+	}
+	rendering_device->draw_list_bind_render_pipeline(dl, mesh_pipeline);
+	rendering_device->draw_list_bind_uniform_set(dl, mesh_uniform_set, 0);
+	rendering_device->draw_list_bind_vertex_array(dl, mesh_vertex_array);
+	rendering_device->draw_list_bind_index_array(dl, mesh_index_array);
+	rendering_device->draw_list_draw_indirect(dl, true, indirect_args_buffer, 0, 1, 0);
+	rendering_device->draw_list_end();
+
+	rendering_device->submit();
+	rendering_device->sync();
+
+	return true;
+}
+
+int GototRenderServer::gpu_mesh_get_index_count() const {
+	return mesh_index_count;
+}
+
+int GototRenderServer::gpu_mesh_get_vertex_count() const {
+	return mesh_vertex_count;
 }
 
 bool GototRenderServer::gpu_raster_indirect_draw() {
