@@ -68,8 +68,8 @@ Appearance in this document is **not** approval.
 | Technology | Domain | Classification | Notes |
 |---|---|---|---|
 | **meshoptimizer** | Offline geometry processing (meshoptimize/vertex/index compression) | **Candidate** (offline only) | Permissive (MIT); strong maintenance; approved ONLY if it never affects runtime pipeline; used at import time, baked into GOTOT mesh format |
-| **cgltf** | glTF file parsing | **Candidate** (offline import) | Permissive (MIT); single-header; lightweight; output feeds GOTOT-owned mesh import |
-| **fastgltf** | glTF file parsing (fast path) | **Candidate** (offline import) | Permissive (MIT, fastgltf unless noted); alternative/complement to cgltf; choose via evaluation (Section 19) |
+| **cgltf** | glTF file parsing | **Candidate** (primary, offline import) | Permissive (MIT); single-header; lightweight; chosen as the primary parser over fastgltf for simpler single-header integration and higher API stability; output feeds GOTOT-owned mesh import |
+| **fastgltf** | glTF file parsing (fast path) | **Reference-only** | Permissive (MIT); NOT integrated — alternative to cgltf kept as reference for parsing patterns and evaluation evidence only |
 | **Vulkan Memory Allocator (VMA)** | GPU memory allocation | **Deferred** | Blocked until the RHI/memory architecture decision is made. GOTOT's current allocation strategy is GOTOT-owned; integrate only if the RHI decision makes VMA a leaf utility |
 | **Khronos Vulkan samples** | Rendering patterns/correctness reference | **Reference-only** | Never linked; used to validate ordering, synchronization, and descriptor patterns |
 | **NVIDIA Vulkan samples** | Rendering patterns/correctness reference | **Reference-only** | Never linked; used for GOTOT sample-level validation only |
@@ -96,7 +96,7 @@ Classification is provisional and must be confirmed by the Dependency Approval W
 
 ## 08 — License Policy
 
-GOTOT-NEXT must consider the license before any integration. This section distinguishes the concepts; **this is not legal advice** — every final licensing decision requires review by a qualified legal reviewer.
+GOTOT-NEXT must consider the license before any integration. This section distinguishes the concepts; **this is not legal advice** — every final licensing decision requires review by a qualified legal reviewer (see Section 08.5).
 
 | Consideration | Meaning | GOTOT-NEXT stance |
 |---|---|---|
@@ -109,6 +109,14 @@ GOTOT-NEXT must consider the license before any integration. This section distin
 | **Source availability obligations** | Some licenses (e.g., AGPL) trigger source-sharing duties | AGPL-family runtime components are effectively **rejected** for GOTOT-NEXT runtime core |
 
 Process: every candidate completes a **license review** (recorded in Section 20 workflow) — identify type, obligations, NOTICE/attribution, patent clauses, linking mode, and source-availability consequences. **No dependency may be integrated on license terms not yet reviewed.**
+
+## 08.5 — Legal Review Process
+
+- **Responsible:** Owner + external legal counsel (when required).
+- **Trigger:** Any dependency with non-permissive license (copyleft, AGPL, patent clauses).
+- **Recording:** All legal reviews recorded in `docs/legal_reviews/` (one file per dependency).
+- **SLA:** Review completed before dependency enters Section 20 workflow.
+- **Revalidation:** On license change, version bump with license change, or legal advisory.
 
 ## 09 — Dependency Governance
 
@@ -149,7 +157,7 @@ A dependency that fails any of 3–9 has a **recorded objection** and is not app
 ## 13 — Asset Formats
 
 - Preferred interchange: **glTF** (external asset format).
-- Parsing at import time may use **cgltf** or **fastgltf** (Candidate); the parsed content is converted into GOTOT-owned scene/mesh data.
+- Parsing at import time uses **cgltf** (Candidate, primary); **fastgltf** is Reference-only (alternative studied for parsing patterns). The parsed content is converted into GOTOT-owned scene/mesh data.
 - The runtime must never depend on gltf/parser types at draw time.
 - Formats other than glTF require a new policy note before support.
 
@@ -171,7 +179,7 @@ A dependency that fails any of 3–9 has a **recorded objection** and is not app
 - Offline tooling (importers, optimizers, codegen, test shaders) is welcome where it lowers risk and is cleanly separated.
 - Tooling must not be required at runtime.
 - Tooling output formats must be stable and GOTOT-owned wherever that output is consumed by the runtime.
-- Example posture: meshoptimizer offline; cgltf/fastgltf offline import; shader compiler toolchain offline.
+- Example posture: meshoptimizer offline; cgltf offline import (fastgltf reference-only); shader compiler toolchain offline.
 
 ## 17 — Security / Supply Chain
 
@@ -180,6 +188,8 @@ A dependency that fails any of 3–9 has a **recorded objection** and is not app
 - Pinned versions and recorded hashes (Section 18) so provenance stays auditable.
 - Integration of a dependency with unresolved CVEs or opaque provenance is **rejected** pending evidence.
 - Revalidation is triggered by: major version bump, security advisory, or maintainer change.
+- **SBOM (Software Bill of Materials):** Maintained for all runtime dependencies. Generated at build time, committed to `docs/sbom/`.
+- **Provenance verification:** Dependency hashes verified at build time. Signed releases preferred.
 
 ## 18 — Version Pinning
 
@@ -222,6 +232,19 @@ At this revision: **none integrated.**
 - All components in Section 03 are GOTOT-owned.
 - Status: no external runtime dependency is approved or linked today.
 
+## 21.5 — Dependency Register
+
+The register is the authoritative record. Location: `docs/dependency_register.md`.
+
+For each dependency (if any in future):
+- Name + version + hash
+- Category (runtime/offline)
+- License + obligations
+- Wrapper location
+- Removal plan
+- Approval date + approver
+- SBOM entry
+
 ## 22 — Deferred Candidates
 
 | Candidate | Reason deferred |
@@ -237,7 +260,7 @@ At this revision: **none integrated.**
 ## 24 — Roadmap Integration
 
 - The strategy table is reviewed at each milestone gate.
-- Candidates advance only through the Section 20 workflow, synchronized with the roadmap (e.g., meshoptimizer and cgltf/fastgltf attach to the future asset-import milestone; VMA waits on the RHI/memory milestone decision).
+- Candidates advance only through the Section 20 workflow, synchronized with the roadmap (e.g., meshoptimizer and cgltf (fastgltf reference-only) attach to the future asset-import milestone; VMA waits on the RHI/memory milestone decision).
 - No candidate may enter the codebase ahead of its owning milestone's approval.
 
 ## 25 — Definition of Done
@@ -268,7 +291,7 @@ A candidate is "done-integrated" only when **all** hold:
 | **Mesh runtime abstraction** | Owns mesh format, runtime access | None | Runtime | — | GOTOT-owned | No external involvement — closed to dependency by policy |
 | **Memory allocation (GPU)** | Owns allocation strategy until RHI decision | Leaf allocator under wrapper (permissive) | Runtime | Vulkan Memory Allocator (VMA) | **Deferred** | RHI/memory architecture decision; then full approval workflow (20) |
 | **Geometry processing** | Owns runtime mesh output; validates optimized result | Offline optimization/simplification/meshopt utility | Offline | meshoptimizer | **Candidate** | Full evaluation + license review (20) before integration |
-| **glTF import** | Owns conversion into GOTOT scene/mesh data | File parsing only (permissive) | Offline | cgltf / fastgltf | **Candidate** | Evaluation (19) + selection between the two + approval (20) |
+| **glTF import** | Owns conversion into GOTOT scene/mesh data | File parsing only (permissive) | Offline | cgltf (primary; fastgltf: Reference-only) | **Candidate** | Evaluation (19) + approval (20) on cgltf; fastgltf retained as reference only |
 | **Shader compilation** | Owns shader sources, pipeline config, SPIR-V disposition | Compile/validate/reflect (permissive toolchain) | Offline | shader/compiler ecosystem (glslang/shaderc/SPIRV-Reflect) | **Candidate** | Offline-tool approval (20) |
 | **Technique acceleration** | Owns technique implementation | Possible leaf technique utilization if approved | Offline/runtime | AMD FidelityFX SDK | **Deferred** | Not needed now; full workflow (20) if proposed |
 | **Correctness reference** | Owns result verification | Provides sample patterns only — never linked | — | Khronos Vulkan samples | **Reference-only** | None — study only |
