@@ -1,0 +1,142 @@
+#ifndef GOTOT_RENDER_SERVER_H
+#define GOTOT_RENDER_SERVER_H
+
+#include "core/math/plane.h"
+#include "core/math/projection.h"
+#include "core/math/transform_3d.h"
+#include "core/object/class_db.h"
+#include "core/templates/vector.h"
+#include "core/variant/dictionary.h"
+#include "core/variant/variant.h"
+#include "servers/rendering/rendering_device.h"
+
+class GototRenderServer : public Object {
+	GDCLASS(GototRenderServer, Object);
+
+	static GototRenderServer *server_singleton;
+
+	RenderingDevice *rendering_device = nullptr;
+
+	// GOTOT-001B: GPU Scene (SoA instance buffers + compute fill).
+	int gpu_instance_count = 0;
+	float gpu_scene_spread = 200.0f;
+	bool gpu_scene_valid = false;
+	RID transform_buffer;
+	RID bounds_buffer;
+	RID instance_id_buffer;
+	RID compute_shader;
+	RID compute_pipeline;
+	RID uniform_set;
+
+	// GOTOT-002: GPU frustum culling.
+	bool gpu_cull_valid = false;
+	bool frustum_valid = false;
+	Plane frustum_planes[6];
+	RID visibility_buffer;
+	RID visible_count_buffer;
+	RID compact_buffer;
+	RID cull_shader;
+	RID cull_pipeline;
+	RID cull_uniform_set;
+
+	// GOTOT-003: GPU indirect draw args.
+	bool gpu_drawargs_valid = false;
+	RID indirect_args_buffer;
+	RID drawargs_shader;
+	RID drawargs_pipeline;
+	RID drawargs_uniform_set;
+
+	// GOTOT-004: Hierarchical Z occlusion.
+	bool gpu_hzb_valid = false;
+	bool camera_view_valid = false;
+	static constexpr int HZB_TEXEL_COUNT = 512;
+	static constexpr int HZB_LEVELS = 10;
+	float hzb_viewport_w = 1920.0f;
+	float hzb_viewport_h = 1080.0f;
+	float far_plane = 2000.0f;
+	float tan_half_fov_v = 0.0f;
+	int occluder_count = 0;
+	RID hzb_array;
+	RID occluder_min_buffer;
+	RID occluder_max_buffer;
+	RID view_ubo;
+	RID hzb_clear_shader;
+	RID hzb_clear_pipeline;
+	RID hzb_clear_uniform_set;
+	RID hzb_occ_shader;
+	RID hzb_occ_pipeline;
+	RID hzb_occ_uniform_set;
+	RID hzb_down_shader;
+	RID hzb_down_pipeline;
+	RID hzb_down_uniform_set;
+	float last_vp[16];
+
+	// GOTOT-005: GPU indirect raster draw (VkDrawIndexedIndirect on the compacted list).
+	bool gpu_raster_valid = false;
+	static constexpr int RASTER_TARGET_W = 1920;
+	static constexpr int RASTER_TARGET_H = 1080;
+	int64_t raster_framebuffer_format = -1;
+	RID raster_color_texture;
+	RID raster_framebuffer;
+	RID raster_shader;
+	RID raster_pipeline;
+	RID raster_uniform_set;
+	RID quad_index_buffer;
+	RID quad_index_array;
+
+	void _destroy_gpu_scene();
+	bool _create_hzb_passes();
+	bool _create_raster_pipeline();
+	void _run_compute_pass(RID p_pipeline, RID p_uniform_set, const void *p_push_data, uint32_t p_push_size, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z);
+	static float _projection_tan_half_fov_v(const Projection &p_projection);
+
+protected:
+	static void _bind_methods();
+
+public:
+	GototRenderServer();
+	~GototRenderServer();
+
+	static void set_server_singleton(GototRenderServer *p_server);
+	static GototRenderServer *get_server_singleton();
+
+	void initialize();
+	void shutdown();
+
+	bool is_initialized() const;
+	bool ensure_gpu_device();
+	bool is_gpu_ready() const;
+
+	// GOTOT-001B: GPU Scene API.
+	bool gpu_scene_create(int p_instance_count, float p_spread);
+	bool gpu_scene_dispatch(int p_seed);
+	PackedVector3Array gpu_scene_readback_positions(int p_index, int p_count);
+	PackedFloat32Array gpu_scene_readback_scales(int p_index, int p_count);
+	Dictionary gpu_scene_stats();
+	int gpu_scene_get_instance_count() const;
+	void gpu_scene_destroy();
+
+	// GOTOT-002: GPU frustum culling API.
+	void gpu_scene_set_camera(const Transform3D &p_camera_transform, const Projection &p_projection);
+	bool gpu_cull_dispatch();
+	int gpu_cull_get_visible_count();
+	PackedInt32Array gpu_cull_get_visibility();
+	PackedVector4Array gpu_scene_get_frustum_planes();
+
+	// GOTOT-003: GPU indirect draw args API.
+	bool gpu_drawargs_finalize();
+	PackedInt32Array gpu_drawargs_read();
+	PackedInt32Array gpu_compact_read();
+
+	// GOTOT-004: HZB occlusion API.
+	void gpu_scene_set_viewport(float p_viewport_w, float p_viewport_h);
+	void gpu_scene_set_occluders(const Vector<Vector4> &p_occluders);
+	bool gpu_visibility_dispatch();
+
+	// GOTOT-005: GPU indirect raster draw API.
+	bool gpu_raster_indirect_draw();
+	PackedByteArray gpu_raster_read_pixels();
+	PackedFloat32Array gpu_scene_get_vp();
+};
+
+#endif
