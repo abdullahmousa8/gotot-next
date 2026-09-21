@@ -1,6 +1,7 @@
 #ifndef GOTOT_RENDER_SERVER_H
 #define GOTOT_RENDER_SERVER_H
 
+#include "core/math/color.h"
 #include "core/math/plane.h"
 #include "core/math/projection.h"
 #include "core/math/transform_3d.h"
@@ -111,11 +112,49 @@ class GototRenderServer : public Object {
 	RID mesh_drawargs_pipeline;
 	RID mesh_drawargs_uniform_set;
 
+	// GOTOT-010: multi-mesh batch instance rendering. Adds (ADDITIVE ONLY, never
+	// replaces) a per-instance mesh_id buffer, a 64-slot mesh table (GototMeshDesc),
+	// a prefix-sum batch assembly compute path and a multi-draw indirect path.
+	// The 008A/008B/009 mesh path, the 005 billboard path and the 004 culling/HZB/
+	// compaction structure are all untouched.
+	static constexpr int GOTOT_MESH_TABLE_SIZE = 64;
+	static constexpr int GOTOT_MAX_MESH_VERTS = 32768;
+	static constexpr int GOTOT_MAX_MESH_INDICES = 65536;
+	bool gpu_mesh_batch_valid = false;
+	bool gpu_mesh_table_valid = false;
+	int mesh_table_count = 0;
+	int mesh_next_vertex_offset = 0;
+	int mesh_next_index_offset = 0;
+	int last_batch_count = 0;
+	Color mesh_colors[GOTOT_MESH_TABLE_SIZE];
+	RID mesh_id_buffer;              // uint per instance (per-instance mesh_id)
+	RID mesh_table_buffer;           // GototMeshDesc[64] (32 bytes each)
+	RID mesh_color_buffer;           // vec4[64] per-mesh flat color
+	RID batch_count_buffer;          // uint[64] per-mesh visible instance counts
+	RID batch_offset_buffer;         // uint[64] prefix-sum batch offsets
+	RID mesh_scratch_buffer;         // uint[64 * instance_count] per-mesh staging
+	RID batch_instances_buffer;      // uint[instance_count] concatenated orig ids
+	RID batch_args_buffer;           // VkDrawIndexedIndirectCommand[64] (INDIRECT usage)
+	RID batch_total_buffer;          // uint[1] total number of batches drawn
+	RID batch_count_shader;
+	RID batch_count_pipeline;
+	RID batch_count_uniform_set;
+	RID batch_assemble_shader;
+	RID batch_assemble_pipeline;
+	RID batch_assemble_uniform_set;
+	RID mesh_batch_shader;
+	RID mesh_batch_pipeline;
+	RID mesh_batch_uniform_set;
+	RID mesh_010_vertex_array;
+	RID mesh_010_index_array;
+
 	void _destroy_gpu_scene();
 	void _destroy_mesh();
+	void _destroy_mesh_batch();
 	bool _create_hzb_passes();
 	bool _create_raster_pipeline();
 	bool _create_mesh_pipeline();
+	bool _init_mesh_table_gpu();
 	void _run_compute_pass(RID p_pipeline, RID p_uniform_set, const void *p_push_data, uint32_t p_push_size, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z);
 	static float _projection_tan_half_fov_v(const Projection &p_projection);
 
@@ -207,6 +246,43 @@ public:
 	bool gpu_mesh_indirect_draw();
 	int gpu_mesh_get_index_count() const;
 	int gpu_mesh_get_vertex_count() const;
+
+	// GOTOT-010: batch instance rendering API (TEST-ONLY evidence bridge; not a
+	// shipping frame-data path - the authoritative instance transform source
+	// remains the GPU scene dispatch from 001B).
+	//
+	// --- SETUP / AUTHORING ---
+	// Overrides a single instance's mesh_id for a later gpu_mesh_batch_dispatch.
+	// Writes 4 bytes (uint) at byte offset p_index * 4 in the mesh_id buffer.
+	// Mesh ids must be < the current registered mesh count (mesh 0 = the 008A cube
+	// when gpu_mesh_create ran; extra meshes come from create_from_arrays).
+	void gpu_scene_set_instance_mesh(int p_index, int p_mesh_id);
+	// Reads back the mesh_id assigned to p_index (-1 when unset/invalid).
+	int gpu_scene_get_instance_mesh(int p_index);
+	// Registers a new mesh (positions + indices) into the mesh table as an
+	// appended sub-range of the SHARED mesh vertex/index buffers. Returns the new
+	// mesh id (table slot) or -1 on failure.
+	int gpu_mesh_create_from_arrays(const PackedVector3Array &p_verts, const PackedInt32Array &p_indices);
+	// Runs the two compute passes (per-mesh counting + prefix-sum batch assembly
+	// with batch_args / batch_instances build). Reads the GPU batch total into
+	// last_batch_count. Call AFTER gpu_cull_dispatch/gpu_visibility_dispatch.
+	bool gpu_mesh_batch_dispatch();
+	// Multi-draw: one draw_list_draw_indirect over the batch_args range
+	// [0, batch_count) - draw count == number of DISTINCT meshes with visible
+	// instances, not instance count. Depth test/write identical to 009.
+	bool gpu_mesh_batch_draw();
+	//
+	// --- TEST-ONLY GETTERS / EVIDENCE ---
+	// Registered mesh count in the table (mesh 0 = cube after gpu_mesh_create).
+	int gpu_mesh_get_mesh_id_count() const;
+	// Total number of batches (distinct visible meshes) from the last dispatch.
+	int gpu_mesh_get_batch_count();
+	// Per-mesh visible instance counts (64 entries, indexed by mesh_id).
+	PackedInt32Array gpu_mesh_get_draw_counts();
+	// The 5 uint VkDrawIndexedIndirectCommand fields at batch index p_batch_index.
+	PackedInt32Array gpu_mesh_get_batch_args(int p_batch_index);
+	// The flat color the batch fragment shader uses for the given mesh.
+	Color gpu_mesh_get_mesh_color(int p_mesh_id) const;
 };
 
 #endif

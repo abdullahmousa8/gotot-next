@@ -236,3 +236,56 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 - atomic ordering (من 008B).
 - reversed-Z (أعلاه).
 - 007A frame-time drift.
+
+## 18. GOTOT-010 — الرسم الدفعي متعدد الأشكال (Batch Instance Rendering)
+
+### الهدف
+رسم **عدة meshes مختلفة في دفعة (batch) واحدة** عبر multi-draw غير مباشر، بلا حلقة CPU على المثيلات: يشير كل مثيل إلى `mesh_id` من جدول meshes على الـ GPU، ويُجمَّع `batch_args` على الـ GPU (prefix-sum) ثم `draw_list_draw_indirect(draw_count=batch_count)`. عمق 009 (D32_SFLOAT + LESS_OR_EQUAL) باقٍ كما هو.
+
+### التنفيذ (إضافي فقط، بلا لمس أي مسار سابق)
+- جدول meshes على الـ GPU: `mesh_table_buffer` (64 خانة، `GototMeshDesc` 32B std430: index/vertex slot + counts + first_index + vertex_offset) + `mesh_id_buffer` (per-instance) + `mesh_color_buffer` (palette لكل mesh).
+- **مخزنان مشتركان بسعة كاملة**: vertex (32768×vec3) + index (65536×uint32). المكعب (mesh 0) عند offset 0 → مسار 008A/009 القديم يرسم حرفيًا دون تغيير؛ توسّع `gpu_mesh_create_from_arrays(verts, indices)` يسجّل أشكالًا إضافية عند offsets متزايدة (تيتاهدرون mesh 1، أوكتاهدرون mesh 2 في demo).
+- **مساران compute للـ batch assembly**:
+  - Pass 1 (عدّ لكل mesh): كل مثيل مرئي يقرأ `mesh_id[orig]` ويحوّر `batch_count[mesh]` عبر atomicAdd مع تخزين `orig` في chunk المثيلات الخاص بالشكل.
+  - Pass 2 (prefix-sum بخيط واحد): `batch_offset` = تراكمي، نسخ الـ origs إلى `batch_instances` المتسلسل، وتعبئة `batch_args` **مضغوطة** (dense) ليصبح `draw_count == batch_total` — مخرجات حتمية بالكامل (DET مستقرة).
+- `gpu_mesh_batch_draw()`: pipeline جديد بنفس عمق 009، يربط مخزني 010 بكامل السعة، `batch_instances[gl_InstanceIndex]` (first_instance مدمج)، `mesh_id[orig]` → `flat v_mesh_id` → لون من `mesh_colors`.
+- **10 واجهات Test-only** جديدة (إضافة صافية): `gpu_scene_set_instance_mesh/get_instance_mesh`، `gpu_mesh_create_from_arrays`، `gpu_mesh_batch_dispatch`، `gpu_mesh_batch_draw`، `gpu_mesh_get_mesh_id_count`، `gpu_mesh_get_batch_count`، `gpu_mesh_get_draw_counts`، `gpu_mesh_get_batch_args(batch)`، `gpu_mesh_get_mesh_color(mesh_id)`.
+- خريطة ألوان ثابتة (palette): mesh0 أخضر (0.15,0.85,0.35) — يطابق لون 008A/009 للمكعب، mesh1 أزرق، mesh2 برتقالي، default أصفر.
+
+### الأدلة (010 PASS)
+مشهد ثابت `main_010.tscn` (رقم مرجعي A: الكاميرا (0,0,1700) هوية، fov60، near300/far4000): 6 مثيلات = 3 أشكال (cube, tetra, octa) × 2 مثيل، المثيلان 1/2 على المحور خلف المكعب (محجوبان منه → إثبات عمق عبر الأشكال).
+
+معايير PASS الثمانية (8/8):
+1. **≥3 أشكال مرئية برسمة واحدة** — 3 أشكال على 6 مثيلات في كاميرا واحدة؛ `visible=6`, `mesh_id_count=3`.
+2. **أدلة هندسية per-mesh** — مراكز المثيلات 0/3 خضراء، 4 زرقاء، 5 برتقالية (كل شكل يرسم هندسته، window ±11px)؛ عدّادات الأشكال كاملة الإطار `g=368 b=290 o=2530` (كلها > 0).
+3. **ترتيب عمق عبر الأشكال** — `dC=0.87835 < dT=0.90449 < dO=0.91052` (TOL 0.002)، `dC` أمامي (< 0.9995)؛ المراكز المحجوبة 1/2 خضراء (المكعب الأقرب يملك البكسلات المشتركة)؛ pixel مركزي (960,540) أخضر بعمق وجه المكعب الأمامي.
+4. **batch_count == الأشكال المميزة** (لا المثيلات) — `batch_count=3` (وليس 6)، `draw_counts=[2,2,2]`، args حتمية `[36,2,0,0,0] [12,2,36,8,2] [24,2,48,12,4]` (first_index=prefix، vertex_offset صحيح لكل شكل)؛ لا حلقة billboard للمثيلات.
+5. **Determinism (DET)** — إعادة الدفعة/الرسم/القراءة في نفس الإطار → counts وcenter depth متطابقة؛ **توقيع DET متطابق حرفيًا بين تشغيلين**:
+   `sig=v6|mc3|bc3|dc2/2/2|g368|b290|o2530|dC0.87835|dT0.90449|dO0.91052|cc1|c0|5` (gt_010a.bat / gt_010b.bat).
+6. **Regressions 001A–009B** — `exit 0` على نفس البنية (تفاصيل أدناه).
+7. **GPU==CPU** — `visible=6` وfrustum CPU (الكرة ضد 6 مستويات بمسح positions/scales) = 6، `compact_sorted==[0..5]`.
+8. **billboard path لم ينكسر** — `gpu_raster_get_depth_enabled()==false`، ومسار depth الخاص بـ 009 محصور في مسار mesh (005/007A regressions PASS).
+
+إصلاح عمر (lifetime) أثناء التحقق: `mesh_010_vertex/index_array` كانا يُحرَّران بعد مخزنَي الـ vertex/index المشتركين → خطآن "free invalid ID" في الـ destroy؛ عولج بتحرير دفعة 010 (arrays/ubersets/pipelines/buffers) قبل تحرير المخزنَين في `_destroy_mesh`. بعد الإصلاح: **صفر** errors/leaks، إغلاق نظيف، exit 0. لقطة نافذة: `C:\Users\opc\AppData\Local\Temp\opencode\gt_010_window.png`. خروج: `GOTOT-NEXT 010: PASS`.
+
+### الانحدارات 001A–009B (كلها PASS على نفس البنية)
+- `gt_smoke` (001B fill + 002 culling + 003 indirect args + 004 HZB + 005 indirect raster + 006 10M scaling): **GOTOT-SMOKE: OK**.
+- `002` (frustum على CPU): ضمن gt_smoke.
+- `007A` (viewport bridge): `007A: PASS`.
+- `008A` (real mesh single draw): `008A: PASS`.
+- `008B` (10K instances, نفس توقيع DET التاريخي): `sig=v3905|36|3905|g25765|c0|5004|9997|h176|m0|3905|f150`.
+- `009a` (front-only، نفس التوقيع): `sig=v2|36|2|A|g458|f458|b2073142|dF0.87835|...|c0|3`.
+- `009b` (full، نفس التوقيع): `sig=v4|36|4|B|g2814|f2814|b2070786|dF0.87835|...|c0|2`.
+
+### ملاحظات
+- مسار billboard (005/007A) لم يُلمس: `gpu_raster_get_depth_enabled()==false` ومسار depth الخاص بـ 009 محصور في مسار mesh.
+- 7.1 (frustum planes يُقرأ من عمق UBO) كان موجودًا أصلًا في `gpu_scene_set_camera`؛ 010 بنى فوقه بلا تغيير.
+- 7.2 (prefix-sum بلا sort) نُفّذ كما في SPEC؛ لا ترتيب للأشكال (حدسية) — حتمية المخرجات من البنية وليس من الترتيب.
+
+### ملاحظة معمارية مؤجلة — Prefix Sum
+في 010، تم استخدام **prefix-sum بخيط واحد** (single-thread) بدل parallel prefix-sum.
+- **السبب:** عدد meshes صغير (64 كحد أقصى).
+- **التبعات:** يعمل بشكل ممتاز للمرحلة 010.
+- **التوسع في 011:** إذا زاد عدد meshes، يجب التحول إلى parallel prefix-sum (workgroup-level).
+
+**القرار:** يُقيَّم في SPEC 011.
