@@ -112,11 +112,21 @@ Process: every candidate completes a **license review** (recorded in Section 20 
 
 ## 08.5 — Legal Review Process
 
-- **Responsible:** Owner + external legal counsel (when required).
-- **Trigger:** Any dependency with non-permissive license (copyleft, AGPL, patent clauses).
-- **Recording:** All legal reviews recorded in `docs/legal_reviews/` (one file per dependency).
-- **SLA:** Review completed before dependency enters Section 20 workflow.
-- **Revalidation:** On license change, version bump with license change, or legal advisory.
+**Operational Note (2026-09-22):**
+
+- **Current status:** No in-house legal counsel.
+- **Activation trigger:** First non-permissive dependency proposed for integration.
+- **Process until activation:**
+  1. Any dependency with non-permissive license is **automatically DEFERRED**.
+  2. Architect reviews license manually (conservative interpretation).
+  3. Owner decides on external legal review (cost/benefit).
+  4. Only after external legal clearance: dependency enters Section 20 workflow.
+- **Recording:** All reviews recorded in `docs/legal_reviews/` (when activated).
+
+**Responsible:**
+- **Primary:** Owner.
+- **External:** External legal counsel (on demand, at Owner's discretion).
+- **Internal:** Architect (conservative review, non-binding).
 
 ## 09 — Dependency Governance
 
