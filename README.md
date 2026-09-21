@@ -11,7 +11,7 @@
 [![Renderer](https://img.shields.io/badge/renderer-Vulkan-AC162C?logo=vulkan&logoColor=white)](#-architecture)
 [![Language](https://img.shields.io/badge/language-C%2B%2B%20%7C%20GDScript-00599C?logo=cplusplus&logoColor=white)](#-repository-layout)
 [![Status](https://img.shields.io/badge/status-research%20prototype-orange)](#-project-status)
-[![Milestones](https://img.shields.io/badge/milestones-9%20passed-brightgreen)](#-milestones)
+[![Milestones](https://img.shields.io/badge/milestones-11%20passed-brightgreen)](#-milestones)
 
 [English](#-english) · [العربية](#-نظرة-عامة-بالعربية) · [Progress report](docs/progress_report.md) · [Engine spec](docs/engine_spec_v2.md)
 
@@ -100,6 +100,8 @@ The **billboard path** (GOTOT-005 / 007A) and the **real mesh path** (GOTOT-008A
 | 006 | 100K / 1M / 10M Scaling | ✅ PASS | 36,744 visible @ 10M |
 | 007A | Viewport Integration Bridge | ✅ PASS | visible 356..384, changed 232/239 frames |
 | 008A | Real Geometry Proof | ✅ PASS | 8-vertex / 36-index cube, `args = [36, N, 0, 0, 0]`, green 271..621 px, magenta 0 |
+| 008B | Multi-Instance Mesh Proof | ✅ PASS | 10,000 instances; GPU==CPU visible; drawargs + full-frame determinism; `sig=v3905\|36\|3905\|g25765\|c0\|5004\|9997\|h176\|m0\|3905\|f150` |
+| 009 | Real Depth Buffer | ✅ PASS | `D32_SFLOAT` depth test/write; 009A fg==green (458/458), 009B masked_eq 458/458 bad=0; DET stable (009A/009B) |
 
 See [`docs/progress_report.md`](docs/progress_report.md) for the full technical report (Arabic).
 
@@ -116,10 +118,16 @@ gotot-next/
 │   ├── project.godot
 │   ├── main.gd / main.tscn        #   001A–006 regression smoke test
 │   ├── main_007.gd / main_007.tscn#   007A viewport bridge (billboards)
-│   └── main_008.gd / main_008.tscn#   008A real geometry (cubes)
+│   ├── main_008.gd / main_008.tscn#   008A real geometry (cubes)
+│   ├── main_008b.gd / main_008b.tscn# 008B multi-instance mesh
+│   └── main_009.gd / main_009.tscn#   009 real depth buffer (009A/009B)
 ├── docs/
 │   ├── engine_spec_v2.md          # Architecture specification (v2.0)
-│   └── progress_report.md         # Full progress report (Arabic)
+│   ├── progress_report.md         # Full progress report (Arabic)
+│   ├── open_source_system_strategy_v1.md # Dependency + license strategy (v1)
+│   ├── dependency_register.md     # Dependency register (strategy §21.5)
+│   ├── legal_reviews/             # Legal review records (strategy §08.5)
+│   └── sbom/                      # SBOM artifacts (strategy §17)
 └── README.md
 ```
 
@@ -164,6 +172,15 @@ godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://m
 
 # GOTOT-008A — real geometry, indexed indirect draw
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_008.tscn
+
+# GOTOT-008B — multi-instance mesh rendering
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_008b.tscn
+
+# GOTOT-009A — real depth buffer, front-only reference run
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn -- --front-only
+
+# GOTOT-009B — real depth buffer, full scene (A+B+C+D)
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn
 ```
 
 Each demo prints its own objective evidence and finishes with `PASS` or `FAIL code=...`.
@@ -187,13 +204,13 @@ Each demo prints its own objective evidence and finishes with `PASS` or `FAIL co
 
 ### Roadmap
 
-Completed through **008A**. Planned direction:
+Completed through **009**. Planned direction:
 
 ```
-008  Real GPU Mesh Buffer        ✅ (008A proof)
-009  Batch Instance Rendering
-010  Multi-Draw / Multi-Batch
-011  Real Depth Buffer
+008  Real GPU Mesh Buffer        ✅ (008A proof + 008B multi-instance)
+009  Real Depth Buffer           ✅ (009A/009B proof)
+010  Batch Instance Rendering    ⏳ (SPEC pending — deferred)
+011  Multi-Draw / Multi-Batch
 012  Production HZB
 013  GPU Scene Manager
 014  Render Graph
@@ -229,7 +246,10 @@ production depth buffer, and **no** full render graph or synchronization.
 
 ### License
 
-No license has been declared for this project yet.
+No license has been declared for the GOTOT-NEXT source yet (pending Owner decision).
+Dependency/third-party licensing (permissive-only runtime policy, legal review process,
+dependency register, SBOM) is governed by
+[`docs/open_source_system_strategy_v1.md`](docs/open_source_system_strategy_v1.md).
 
 ### Author
 
@@ -256,8 +276,11 @@ No license has been declared for this project yet.
 | 006 | قياسات 100K/1M/10M | ✅ |
 | 007A | جسر العرض داخل نافذة Godot | ✅ |
 | 008A | إثبات الهندسة الحقيقية (mesh) | ✅ |
+| 008B | إثبات الرسم المتعدد (10K mesh) | ✅ |
+| 009 | مخزن العمق الحقيقي (`D32_SFLOAT`) | ✅ |
 
 **008A تحديدًا** يثبت أن المشروع يستطيع رسم **هندسة 3D حقيقية** (vertex buffer + index buffer + vertex format + indexed indirect draw) لمكعب 8 رؤوس/36 فهرسًا، معتمِدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة، وبقي مسار الـ billboard القديم كما هو دون أي استبدال.
+ثم **008B** يمدّ ذلك إلى **10,000 instance** بنفس mesh، و**009** يضيف **مخزن العمق الحقيقي `D32_SFLOAT`** (عمق كتابةً واختبارًا) ويُثبت ترتيب العمق بين المكعبات (fg==green، rim ضمن الحدود، DET ثابت).
 
 **البناء** (من مجلد مصدر Godot):
 
@@ -269,7 +292,8 @@ scons platform=windows target=editor dev_build=yes `
 **التشغيل:**
 
 ```powershell
-godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_008.tscn
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn -- --front-only
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn
 ```
 
 **ملاحظات مهمة:**
