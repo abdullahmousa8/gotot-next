@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# GOTOT-NEXT .gitignore
+# ---------------------------------------------------------------------------
+
+# --- Godot ---
+.godot/
+*.translation
+export_presets.cfg
+*.tmp
+
+# --- Visual Studio / MSVC ---
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.*
+*.user
+*.suo
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.ipch
+
+# --- Python (SCons / module glue) ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pycache/
+
+# --- Build artifacts ---
+bin/
+*.dll
+*.exe
+*.o
+*.a
+*.so
+
+# --- OS / editor noise ---
+Thumbs.db
+desktop.ini
+.DS_Store
+*.bak
+*.orig
+*~

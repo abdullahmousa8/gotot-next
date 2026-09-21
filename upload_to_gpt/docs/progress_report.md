@@ -88,11 +88,13 @@
 ## 11. الواجهات العامة الحالية للوحدة
 `ensure_gpu_device`, `is_gpu_ready`, `gpu_scene_create(count, spread)`, `gpu_scene_dispatch(seed)`, `gpu_scene_get_instance_count`, `gpu_scene_readback_positions/scales`, `gpu_scene_set_camera(...)`, `gpu_scene_set_viewport`, `gpu_scene_set_occluders`, `gpu_cull_dispatch`, `gpu_cull_get_visible_count`, `gpu_cull_get_visibility`, `gpu_drawargs_finalize`, `gpu_drawargs_read`, `gpu_compact_read`, `gpu_visibility_dispatch`, `gpu_raster_indirect_draw`, `gpu_raster_read_pixels`, `gpu_scene_get_vp`, `gpu_scene_destroy`, `get_server_singleton`.
 
+**GOTOT-008A (real mesh path):** `gpu_mesh_create`, `gpu_mesh_drawargs_finalize`, `gpu_mesh_indirect_draw`, `gpu_mesh_get_index_count`, `gpu_mesh_get_vertex_count`.
+
 ## 12. الحالة الحالية
-- كل الاختبارات (001B→006) خضراء، خروج كود 0، إغلاق نظيف بلا أخطاء `free invalid ID`.
-- التدفق الحالي: **GPU Scene → GPU Culling → HZB → Indirect Args → Framebuffer Offscreen → Readback**.
-  التدفق أثبت أن الوحدة ترسم في framebuffer خاص بها، لكن آخر خطوة (readback) ليست بعد جزءًا من تجربة اللعبة الفعلية.
-- **الخطوة القادمة**: دمج ناتج الرسم في **Godot Camera / Viewport** لرؤية الـ 100K instance داخل نافذة Godot مباشرة على الشاشة، وليس فقط قراءة texture من الذاكرة.
+- كل الاختبارات (001A→008A) خضراء، خروج كود 0، إغلاق نظيف بلا أخطاء `free invalid ID` أو أخطاء RID/lifetime.
+- التدفق الحالي: **GPU Scene → GPU Culling → HZB → Compaction → Indirect Args → (Billboard | Real Mesh) → Rasterization → Framebuffer Offscreen → CPU Readback → ImageTexture → TextureRect → نافذة Godot**.
+- أصبح ناتج الرسم مرئيًا داخل نافذة Godot فعليًا (007A)، وأصبح المشروع يرسم **هندسة 3D حقيقية** (مكعبات) عبر مسار mesh مستقل (008A).
+- **الخطوة القادمة**: **GOTOT-009 — Batch Instance Rendering** ضمن ممر mesh مستقل مع الحفاظ على مسار billboard وكل regression سابق.
 
 ## 13. Milestone Status
 
@@ -103,6 +105,8 @@
 - GOTOT-004 — HZB Occlusion: PASS
 - GOTOT-005 — Actual Indirect Draw: PASS
 - GOTOT-006 — 100K / 1M / 10M Scaling: PASS
+- GOTOT-007A — Viewport Integration Bridge (CPU Readback): PASS
+- GOTOT-008A — Real Geometry Proof (Real Mesh Path): PASS
 
 Current architecture status:
 
@@ -116,46 +120,48 @@ Current architecture status:
       Visibility / Compaction
                ↓
       Indirect Draw Arguments
-               ↓
+               │
+       ┌───────┴────────┐
+       ▼                ▼
+ Billboard Path   Real Mesh Path
+  (GOTOT-005)      (GOTOT-008A)
+       │                │
+       └───────┬────────┘
+               ▼
       GPU-driven Rasterization
+               ↓
+   Offscreen Framebuffer (1920×1080)
+               ↓
+   CPU Readback → ImageTexture → TextureRect
+               ↓
+             SCREEN
 ```
 
 Next milestone:
 
-**GOTOT-007 — Engine Viewport Integration** (رؤية ناتج الرسم داخل نافذة Godot عبر الكاميرا/الفيوبورت الفعليين، وتدفق الهندسة نحو الشاشة):
+**GOTOT-009 — Batch Instance Rendering** (رسم دفعات من الـ instances الحقيقية ضمن ممر mesh مستقل، مع الحفاظ على مسار billboard الحالي).
 
-```
-               GODOT
-                 │
-          Camera / Viewport
-                 │
-                 ▼
-           Camera Matrices
-                 │
-                 ▼
-        ┌──────────────────┐
-        │ GOTOT-NEXT       │
-        │ GPU Scene        │
-        └────────┬─────────┘
-                 │
-                 ▼
-          Frustum Culling
-                 │
-                 ▼
-                 HZB
-                 │
-                 ▼
-             Compaction
-                 │
-                 ▼
-        Indirect Arguments
-                 │
-                 ▼
-          Indirect Draw
-                 │
-                 ▼
-          Godot Viewport
-                 │
-                 ▼
-                SCREEN
-```
+## 14. GOTOT-007A — جسر العرض داخل نافذة Godot
+
+- **الوحيد في نطاقه**: عرض ناتج الرسم على الشاشة داخل نافذة Godot فعليًا (كان سابقًا قراءة texture من الذاكرة فقط).
+- **المسار**: `Camera3D` حقيقية → `gpu_scene_set_camera` → نفس خط GPU (cull → visibility → finalize → raster) → `gpu_raster_read_pixels` → `Image` → `ImageTexture` → `TextureRect`.
+- **بدون أي تعديل C++**: GDScript فقط (`demo/gpu_smoke/main_007.gd` + `main_007.tscn`).
+- **ملاحظات مهمة**: `Camera3D.get_projection()` يعيد **enum** وليس المصفوفة → الصحيح `get_camera_projection()`.
+- **الأدلة**: النافذة الفعلية 1152×648 (نفس نسبة 1920×1080)، `visible range 356..384`، تغيّر الصورة في `232/239` إطارًا، فحص الاتجاه `probe=0` (لا حاجة لقلب)، ولقطة نافذة محفوظة.
+- **القياسات (100K)**: Cull ≈ 0.41→1.09ms، HZB/Visibility ≈ 1.03→2.61ms، Finalize ≈ 0.06→0.08ms، Raster ≈ 0.10ms، Readback ≈ 2.22→2.78ms، Frame ≈ 11.36→14.16ms (يزحف صعودًا؛ موثّق وغير مُفسَّر بعد).
+- **القيد المعلن**: مسار CPU readback **جسر مؤقت وليس مسار العرض النهائي** (~8MB/إطار عند 1920×1080).
+
+## 15. GOTOT-008A — إثبات الهندسة الحقيقية (Real Mesh Path)
+
+- **الهدف**: إثبات أن GOTOT-NEXT يستطيع رسم **هندسة 3D حقيقية** باستخدام: vertex buffer حقيقي + index buffer حقيقي + vertex format حقيقي + indexed draw + indirect draw، معتمدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة ونفس جسر العرض 007A.
+- **قاعدة معمارية**: مسار 005/007A باقٍ كما هو **دون أي استبدال** (billboard shader، quad index buffer، raster pipeline، `gpu_raster_indirect_draw`، `gpu_raster_read_pixels`). الـ Mesh مسار **مستقل ومضاف**.
+- **الهندسة**: مكعب واحد فقط — 8 رؤوس (positions فقط، `R32G32B32_SFLOAT`) و36 فهرسًا (`UINT32`). بلا normals/UVs/materials/textures.
+- **نموذج الـ instance**: نفس النموذج — `compact[gl_InstanceIndex]` → `transforms.position_scale[orig]` → `viewdata.vp`. الناتج 377 (أو ما يقابله) **مكعبًا حقيقيًا**.
+- **الـ indirect args**: `index_count=36, instance_count=visible, first_index=0, vertex_offset=0, first_instance=0`. قيمة `index_count` تُمرَّر عبر push constant (وليس مضمّنة بشكل يمنع التعميم، ودون بناء Mesh Table).
+- **نطاق C++ المسموح**: موارد mesh vertex/index، vertex format، mesh shader، mesh pipeline، دالة رسم mesh، تدمير موارد mesh — لا شيء خارج ذلك.
+- **الأدلة (100K)**: `GPU Mesh created vertices=8 indices=36 vertex_format=0`؛ `Indirect args = [36, N, 0, 0, 0]` مع `N == visible` كل إطار (تحقق برمجي يوقف التشغيل عند عدم التطابق)؛ العدّ الدقيق على الإطار الأخير: **green=305، magenta=0** (أي هندسة حقيقية وليست billboard القديم)؛ `visible range 351..389`؛ `changed_frames=236/239`؛ لقطة نافذة `1152×648`؛ إغلاق نظيف بلا أخطاء RID/lifetime.
+- **القيود**: يرسم في نفس الـ framebuffer الحالي 1920×1080 ويستخدم `gpu_raster_read_pixels` القائم؛ مكعبة واحدة مضمّنة (لا mesh table/IDs/streaming)؛ لا depth buffer؛ يشترك مسار mesh في `indirect_args_buffer` القائم لذا لا يجوز خلط `gpu_drawargs_finalize()` مع `gpu_mesh_indirect_draw()` في نفس التشغيل.
+
+## 16. المرحلة القادمة
+
+**GOTOT-009 — Batch Instance Rendering**: رسم عدة دفعات من الـ instances الحقيقية ضمن ممر mesh مستقل، مع الإبقاء على مسار billboard كاملًا وعدم المساس بـ regression 001A–008A.
