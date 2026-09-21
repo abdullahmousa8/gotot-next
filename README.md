@@ -11,7 +11,7 @@
 [![Renderer](https://img.shields.io/badge/renderer-Vulkan-AC162C?logo=vulkan&logoColor=white)](#-architecture)
 [![Language](https://img.shields.io/badge/language-C%2B%2B%20%7C%20GDScript-00599C?logo=cplusplus&logoColor=white)](#-repository-layout)
 [![Status](https://img.shields.io/badge/status-research%20prototype-orange)](#-project-status)
-[![Milestones](https://img.shields.io/badge/milestones-11%20passed-brightgreen)](#-milestones)
+[![Milestones](https://img.shields.io/badge/milestones-12%20passed-brightgreen)](#-milestones)
 
 [English](#-english) · [العربية](#-نظرة-عامة-بالعربية) · [Progress report](docs/progress_report.md) · [Engine spec](docs/engine_spec_v2.md)
 
