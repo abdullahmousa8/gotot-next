@@ -539,6 +539,12 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_pixels"), &GototRenderServer::gpu_raster_read_pixels);
 	ClassDB::bind_method(D_METHOD("gpu_scene_get_vp"), &GototRenderServer::gpu_scene_get_vp);
 
+	ClassDB::bind_method(D_METHOD("gpu_scene_set_instance_transform", "index", "position", "scale"), &GototRenderServer::gpu_scene_set_instance_transform);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_depth"), &GototRenderServer::gpu_raster_read_depth);
+	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_format"), &GototRenderServer::gpu_raster_get_depth_format);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_depth_enabled"), &GototRenderServer::gpu_mesh_get_depth_enabled);
+	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_enabled"), &GototRenderServer::gpu_raster_get_depth_enabled);
+
 	ClassDB::bind_method(D_METHOD("gpu_mesh_create"), &GototRenderServer::gpu_mesh_create);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_drawargs_finalize"), &GototRenderServer::gpu_mesh_drawargs_finalize);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_indirect_draw"), &GototRenderServer::gpu_mesh_indirect_draw);
@@ -715,7 +721,15 @@ void GototRenderServer::_destroy_gpu_scene() {
 		rendering_device->free_rid(raster_color_texture);
 		raster_color_texture = RID();
 	}
+	if (raster_depth_texture.is_valid()) {
+		rendering_device->free_rid(raster_depth_texture);
+		raster_depth_texture = RID();
+	}
 	raster_framebuffer_format = -1;
+	raster_depth_attached = false;
+	raster_depth_format_value = -1;
+	mesh_depth_enabled = false;
+	raster_depth_enabled = false;
 	if (view_ubo.is_valid()) {
 		rendering_device->free_rid(view_ubo);
 		view_ubo = RID();
@@ -1582,12 +1596,32 @@ bool GototRenderServer::_create_raster_pipeline() {
 		return false;
 	}
 
+	// GOTOT-009: real depth attachment, D32_SFLOAT, cleared to 1.0 (far) at the
+	// start of every frame by the draw list flags (DRAW_CLEAR_DEPTH).
+	RD::TextureFormat df;
+	df.format = RD::DATA_FORMAT_D32_SFLOAT;
+	df.width = RASTER_TARGET_W;
+	df.height = RASTER_TARGET_H;
+	df.depth = 1;
+	df.texture_type = RD::TEXTURE_TYPE_2D;
+	df.usage_bits = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	raster_depth_texture = rendering_device->texture_create(df, RD::TextureView());
+	if (raster_depth_texture.is_null()) {
+		print_error("[GOTOT-NEXT] raster depth texture_create failed.");
+		return false;
+	}
+
 	Vector<RD::AttachmentFormat> afs;
 	RD::AttachmentFormat af;
 	af.format = RD::DATA_FORMAT_R8G8B8A8_UNORM;
 	af.samples = RD::TEXTURE_SAMPLES_1;
 	af.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	afs.push_back(af);
+	RD::AttachmentFormat df_af;
+	df_af.format = RD::DATA_FORMAT_D32_SFLOAT;
+	df_af.samples = RD::TEXTURE_SAMPLES_1;
+	df_af.usage_flags = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	afs.push_back(df_af);
 	raster_framebuffer_format = rendering_device->framebuffer_format_create(afs);
 	if (raster_framebuffer_format < 0) {
 		print_error("[GOTOT-NEXT] raster framebuffer_format_create failed.");
@@ -1596,11 +1630,15 @@ bool GototRenderServer::_create_raster_pipeline() {
 
 	Vector<RID> attachments;
 	attachments.push_back(raster_color_texture);
+	attachments.push_back(raster_depth_texture);
 	raster_framebuffer = rendering_device->framebuffer_create(attachments, raster_framebuffer_format);
 	if (raster_framebuffer.is_null()) {
 		print_error("[GOTOT-NEXT] raster framebuffer_create failed.");
 		return false;
 	}
+	raster_depth_attached = true;
+	raster_depth_format_value = (int)RD::DATA_FORMAT_D32_SFLOAT;
+	raster_depth_enabled = false;
 
 	// No vertex input attributes (procedural gl_VertexIndex expansion) -> INVALID_ID like the engine's blit shaders.
 	RD::PipelineRasterizationState rs;
@@ -1636,6 +1674,9 @@ bool GototRenderServer::_create_raster_pipeline() {
 		print_error("[GOTOT-NEXT] raster uniform_set_create failed.");
 		return false;
 	}
+
+	print_line("[GOTOT-NEXT] Raster framebuffer: color R8G8B8A8 + depth D32_SFLOAT attached=" +
+			itos((int)raster_depth_attached));
 
 	return true;
 }
@@ -1680,6 +1721,11 @@ bool GototRenderServer::_create_mesh_pipeline() {
 	RD::PipelineRasterizationState rs;
 	RD::PipelineMultisampleState ms;
 	RD::PipelineDepthStencilState ds;
+	// GOTOT-009: the REAL MESH path tests and writes depth (LESS_OR_EQUAL,
+	// write enabled), depth buffer cleared to 1.0 (far) each frame.
+	ds.enable_depth_test = true;
+	ds.enable_depth_write = true;
+	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
 	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(1);
 	mesh_pipeline = rendering_device->render_pipeline_create(
 			mesh_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
@@ -1687,6 +1733,7 @@ bool GototRenderServer::_create_mesh_pipeline() {
 		print_error("[GOTOT-NEXT] mesh render_pipeline_create failed.");
 		return false;
 	}
+	mesh_depth_enabled = true;
 
 	Vector<RD::Uniform> uniforms;
 	RD::Uniform u0;
@@ -1880,7 +1927,7 @@ bool GototRenderServer::gpu_mesh_indirect_draw() {
 
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
-	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0, clear_colors, 1.0f, 0, Rect2(), 0);
+	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
 	if (dl == RD::INVALID_ID) {
 		print_error("[GOTOT-NEXT] gpu_mesh_indirect_draw: draw_list_begin failed.");
 		return false;
@@ -1918,7 +1965,7 @@ bool GototRenderServer::gpu_raster_indirect_draw() {
 
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
-	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0, clear_colors, 1.0f, 0, Rect2(), 0);
+	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
 	if (dl == RD::INVALID_ID) {
 		print_error("[GOTOT-NEXT] gpu_raster_indirect_draw: draw_list_begin failed.");
 		return false;
@@ -1944,6 +1991,45 @@ PackedByteArray GototRenderServer::gpu_raster_read_pixels() {
 	ret.resize(data.size());
 	memcpy(ret.ptrw(), data.ptr(), data.size());
 	return ret;
+}
+
+// GOTOT-009: D32_SFLOAT depth readback (values in [0, 1], clear = 1.0 = far).
+PackedFloat32Array GototRenderServer::gpu_raster_read_depth() {
+	PackedFloat32Array ret;
+	if (!gpu_scene_valid || !gpu_raster_valid) {
+		return ret;
+	}
+	Vector<uint8_t> data = rendering_device->texture_get_data(raster_depth_texture, 0);
+	int count = data.size() / 4;
+	ret.resize(count);
+	memcpy(ret.ptrw(), data.ptr(), data.size());
+	return ret;
+}
+
+// GOTOT-009: overwrite a single instance's transform (position_scale) in the
+// SoA transform buffer. Pure fill helper for the 009 overlay demo; the fill/
+// cull/HZB/compaction/drawargs layout is untouched.
+void GototRenderServer::gpu_scene_set_instance_transform(int p_index, const Vector3 &p_position, float p_scale) {
+	if (!gpu_scene_valid || p_index < 0 || p_index >= gpu_instance_count) {
+		return;
+	}
+	float data[4] = { p_position.x, p_position.y, p_position.z, p_scale };
+	Error err = rendering_device->buffer_update(transform_buffer, p_index * sizeof(data), sizeof(data), data);
+	if (err != OK) {
+		print_error("[GOTOT-NEXT] gpu_scene_set_instance_transform: buffer_update failed.");
+	}
+}
+
+int GototRenderServer::gpu_raster_get_depth_format() const {
+	return raster_depth_format_value;
+}
+
+bool GototRenderServer::gpu_mesh_get_depth_enabled() const {
+	return mesh_depth_enabled;
+}
+
+bool GototRenderServer::gpu_raster_get_depth_enabled() const {
+	return raster_depth_enabled;
 }
 
 PackedFloat32Array GototRenderServer::gpu_scene_get_vp() {

@@ -84,6 +84,15 @@ class GototRenderServer : public Object {
 	RID quad_index_buffer;
 	RID quad_index_array;
 
+	// GOTOT-009: real depth buffer (D32_SFLOAT) attached to the raster
+	// framebuffer. The billboard path keeps depth disabled (unchanged
+	// behavior); the real-mesh path tests/writes depth.
+	bool raster_depth_attached = false;
+	int raster_depth_format_value = -1;
+	RID raster_depth_texture;
+	bool mesh_depth_enabled = false;
+	bool raster_depth_enabled = false;
+
 	// GOTOT-008A: independent REAL MESH path (real vertex buffer + real index
 	// buffer + real vertex format + indexed indirect draw). Additive only: the
 	// GOTOT-005 billboard path above is never replaced or modified.
@@ -157,6 +166,40 @@ public:
 	bool gpu_raster_indirect_draw();
 	PackedByteArray gpu_raster_read_pixels();
 	PackedFloat32Array gpu_scene_get_vp();
+
+	// GOTOT-009: real depth buffer API.
+	// The raster framebuffer carries a 1920x1080 D32_SFLOAT depth attachment
+	// cleared to 1.0 (far) every frame; the REAL MESH pipeline (008A) is the
+	// only depth consumer (depth test + write, COMPARE_OP_LESS_OR_EQUAL); the
+	// billboard (raster) pipeline keeps depth disabled (unchanged).
+	//
+	// --- TEST-ONLY --- (overlay proof scenes only; not part of the runtime
+	// scene-generation pipeline - the authoritative instance transform source
+	// remains the GPU scene dispatch from 001B):
+	// Overrides a single instance's position/scale in the transform buffer for
+	// fixed-layout repro scenes (e.g. main_009's A/B/C/D overlay). Writes
+	// 16 bytes = vec4(position, scale) at byte offset p_index * 16.
+	void gpu_scene_set_instance_transform(int p_index, const Vector3 &p_position, float p_scale);
+	//
+	// --- TEST-ONLY / DIAGNOSTIC --- (verification readback bridge, same class
+	// as gpu_raster_read_pixels - NOT a shipping frame-data path):
+	// Returns the FULL depth image as PackedFloat32Array of size W*H
+	// (1920*1080 = 2,073,600 floats, row-major, value 1.0 == far/clear,
+	// smaller == nearer) via a blocking GPU readback. Range [-1,1]-safe: 0..1.
+	PackedFloat32Array gpu_raster_read_depth();
+	//
+	// --- TEST-ONLY GETTERS --- (probe the 009 wiring from GDScript).
+	// Returns the depth attachment format enum value (125 == D32_SFLOAT) or -1
+	// when no depth attachment is attached.
+	int gpu_raster_get_depth_format() const;
+	// True when the mesh pipeline has depth test+write enabled (009 wire check).
+	bool gpu_mesh_get_depth_enabled() const;
+	// True when the billboard (raster) pipeline has depth enabled. Must stay
+	// FALSE for 009 (the raster path intentionally keeps depth disabled).
+	bool gpu_raster_get_depth_enabled() const;
+	// NOTE (architect): gpu_*_get_depth_* are consolidation candidates - they
+	// may merge into a single capabilities/introspection query in a later
+	// milestone (no change in 009, recorded only).
 
 	// GOTOT-008A: independent real-mesh (indexed indirect) API.
 	bool gpu_mesh_create();

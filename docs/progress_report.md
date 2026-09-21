@@ -94,7 +94,7 @@
 - كل الاختبارات (001A→008A) خضراء، خروج كود 0، إغلاق نظيف بلا أخطاء `free invalid ID` أو أخطاء RID/lifetime.
 - التدفق الحالي: **GPU Scene → GPU Culling → HZB → Compaction → Indirect Args → (Billboard | Real Mesh) → Rasterization → Framebuffer Offscreen → CPU Readback → ImageTexture → TextureRect → نافذة Godot**.
 - أصبح ناتج الرسم مرئيًا داخل نافذة Godot فعليًا (007A)، وأصبح المشروع يرسم **هندسة 3D حقيقية** (مكعبات) عبر مسار mesh مستقل (008A).
-- **الخطوة القادمة**: **GOTOT-009 — Batch Instance Rendering** ضمن ممر mesh مستقل مع الحفاظ على مسار billboard وكل regression سابق.
+- **التالي**: **GOTOT-009 — Real Depth Buffer** اكتمل بأدلة PASS (001A→009B كلها خضراء). **GOTOT-010 — Batch Instance Rendering** مؤجل بانتظار SPEC الرسمي (مع ملاحظات مؤجلة: frustum reading، atomic ordering، reversed-Z، 007A frame-time drift).
 
 ## 13. Milestone Status
 
@@ -107,6 +107,8 @@
 - GOTOT-006 — 100K / 1M / 10M Scaling: PASS
 - GOTOT-007A — Viewport Integration Bridge (CPU Readback): PASS
 - GOTOT-008A — Real Geometry Proof (Real Mesh Path): PASS
+- GOTOT-008B — Multi-Instance Mesh Rendering Proof: PASS
+- GOTOT-009A/009B — Real Depth Buffer (D32_SFLOAT) Proof: PASS
 
 Current architecture status:
 
@@ -139,7 +141,7 @@ Current architecture status:
 
 Next milestone:
 
-**GOTOT-009 — Batch Instance Rendering** (رسم دفعات من الـ instances الحقيقية ضمن ممر mesh مستقل، مع الحفاظ على مسار billboard الحالي).
+**GOTOT-010 — Batch Instance Rendering** (رسم دفعات من الـ instances الحقيقية ضمن ممر mesh مستقل، مع الحفاظ على مسار billboard وممر depth — مؤجل، SPEC قادم).
 
 ## 14. GOTOT-007A — جسر العرض داخل نافذة Godot
 
@@ -164,7 +166,7 @@ Next milestone:
 
 ## 16. المرحلة القادمة
 
-**GOTOT-009 — Batch Instance Rendering**: رسم عدة دفعات من الـ instances الحقيقية ضمن ممر mesh مستقل، مع الإبقاء على مسار billboard كاملًا وعدم المساس بـ regression 001A–008A.
+**GOTOT-009 — Real Depth Buffer** اكتمل PASS (009a/009b). **GOTOT-010 — Batch Instance Rendering** مؤجل بانتظار SPEC الرسمي، مع الإبقاء على مسار billboard وممر depth وعدم المساس بـ regression 001A–009B.
 
 ## 17. GOTOT-008B — برهان الرسم متعدد النسخ (Multi-Instance Mesh Rendering Proof)
 
@@ -181,3 +183,56 @@ Next milestone:
 
 - **نقطة frustum reading**: كشف Fix 1 أن `set_camera` لا تُحدّث الـ frustum تلقائيًا عند تغيّر أبعاد النافذة — هل هذا سلوك مقصود أم ثغرة تصميم؟ تُعالج في milestone قادم (مثل 009/رفع لاحق).
 - **نقطة الترتيب الذري**: ترتيب الإصدار (atomic compaction) عشوائي بين التشغيلات — هل يؤثر على الأداء الفعلي أم فقط على التحقق؟ تُقيَّم لاحقًا (التحقق الحالي مستقر عبر الفرز).
+
+## 18. GOTOT-009 — Real Depth Buffer (D32_SFLOAT)
+
+### الهدف والنطاق
+إرفاق **عمق حقيقي** لمسار mesh: نسيج `D32_SFLOAT` في framebuffer الراستر الخاص، مع depth test + write بواقعية (الأقرب يمنع الأبعد) على مسار **Real Mesh** (008A) بينما يبقى مسار billboard depth-disabled تمامًا. إثبات ذاتي عبر مشهدين: `main_009` مع `--front-only` (مرجع A+D) وبدونها (كامل A+B+C+D)، دون لمس أي regression سابق (001A–008B).
+
+### التغييرات C++ (`gotot_render_server.{h,cpp}`)
+- **`_create_raster_pipeline`**: إنشاء نسيج عمق `1920×1080 D32_SFLOAT` (usage: `DEPTH_STENCIL_ATTACHMENT | CAN_COPY_FROM`)، إضافة `AttachmentFormat` للعمق، attachments = `[color, depth]`، وأعلام `raster_depth_attached=true` / `raster_depth_format_value=125`.
+- **`_create_mesh_pipeline`**: تفعيل `enable_depth_test`, `enable_depth_write`, `depth_compare_operator = COMPARE_OP_LESS_OR_EQUAL` (الاتجاه القياسي — قريب = قيمة أصغر، far = 1.0).
+- **الرسم**: `gpu_mesh_indirect_draw` و `gpu_raster_indirect_draw` — `draw_list_begin` الآن بـ `DRAW_CLEAR_COLOR_0 | DRAW_CLEAR_DEPTH` مع `clear_depth = 1.0f` (far) كل إطار.
+- **التدمير**: تحرير نسيج العمق بعد نسيج اللون + تصفير الأعلام.
+- **واجهات جديدة (5)**: انظر قسم الواجهات.
+
+### الاكتشافات والتصحيحات (موثقة بمصادر قياس)
+1. **near:far هو جذر السحق (squashing)**: بإسقاط `near=0.05/far=4000` (نسبة 80000:1) يُسحَق كل عمق مكتوب إلى نطاق ~1e-5 تحت 1.0 (قِيس `dA=0.99998128414154`, عتبة `0.9995` عدّت كل شيء خلفية). **الحل**: `camera.near = 300.0` فُرض في `_ready` بعدما تبيّن أن تعديل الـ `.tscn` وحده لا يصل (قراءة `camNear=0.05` في زمن التشغيل) — أعطى فصلاً نظيفاً `A≈0.878 < B≈0.918 < C≈0.916 < D≈0.901` مؤكّداً أن **الاكتشاف فرضية–قياس لا تخمين**.
+2. **الاتجاه قياسي (وليس reversed)** عند near سليم: قِيس نمو القيمة مع البعد (أقرب = أصغر). جرّبت بديلاً `clear=0.0/GEQ` (ظن reversed-Z) ثم **أُعيد بعد القياس** — العمل النهائي مطابق للـ SPEC: `clear=1.0 + LESS_OR_EQUAL + write`.
+3. **السيليلويتات المائلة**: النسق المتحلّل "مربع الوجه الأمامي ×r²" غير صالح للمكعبات بعناصر مائلة (هيكل سداسي مع parallax؛ قِيس `Drow=1212..1231` يطابق NDC صح، والمدى العرضي للمكعب أكبر من مربع الوجه). استُبدل النموذج التحليلي للمساحات بـ **evidence ذاتي**: `green == fg` (1:1 بين اللون والعمق) + ميزانية تغطية محدودة + `rim > 0 ∧ rim ≤ 6·fg_front` + `green_full > green_front`.
+
+### الأدلة (009 - PASS)
+- **009a (`--front-only`):** `fg=458 bg=2073142 green=458` (1:1)، `dF=0.87835 < dC=0.90061`، `dmin==dF` (الأقرب يملك أدنى عمق عام)، حفظ `gt009_depth_a.bin` + `gt009_meta_a.txt` المرجعي، `sig=v2|36|2|A|g458|f458|...|c0|3`، لقطة نافذة، PASS.
+- **009b (كامل):** `visible=4`, `args=[36,4,0,0,0]`, compact `[0,1,2,3]`، `fg=2814 bg=2070786 rim=2356`, `green=2814`, **`masked_eq 458/458 bad=0`** (العمق الكامل == المرجع front-only على كل بكسل تغطيه A/D → B/C لم تكتُب عبر السطح الأقرب = اختبار العمق يعمل)، `dF<dC`, `dmin==dF`, determinism الإطار الكامل، `sig=v4|36|4|B|...`, لقطة نافذة، PASS.
+- **الانحدارات:** gt_smoke (001A–006) / 007 / 008 / 008b — كلها `exit 0` على نفس البنية الجديدة.
+- **القيود المعلنة**: readback العمق كامل الإطار (~8MB) — جسر تحقق كـ `gpu_raster_read_pixels` وليس مسار بيانات إنتاجياً؛ عمق الـ billboard ملغى كما هو مقصود.
+
+### الواجهات الجديدة (5)
+1. `gpu_scene_set_instance_transform(index, position, scale)` — **Test-only** (مشاهد وضع ثابت مثل main_009): يكتب 16 بايت `vec4(position,scale)` عند `index*16` في transform buffer.
+2. `gpu_raster_read_depth()` — **Test-only/تشخيصي**: `PackedFloat32Array` كامل الصورة (1920×1080 = 2,073,600 float، صفوف، 1.0==far/clear، أكبر=أبعد) عبر readback حاجز.
+3. `gpu_raster_get_depth_format()` — **Test-only** getter: قيمة تنسيق العمق (125 == D32_SFLOAT) أو -1.
+4. `gpu_mesh_get_depth_enabled()` — **Test-only** getter: هل مسار mesh depth مفعّل.
+5. `gpu_raster_get_depth_enabled()` — **Test-only** getter: يجب أن يبقى `false` (billboard depth-disabled).
+
+**ملاحظة معمارية:** الواجهات 3/4/5 مرشّحة للدمج لاحقاً في استعلام قدرات واحد (لا تغيير في 009، سجّل فقط).
+
+## Note: Reversed-Z Considered, Deferred
+
+During 009 implementation, reversed-Z (depth 1.0 = near, depth 0.0 = far,
+GREATER_OR_EQUAL) was evaluated as a potential solution to the
+near:far precision issue. After measurement:
+
+- Standard direction (LESS_OR_EQUAL, clear=1.0) was kept.
+- Reversed-Z requires deeper changes (projection matrix, clear value,
+  comparison function, all pipelines) — outside 009 scope.
+- Reversed-Z is recorded as a DEFERRED architectural note for a future
+  milestone (likely 010 or 011).
+
+Root cause in 009 was identified as camera near/far ratio (80000:1),
+not depth direction. Fixed by setting camera.near=300 in _ready.
+
+### ملاحظات مؤجلة إلى 010
+- frustum reading (من 008B Fix 1).
+- atomic ordering (من 008B).
+- reversed-Z (أعلاه).
+- 007A frame-time drift.

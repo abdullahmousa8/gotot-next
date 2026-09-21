@@ -1,0 +1,27 @@
+[gd_scene load_steps=2 format=3 uid="uid://bgt009cc3000"]
+
+[ext_resource type="Script" path="res://main_009.gd" id="1_009"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_009")
+
+[node name="Camera" type="Camera3D" parent="."]
+fov = 60.0
+# near=300/far=4000 keeps a sane near:far ratio for the overlay cluster at
+# view z ~2300..2700 (near=0.05 with far=4000 would crush every written depth
+# into a ~1e-5 band under 1.0, destroying the depth discriminator).
+near = 300.0
+far = 4000.0
+current = true
+
+[node name="Overlay" type="CanvasLayer" parent="."]
+
+[node name="Display" type="TextureRect" parent="Overlay"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+expand_mode = 1
+stretch_mode = 5
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
