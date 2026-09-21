@@ -239,7 +239,9 @@ production depth buffer, and **no** full render graph or synchronization.
 - The raster target is a **fixed 1920×1080**; the demo window is 1152×648 (same 16:9 aspect).
 - The mesh path reuses the existing indirect argument buffer, so the billboard
   `gpu_drawargs_finalize()` and the mesh path must not be interleaved in one run.
-- No depth buffer yet (as in 005 / 007A): geometry has no per-fragment depth ordering.
+- Depth buffer was added in GOTOT-009 (`D32_SFLOAT`, `LESS_OR_EQUAL`, `clear=1.0`).
+  The billboard path (005 / 007A) still runs without depth testing. The mesh path
+  (008A+) now has per-fragment depth ordering.
 - The module deliberately avoids `RenderingServer` integration, RHI changes,
   zero-copy, Vulkan interop, mesh shaders, a material system, and a render graph —
   these are reserved for later milestones.
