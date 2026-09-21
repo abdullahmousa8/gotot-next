@@ -102,6 +102,7 @@ The **billboard path** (GOTOT-005 / 007A) and the **real mesh path** (GOTOT-008A
 | 008A | Real Geometry Proof | ✅ PASS | 8-vertex / 36-index cube, `args = [36, N, 0, 0, 0]`, green 271..621 px, magenta 0 |
 | 008B | Multi-Instance Mesh Proof | ✅ PASS | 10,000 instances; GPU==CPU visible; drawargs + full-frame determinism; `sig=v3905\|36\|3905\|g25765\|c0\|5004\|9997\|h176\|m0\|3905\|f150` |
 | 009 | Real Depth Buffer | ✅ PASS | `D32_SFLOAT` depth test/write; 009A fg==green (458/458), 009B masked_eq 458/458 bad=0; DET stable (009A/009B) |
+| 010 | Batch Instance Rendering | ✅ PASS | 3 meshes (cube/tetra/octa) × 2 instances; batch_count=3; args deterministic `[36,2,0,0,0][12,2,36,8,2][24,2,48,12,4]`; depth `dC<dT<dO`; DET stable |
 
 See [`docs/progress_report.md`](docs/progress_report.md) for the full technical report (Arabic).
 
@@ -120,7 +121,8 @@ gotot-next/
 │   ├── main_007.gd / main_007.tscn#   007A viewport bridge (billboards)
 │   ├── main_008.gd / main_008.tscn#   008A real geometry (cubes)
 │   ├── main_008b.gd / main_008b.tscn# 008B multi-instance mesh
-│   └── main_009.gd / main_009.tscn#   009 real depth buffer (009A/009B)
+│   ├── main_009.gd / main_009.tscn#   009 real depth buffer (009A/009B)
+│   └── main_010.gd / main_010.tscn#   010 batch instance rendering
 ├── docs/
 │   ├── engine_spec_v2.md          # Architecture specification (v2.0)
 │   ├── progress_report.md         # Full progress report (Arabic)
@@ -181,6 +183,9 @@ godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://m
 
 # GOTOT-009B — real depth buffer, full scene (A+B+C+D)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn
+
+# GOTOT-010 — batch instance rendering (3 meshes, multi-draw)
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_010.tscn
 ```
 
 Each demo prints its own objective evidence and finishes with `PASS` or `FAIL code=...`.
@@ -209,8 +214,8 @@ Completed through **009**. Planned direction:
 ```
 008  Real GPU Mesh Buffer        ✅ (008A proof + 008B multi-instance)
 009  Real Depth Buffer           ✅ (009A/009B proof)
-010  Batch Instance Rendering    ⏳ (SPEC pending — deferred)
-011  Multi-Draw / Multi-Batch
+010  Batch Instance Rendering    ✅ (010 proof — 3 meshes, multi-draw)
+    011  Multi-Draw / Multi-Batch    ⏳ (SPEC pending)
 012  Production HZB
 013  GPU Scene Manager
 014  Render Graph
@@ -279,9 +284,11 @@ Dependency/third-party licensing (permissive-only runtime policy, legal review p
 | 008A | إثبات الهندسة الحقيقية (mesh) | ✅ |
 | 008B | إثبات الرسم المتعدد (10K mesh) | ✅ |
 | 009 | مخزن العمق الحقيقي (`D32_SFLOAT`) | ✅ |
+| 010 | رسم الدفعات (batch instance، 3 أشكال) | ✅ |
 
 **008A تحديدًا** يثبت أن المشروع يستطيع رسم **هندسة 3D حقيقية** (vertex buffer + index buffer + vertex format + indexed indirect draw) لمكعب 8 رؤوس/36 فهرسًا، معتمِدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة، وبقي مسار الـ billboard القديم كما هو دون أي استبدال.
 ثم **008B** يمدّ ذلك إلى **10,000 instance** بنفس mesh، و**009** يضيف **مخزن العمق الحقيقي `D32_SFLOAT`** (عمق كتابةً واختبارًا) ويُثبت ترتيب العمق بين المكعبات (fg==green، rim ضمن الحدود، DET ثابت).
+ثم **010** يوسّع المسار إلى **3 meshes مختلفة** (cube/tetra/octa) × **مثيلان لكل mesh** عبر **جدول meshes** على GPU + **batch assembly** (count pass + prefix-sum) + **multi-draw** لكل batch، مع الحفاظ على ترتيب العمق من 009 (dC < dT < dO).
 
 **البناء** (من مجلد مصدر Godot):
 
