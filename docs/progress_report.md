@@ -353,3 +353,39 @@ godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn
 # demo بأدلة ذاتية
 godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn -- --test
 ```
+
+## 22. GOTOT-012 — Production HZB (DEFERRED)
+
+**Status:** DEFERRED (2026-09-22).
+
+**Attempts:** 4 (Focus Rule + 1 extra).
+
+**Root cause:** instance→pyramid-texel projection collapse.
+- كل instance يُسقط إلى texel (0,0).
+- `max_inv = 0` دائمًا.
+- `p2 == p1 == 132` بنيويًا.
+
+**What was verified:**
+- Frame driver (Option A) يعمل.
+- Pyramid builds (12 levels).
+- Raw buffer chain populated.
+- Writer/reader prefix-sum layout byte-identical.
+
+**Fallback:** `gpu_hzb_build` + `gpu_visibility_dispatch` (from 004).
+
+**Re-attempt:** planned for 013+ (after projection fix).
+
+## 23. Open-Source Acceleration Audit (DELIVERED)
+
+**Document:** `docs/open_source_acceleration_audit.md`
+
+**Sections:** 8 (current/remaining GPU core, build/borrow/integrate/defer, candidates, recommended integrations, rejected/deferred, time savings, roadmap).
+
+**Key recommendations:**
+- P0: meshoptimizer (offline geometry processing).
+- P1: cgltf (glTF import), shader tooling (offline).
+- Deferred: VMA, FidelityFX, Render Graph.
+
+**Estimated savings:** ~35–49 engineer-days.
+
+**Status:** APPROVED by Architect — awaiting integration decision.
