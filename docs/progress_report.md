@@ -408,3 +408,26 @@ godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn -- --test
 
 ### ملاحظات
 - `.gomlet` (25 MB) أصل ثنائي مولد **دون اتصال**؛ أعِد توليده عبر `tools/meshlet_import/build.ps1` (يتطلب MSVC فقط). وقت التشغيل مستقل تمامًا عن meshoptimizer.
+## 25. GOTOT-014 - GPU Scene Manager (PASS)
+
+### ملخص
+GPU Scene Manager: قاعدة بيانات مشهد ساكنة على الـ GPU (SSBO SoA)، سجلات instances بحجم 64 بايت، مساحة IDs موحدة، تحديثات مدفوعة بالـ GPU عبر حلقة مخزن مؤقت (ring buffer) 16 MB مع compute apply (add/remove/move) وبدون قراءة رجوعية في المسار الحرج، وتسليم draw-records بحجم 32 بايت إلى مسارات 013/015 (interop عبر marked ordinal + LOD config).
+
+### الأدلة (014 PASS - harness gt_014a)
+- **C1 GPU Scene DB:** alloc(1,048,576) → active=1048576، snap=1048576، ssbo=121,635,140 B.
+- **C2 GPU-driven update:** ring 16 MB، 20,000 deltas (5000 adds / 5000 removes / 10000 moves) عبر compute apply واحد، ring consumed 1,600,000 B ثم reset؛ لا قراءات رجوعية في المسار الحرج (عدّادات تحقق 4 بايت فقط).
+- **C3 013 hand-off:** صحة ordinals داخل نطاقات LOD ordinal لكل instance + إعادة إنتاج تواقيع 013 حرفيًا (fnv=3106528256).
+- **C4 011 compat:** 4096 instances عبر 8 mesh refs → snap=4096، distinct=8، groups=min(8,5)=5 draw calls.
+- **C5 DET:** sig=v14|...|d1 ثابت حرفيًا عبر تشغيلين كاملين + double-dispatch داخل الباينري.
+- **C6 Regressions 001A-013:** الكل PASS (smoke/007/008A/008B/009/010/011/013 exit 0).
+- **C7 Benchmarks:** instances/active/applied/dispatch_seq/ring bytes/ssbo أعلاه.
+- **C8:** صفر أخطاء RID (لا ERROR في خرج التشغيل).
+
+### أخطاء اكتُشفت وأُصلحت
+- Compute indexing: base السجل كان id*16 vec4-units بدل id*4 (سبب active=258048 خاطئ).
+- Snapshot base: gi*8 بدل gi*2 (uvec4 units).
+- buffer_clear + submit/sync لنظام إعادة الضبط الحتمي للعدادات.
+- Omitted direct record upload path consistency: تم توحيد تخطيط السجل بين set_instances و deltas.
+
+### ملاحظة
+C3 الاعتماد على Overview: 013 hand-off تعني أن draw-record ordinals من مدير المشهد تقع داخل نطاقات الـ meshlet ordinals الخاصة بـ 013، والتوقيع (cull-raster fnv) يبقى مطابقًا مع وجود المدير.
