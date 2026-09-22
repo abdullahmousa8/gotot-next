@@ -337,3 +337,19 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 - **مسار 010 (indexed, stride 20)** يبقى قيد أن G==active أو PER_MESH — التجميع لا يمس الرسم المفهرس عند غياب الحاجة للتصغير.
 - **CPU readback** (pixels + depth كامل الإطار ~8MB لكل منهما) ما زال جسر تحقق وليس مسار عرض إنتاجيًا.
 - الـ getters الخمسة والـ enum **test-only** مرشّحون لاحقًا للدمج في استعلام قدرات واحد (سجّل فقط).
+
+## 20. GOTOT-011 demo تفاعلي (GDScript فقط)
+
+- `main_demo.gd/.tscn` + `camera_controller.gd` + `hud.gd` — **بدون أي تغيير C++**: 512 instances (8×8×8) / 64 meshes، كاميرا FPS (WASD + Shift/Ctrl + mouse look)، `R` يبدّل الاستراتيجية حيًا (REORDERED افتراضي)، `F12` لقطة نافذة، HUD حي (FPS، visible، batches، groups، draw calls، strategy).
+- وضع الأدلة `-- --test`: مسح كاميرا مبرمج (160 إطار) ثم تحقق grouping + DET (تكرار ممرٍّ كامل مع كاميرا مجمّدة وممرّي warm-up — لأن cull يعتمد على عمق الإطار السابق فيتحرك مع الكاميرا)، لقطة `demo_window.png`، ثم quit 0.
+- **الدليل:** `evidence visible=497 meshes=64 batches=64 groups=5 draw_calls=5 indirect=5 strategy=REORDERED`؛ `EVIDENCE OK`؛ `screenshot saved=true`؛ `PASS` (exit 0).
+
+### أمثلة التشغيل
+```powershell
+# harness الأدلة (الاستراتيجية عبر --strategy=0|1|2)
+godot...console.exe --path ...demo\gpu_smoke res://main_011.tscn -- --strategy=0 --png=... --sigf=...
+# demo تفاعلي
+godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn
+# demo بأدلة ذاتية
+godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn -- --test
+```
