@@ -228,10 +228,12 @@ Completed through **011**. Planned direction:
 008  Real GPU Mesh Buffer        ✅ (008A proof + 008B multi-instance)
 009  Real Depth Buffer           ✅ (009A/009B proof)
 010  Batch Instance Rendering    ✅ (010 proof — 3 meshes, multi-draw)
-011  Multi-Draw / Multi-Batch    ✅ (011 proof — ≤5 grouped draws, reorder, dynamic draw count)
-012  Production HZB              ⏳ (SPEC pending)
-013  GPU Scene Manager
-014  Render Graph
+011  Multi-Draw / Multi-Batch    ✅ (12.8x reduction)
+012  Production HZB              ⏸️ DEFERRED (projection fix needed)
+013  Meshlets / LOD              ⏳ (SPEC pending)
+014  GPU Scene Manager           ⏳
+015  Render Graph                ⏳
+016+ Materials / Lighting / Shadows
 ─────────────────────────────────────────
      GototMesh → Meshlets → Meshlet Culling → LOD
               → Virtual Shadows → Hybrid GI
