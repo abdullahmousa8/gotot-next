@@ -11,7 +11,7 @@
 [![Renderer](https://img.shields.io/badge/renderer-Vulkan-AC162C?logo=vulkan&logoColor=white)](#-architecture)
 [![Language](https://img.shields.io/badge/language-C%2B%2B%20%7C%20GDScript-00599C?logo=cplusplus&logoColor=white)](#-repository-layout)
 [![Status](https://img.shields.io/badge/status-research%20prototype-orange)](#-project-status)
-[![Milestones](https://img.shields.io/badge/milestones-12%20passed-brightgreen)](#-milestones)
+[![Milestones](https://img.shields.io/badge/milestones-14%20passed-brightgreen)](#-milestones)
 
 [English](#-english) · [العربية](#-نظرة-عامة-بالعربية) · [Progress report](docs/progress_report.md) · [Engine spec](docs/engine_spec_v2.md)
 
@@ -103,6 +103,7 @@ The **billboard path** (GOTOT-005 / 007A) and the **real mesh path** (GOTOT-008A
 | 008B | Multi-Instance Mesh Proof | ✅ PASS | 10,000 instances; GPU==CPU visible; drawargs + full-frame determinism; `sig=v3905\|36\|3905\|g25765\|c0\|5004\|9997\|h176\|m0\|3905\|f150` |
 | 009 | Real Depth Buffer | ✅ PASS | `D32_SFLOAT` depth test/write; 009A fg==green (458/458), 009B masked_eq 458/458 bad=0; DET stable (009A/009B) |
 | 010 | Batch Instance Rendering | ✅ PASS | 3 meshes (cube/tetra/octa) × 2 instances; batch_count=3; args deterministic `[36,2,0,0,0][12,2,36,8,2][24,2,48,12,4]`; depth `dC<dT<dO`; DET stable |
+| 011 | Multi-Draw / Multi-Batch | ✅ PASS | 64 meshes / 128 instances; PER_MESH→64 draws, GROUPED/REORDERED→**5** groups/draw_calls/indirect; `batch_order==[0..63]`; dynamic GPU-written draw count; DET stable; sigs `st0/1/2` all pixel-identical |
 
 See [`docs/progress_report.md`](docs/progress_report.md) for the full technical report (Arabic).
 
@@ -122,7 +123,10 @@ gotot-next/
 │   ├── main_008.gd / main_008.tscn#   008A real geometry (cubes)
 │   ├── main_008b.gd / main_008b.tscn# 008B multi-instance mesh
 │   ├── main_009.gd / main_009.tscn#   009 real depth buffer (009A/009B)
-│   └── main_010.gd / main_010.tscn#   010 batch instance rendering
+│   ├── main_010.gd / main_010.tscn#   010 batch instance rendering
+│   ├── main_011.gd / main_011.tscn#   011 multi-draw / multi-batch (a/b/c strategies)
+│   ├── main_demo.gd / main_demo.tscn# 011 interactive demo
+│   └── camera_controller.gd / hud.gd# demo FPS camera + HUD
 ├── docs/
 │   ├── engine_spec_v2.md          # Architecture specification (v2.0)
 │   ├── progress_report.md         # Full progress report (Arabic)
@@ -186,6 +190,15 @@ godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://m
 
 # GOTOT-010 — batch instance rendering (3 meshes, multi-draw)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_010.tscn
+
+# GOTOT-011 — multi-draw / multi-batch (--strategy: 0=per_mesh 1=grouped 2=reordered)
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_011.tscn -- --strategy=2
+
+# GOTOT-011 interactive demo (WASD + mouse, R switches strategy live, F12 screenshot)
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_demo.tscn
+
+# GOTOT-011 interactive demo — self-evidence run (scripted sweep + screenshot, exits 0)
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_demo.tscn -- --test
 ```
 
 Each demo prints its own objective evidence and finishes with `PASS` or `FAIL code=...`.
@@ -209,14 +222,14 @@ Each demo prints its own objective evidence and finishes with `PASS` or `FAIL co
 
 ### Roadmap
 
-Completed through **009**. Planned direction:
+Completed through **011**. Planned direction:
 
 ```
 008  Real GPU Mesh Buffer        ✅ (008A proof + 008B multi-instance)
 009  Real Depth Buffer           ✅ (009A/009B proof)
 010  Batch Instance Rendering    ✅ (010 proof — 3 meshes, multi-draw)
-    011  Multi-Draw / Multi-Batch    ⏳ (SPEC pending)
-012  Production HZB
+011  Multi-Draw / Multi-Batch    ✅ (011 proof — ≤5 grouped draws, reorder, dynamic draw count)
+012  Production HZB              ⏳ (SPEC pending)
 013  GPU Scene Manager
 014  Render Graph
 ─────────────────────────────────────────
@@ -285,10 +298,13 @@ Dependency/third-party licensing (permissive-only runtime policy, legal review p
 | 008B | إثبات الرسم المتعدد (10K mesh) | ✅ |
 | 009 | مخزن العمق الحقيقي (`D32_SFLOAT`) | ✅ |
 | 010 | رسم الدفعات (batch instance، 3 أشكال) | ✅ |
+| 011 | Multi-Draw / Multi-Batch (≤5 دفعات مجمّعة + reorder) | ✅ |
+| 011 | Demo تفاعلي (main_demo + كاميرا FPS + HUD) | ✅ |
 
 **008A تحديدًا** يثبت أن المشروع يستطيع رسم **هندسة 3D حقيقية** (vertex buffer + index buffer + vertex format + indexed indirect draw) لمكعب 8 رؤوس/36 فهرسًا، معتمِدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة، وبقي مسار الـ billboard القديم كما هو دون أي استبدال.
 ثم **008B** يمدّ ذلك إلى **10,000 instance** بنفس mesh، و**009** يضيف **مخزن العمق الحقيقي `D32_SFLOAT`** (عمق كتابةً واختبارًا) ويُثبت ترتيب العمق بين المكعبات (fg==green، rim ضمن الحدود، DET ثابت).
 ثم **010** يوسّع المسار إلى **3 meshes مختلفة** (cube/tetra/octa) × **مثيلان لكل mesh** عبر **جدول meshes** على GPU + **batch assembly** (count pass + prefix-sum) + **multi-draw** لكل batch، مع الحفاظ على ترتيب العمق من 009 (dC < dT < dO).
+ثم **011** يرتقي إلى **64 meshes / 128 instances** مع **parallel prefix-sum** على مستوى workgroup، وتجميع الدفعات إلى **≤5 draw_calls** (استراتيجيات PER_MESH/GROUPED/REORDERED بالتبديل الحي)، **draw count ديناميكي GPU-written**، و**reorder** تصاعدي حسب mesh_id — مع ثبات البكسلات حرفيًا بين الاستراتيجيات (g=178 b=102 o=282 k=11525) وDET ثابت. يليه **demo تفاعلي** (main_demo + camera_controller + hud) بتبديل الاستراتيجية مباشرة من الكيبورد.
 
 **البناء** (من مجلد مصدر Godot):
 
