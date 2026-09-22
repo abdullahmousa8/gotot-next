@@ -105,6 +105,7 @@ The **billboard path** (GOTOT-005 / 007A) and the **real mesh path** (GOTOT-008A
 | 010 | Batch Instance Rendering | ✅ PASS | 3 meshes (cube/tetra/octa) × 2 instances; batch_count=3; args deterministic `[36,2,0,0,0][12,2,36,8,2][24,2,48,12,4]`; depth `dC<dT<dO`; DET stable |
 | 011 | Multi-Draw / Multi-Batch | ✅ PASS | 64 meshes / 128 instances; PER_MESH→64 draws, GROUPED/REORDERED→**5** groups/draw_calls/indirect; `batch_order==[0..63]`; dynamic GPU-written draw count; DET stable; sigs `st0/1/2` all pixel-identical |
 | 013 | Meshlets / LOD / Cluster Culling | ✅ PASS | 1M-tri LOD0 (1,048,576), 18,613 meshlets; instance LODs `[0,1,1,2,2,0]`; 3-pass software rasterizer with **coherent 64-bit winner** `covered==winner==76,685`; per-LOD px `[5853,1265,559566]`; DET stable (`d1`) |
+| 014 | GPU Scene Manager | ✅ PASS | SSBO SoA scene DB, 64-B records, unified ID space; **1,048,576 instances** (`active=1048576`, ssbo=121.6 MB); 16-MB ring + compute apply (20,000 deltas, zero critical-path readback); 013 ordinal hand-off (fnv=3106528256 preserved); 4096 instances/8 meshes → **5 draw calls**; DET stable (`sig=v14`, `d1`) |
 
 See [`docs/progress_report.md`](docs/progress_report.md) for the full technical report (Arabic).
 
@@ -127,6 +128,7 @@ gotot-next/
 │   ├── main_010.gd / main_010.tscn#   010 batch instance rendering
 │   ├── main_011.gd / main_011.tscn#   011 multi-draw / multi-batch (a/b/c strategies)
 │   ├── main_013.gd / main_013.tscn#   013 meshlets / LOD / cluster culling
+│   ├── main_014.gd / main_014.tscn#   014 GPU scene manager (SSBO scene DB)
 │   ├── mesh_013_torus.gomlet        #   013 offline-built meshlet asset (25 MB)
 │   ├── main_demo.gd / main_demo.tscn# 011 interactive demo
 │   └── camera_controller.gd / hud.gd# demo FPS camera + HUD
@@ -209,6 +211,9 @@ godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://m
 
 # GOTOT-013 — meshlets + LOD + cluster culling (uses mesh_013_torus.gomlet)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_013.tscn
+
+# GOTOT-014 — GPU scene manager (SSBO scene DB, ≥1M instances, GPU-driven updates)
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_014.tscn
 ```
 
 Rebuild the offline meshlet asset (MSVC required; runtime does not use meshoptimizer):
@@ -238,7 +243,7 @@ Each demo prints its own objective evidence and finishes with `PASS` or `FAIL co
 
 ### Roadmap
 
-Completed through **013**. Planned direction:
+Completed through **014**. Planned direction:
 
 ```
 008  Real GPU Mesh Buffer        ✅ (008A proof + 008B multi-instance)
@@ -247,7 +252,7 @@ Completed through **013**. Planned direction:
 011  Multi-Draw / Multi-Batch    ✅ (12.8x reduction)
 012  Production HZB              ⏸️ DEFERRED (projection fix needed)
 013  Meshlets / LOD              ✅ (013 proof — meshlets + LOD + cluster culling)
-014  GPU Scene Manager           ⏳
+014  GPU Scene Manager           ✅ (014 proof — SSBO scene DB, ≥1M instances)
 015  Render Graph                ⏳
 016+ Materials / Lighting / Shadows
 ─────────────────────────────────────────
@@ -321,12 +326,14 @@ Dependency/third-party licensing (permissive-only runtime policy, legal review p
 | 011 | Multi-Draw / Multi-Batch (≤5 دفعات مجمّعة + reorder) | ✅ |
 | 011 | Demo تفاعلي (main_demo + كاميرا FPS + HUD) | ✅ |
 | 013 | Meshlets + LOD + Cluster Culling | ✅ |
+| 014 | GPU Scene Manager (SSBO Scene DB) | ✅ |
 
 **008A تحديدًا** يثبت أن المشروع يستطيع رسم **هندسة 3D حقيقية** (vertex buffer + index buffer + vertex format + indexed indirect draw) لمكعب 8 رؤوس/36 فهرسًا، معتمِدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة، وبقي مسار الـ billboard القديم كما هو دون أي استبدال.
 ثم **008B** يمدّ ذلك إلى **10,000 instance** بنفس mesh، و**009** يضيف **مخزن العمق الحقيقي `D32_SFLOAT`** (عمق كتابةً واختبارًا) ويُثبت ترتيب العمق بين المكعبات (fg==green، rim ضمن الحدود، DET ثابت).
 ثم **010** يوسّع المسار إلى **3 meshes مختلفة** (cube/tetra/octa) × **مثيلان لكل mesh** عبر **جدول meshes** على GPU + **batch assembly** (count pass + prefix-sum) + **multi-draw** لكل batch، مع الحفاظ على ترتيب العمق من 009 (dC < dT < dO).
 ثم **011** يرتقي إلى **64 meshes / 128 instances** مع **parallel prefix-sum** على مستوى workgroup، وتجميع الدفعات إلى **≤5 draw_calls** (استراتيجيات PER_MESH/GROUPED/REORDERED بالتبديل الحي)، **draw count ديناميكي GPU-written**، و**reorder** تصاعدي حسب mesh_id — مع ثبات البكسلات حرفيًا بين الاستراتيجيات (g=178 b=102 o=282 k=11525) وDET ثابت. يليه **demo تفاعلي** (main_demo + camera_controller + hud) بتبديل الاستراتيجية مباشرة من الكيبورد.
 ثم **013** يثبت مسار **meshlets + LOD + cluster culling** كاملًا: توليد بيانات `.gomlet` دون اتصال (meshoptimizer v1.2 الأدوات فقط، وقت التشغيل مستقل)، LOD تلقائي يتبدل مع المسافة `[0,1,1,2,2,0]`، culling للمجموعات (frustum + مخروط + LOD)، وراسم شاشة برمجي بثلاثة ممرات مع **فائز متماسك 64-bit** — دليل `covered == winner == 76,685` بكسلًا، وتغطية لكل LOD، وDET ثابت (`d1`). المشهد: 1M مثلث في LOD0 و18,613 meshlet.
+ثم **014** يضيف **GPU Scene Manager**: قاعدة بيانات مشهد على الـ GPU (SSBO SoA، سجلات 64 بايت، مساحة IDs موحدة) تتحمل **1,048,576 instance**، مع تحديثات مدفوعة بالـ GPU عبر **ring buffer 16 MB** و compute apply (add/remove/move) دون قراءة رجوعية في المسار الحرج، وتسليم draw-records إلى مسار الـ meshlets (013) مع الحفاظ على التوقيع (fnv=3106528256)، وتوافق 011 (4096 instances عبر 8 meshes → **5 draw calls**)، وثبات DET (`sig=v14` ثابت عبر تشغيلين).
 
 **البناء** (من مجلد مصدر Godot):
 
@@ -341,6 +348,7 @@ scons platform=windows target=editor dev_build=yes `
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn -- --front-only
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_013.tscn
+godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_014.tscn
 ```
 
 **ملاحظات مهمة:**
