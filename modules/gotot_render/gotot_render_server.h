@@ -148,6 +148,45 @@ class GototRenderServer : public Object {
 	RID mesh_010_vertex_array;
 	RID mesh_010_index_array;
 
+	// GOTOT-011: multi-batch grouping + dynamic indirect count. ADDS (over 010,
+	// additive only) a batch strategy toggle (PER_MESH / GROUPED / REORDERED), a
+	// workgroup-parallel prefix-sum batch assembly pass, <=5 batched draw
+	// commands via a procedural (non-indexed) indirect path, and a dynamic
+	// (GPU-written) draw count used through the draw_list_draw_indirect fallback
+	// (SPEC 011 section 3.2: this RD has no indirect-count variant, so the count
+	// is read back from batch_total and passed as draw_count).
+	//
+	// Strategies (default REORDERED):
+	//   PER_MESH  - one indirect command per distinct visible mesh (baseline,
+	//               byte-identical to 010: 64 meshes -> 64 draw commands).
+	//   GROUPED   - active meshes partitioned into <=5 contiguous groups; one
+	//               procedural non-indexed command per group draws every member
+	//               mesh's instances (64 meshes -> 5 draw commands).
+	//   REORDERED - same grouping, draw order explicitly sorted ascending by
+	//               mesh_id (proven via gpu_mesh_get_batch_order()).
+	// When grouping cannot reduce the command count (<=5 distinct visible meshes,
+	// i.e. group_count == active) the assembler falls back to the 010 indexed
+	// per-mesh multi-draw so every pre-011 scene (incl. main_010) renders
+	// byte-identically regardless of the configured strategy.
+	enum GototBatchStrategy {
+		GOTOT_BATCH_STRATEGY_PER_MESH = 0,
+		GOTOT_BATCH_STRATEGY_GROUPED = 1,
+		GOTOT_BATCH_STRATEGY_REORDERED = 2,
+	};
+	int mesh_batch_strategy = GOTOT_BATCH_STRATEGY_REORDERED;
+	bool last_used_group_draw = false;
+	int last_group_count = 0;
+	RID mesh_vertex_storage_buffer; // storage mirror of the shared vertex buffer
+	RID mesh_index_storage_buffer;  // storage mirror of the shared index buffer
+	RID group_args_buffer;          // VkDrawIndirectCommand[64] non-indexed (16B)
+	RID group_member_count_buffer;  // uint[64] members per group
+	RID group_member_list_buffer;   // uint[64*64] member mesh ids per group
+	int64_t group_vertex_format = -1;
+	RID group_vertex_array;
+	RID group_batch_shader;
+	RID group_batch_pipeline;
+	RID group_batch_uniform_set;
+
 	void _destroy_gpu_scene();
 	void _destroy_mesh();
 	void _destroy_mesh_batch();
@@ -283,6 +322,27 @@ public:
 	PackedInt32Array gpu_mesh_get_batch_args(int p_batch_index);
 	// The flat color the batch fragment shader uses for the given mesh.
 	Color gpu_mesh_get_mesh_color(int p_mesh_id) const;
+
+	// GOTOT-011: batch strategy + multi-batch evidence API (TEST-ONLY). All of
+	// the 011 extra getters below are pure readback bridges of the GPU state
+	// produced by the previous gpu_mesh_batch_dispatch. See GototBatchStrategy.
+	// Sets the batch strategy for the NEXT dispatch. Returns false when invalid.
+	bool gpu_mesh_set_batch_strategy(int p_strategy);
+	// The strategy currently configured (default REORDERED).
+	int gpu_mesh_get_batch_strategy() const;
+	// Number of BATCH GROUPS produced by the last dispatch (== number of draw
+	// commands when grouping is active; >=1 whenever any mesh is visible).
+	int gpu_mesh_get_batch_group_count() const;
+	// Draw order of the visible meshes, flattened per group (group g's members
+	// are listed first). Under REORDERED this is ascending mesh_id order.
+	PackedInt32Array gpu_mesh_get_batch_order();
+	// The draw count consumed by draw_list_draw_indirect. It originates on the
+	// GPU (batch_total readback) and is frame-varying - the SPEC 011 section 3.2
+	// fallback for the missing vkCmdDrawIndexedIndirectCount API.
+	int gpu_mesh_get_indirect_count() const;
+	// Number of indirect draw commands executed by the last gpu_mesh_batch_draw
+	// (64 under PER_MESH with 64 visible meshes; <=5 under GROUPED/REORDERED).
+	int gpu_mesh_get_draw_call_count() const;
 };
 
 #endif

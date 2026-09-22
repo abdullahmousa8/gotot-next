@@ -583,22 +583,30 @@ void main() {
 }
 )";
 
-// GOTOT-010 pass 2: single-thread prefix sum + batch assembly. Computes
-// batch_offset[mesh] (prefix sum over batch_count), copies each mesh's staged
-// orig indices into the concatenated batch_instances[], and packs a COMPACT
-// batch_args[] (dense VkDrawIndexedIndirectCommand[64]) so the multi-draw can
-// use draw_count == batch_total. Single thread keeps the output byte-exactly
-// deterministic across runs (DET signature stability).
+// GOTOT-011 pass 2: workgroup-parallel prefix sum + batch assembly + grouping.
+// One workgroup (64 threads = one per mesh table slot) computes:
+//   1. exClusive batch offsets via a Hillis-Steele inclusive scan (the 011
+//      replacement for the 010 single-thread loop) - fully deterministic, same
+//      output as the old prefix loop wherever grouping is a no-op,
+//   2. the concatenated batch_instances[] and the dense per-mesh batch_args[]
+//      (identical to 010 for regression byte-compat),
+//   3. a group partition (G groups, G = active for PER_MESH, min(active, 5)
+//      for GROUPED/REORDERED) plus per-group non-indexed VkDrawIndirectCommand
+//      records and an ordered member mesh-id list (batch reorder evidence).
+// The instance copy per mesh is done by each mesh's own lane; the group tail is
+// finished by lane 0 (fixed loop over <=64 entries, deterministic). The final
+// batch_total holds the number of commands to draw (G when merged, else active
+// - a GPU-written, frame-varying count consumed by draw_list_draw_indirect).
 const char *gpu_mesh_batch_assemble_glsl = R"(
 #version 450
 #extension GL_EXT_samplerless_texture_functions : enable
 
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant, std430) uniform BatchAssembleParams {
 	uint mesh_capacity;
 	uint scratch_stride;
-	uint pad0;
+	uint strategy;
 	uint pad1;
 }
 params;
@@ -649,31 +657,117 @@ layout(std430, set = 0, binding = 6) buffer BatchTotalBuffer {
 }
 batch_total;
 
+layout(std430, set = 0, binding = 7) buffer GroupArgsBlock {
+	uint args[256];
+}
+group_args;
+
+layout(std430, set = 0, binding = 8) buffer GroupMemberCountBuffer {
+	uint member_count[];
+}
+group_member_count;
+
+layout(std430, set = 0, binding = 9) buffer GroupMemberListBuffer {
+	uint member_list[];
+}
+group_member_list;
+
+shared uint s_count[64];
+shared uint s_scan[64];
+shared uint s_buf[64];
+shared uint s_actscan[64];
+shared uint s_actbuf[64];
+shared uint s_actid[64];
+
 void main() {
-	if (gl_GlobalInvocationID.x != 0u) {
-		return;
+	uint tid = gl_LocalInvocationID.x;
+	uint M = min(params.mesh_capacity, 64u);
+	uint c = (tid < M) ? batch_count.count[tid] : 0u;
+	s_count[tid] = c;
+	s_buf[tid] = (c > 0u) ? 1u : 0u;
+	barrier();
+
+	// Workgroup-parallel inclusive prefix sums (Hillis-Steele scan).
+	s_scan[tid] = s_count[tid];
+	s_actscan[tid] = s_buf[tid];
+	barrier();
+	for (uint d = 1u; d < 64u; d <<= 1u) {
+		uint cv = s_scan[tid];
+		uint aa = s_actscan[tid];
+		uint pv = (tid >= d) ? s_scan[tid - d] : 0u;
+		uint pa = (tid >= d) ? s_actscan[tid - d] : 0u;
+		barrier();
+		s_buf[tid] = cv + pv;
+		s_actbuf[tid] = aa + pa;
+		barrier();
+		s_scan[tid] = s_buf[tid];
+		s_actscan[tid] = s_actbuf[tid];
+		barrier();
 	}
-	uint running = 0u;
-	uint argidx = 0u;
-	for (uint m = 0u; m < params.mesh_capacity; m++) {
-		uint c = batch_count.count[m];
-		batch_offset.offset[m] = running;
-		for (uint k = 0u; k < c; k++) {
-			batch_instances.instances[running + k] = scratch.data[m * params.scratch_stride + k];
-		}
+
+	if (tid < M) {
+		uint excl = (tid > 0u) ? s_scan[tid - 1u] : 0u;
+		uint actexcl = (tid > 0u) ? s_actscan[tid - 1u] : 0u;
+		batch_offset.offset[tid] = excl;
 		if (c > 0u) {
-			uint base = argidx * 5u;
-			GototMeshDescStd430 d = mesh_table.table[m];
+			for (uint k = 0u; k < c; k++) {
+				batch_instances.instances[excl + k] = scratch.data[tid * params.scratch_stride + k];
+			}
+			uint base = actexcl * 5u;
+			GototMeshDescStd430 d = mesh_table.table[tid];
 			batch_args.args[base + 0u] = d.index_count;
 			batch_args.args[base + 1u] = c;
 			batch_args.args[base + 2u] = d.first_index;
 			batch_args.args[base + 3u] = uint(d.vertex_offset);
-			batch_args.args[base + 4u] = running;
-			argidx++;
+			batch_args.args[base + 4u] = excl;
+			s_actid[actexcl] = tid;
 		}
-		running += c;
 	}
-	batch_total.total = argidx;
+	barrier();
+
+	if (tid != 0u) {
+		return;
+	}
+
+	uint actn = (M > 0u) ? s_actscan[M - 1u] : 0u;
+	if (actn == 0u) {
+		batch_total.total = 0u;
+		return;
+	}
+
+	uint G = actn;
+	if (params.strategy == 1u || params.strategy == 2u) {
+		G = min(actn, 5u);
+	}
+	if (G == 0u) {
+		G = 1u;
+	}
+
+	uint base = actn / G;
+	uint rem = actn % G;
+
+	for (uint g = 0u; g < G; g++) {
+		uint size = base + ((g < rem) ? 1u : 0u);
+		uint start = g * base + min(g, rem);
+		uint inst = 0u;
+		uint mvc = 0u;
+		for (uint r = 0u; r < size; r++) {
+			uint m = s_actid[start + r];
+			inst += batch_count.count[m];
+			mvc = max(mvc, mesh_table.table[m].index_count);
+			group_member_list.member_list[g * 64u + r] = m;
+		}
+		group_member_count.member_count[g] = size;
+		uint first_instance = batch_offset.offset[s_actid[start]];
+		uint base4 = g * 4u;
+		group_args.args[base4 + 0u] = mvc;
+		group_args.args[base4 + 1u] = inst;
+		group_args.args[base4 + 2u] = 0u;
+		group_args.args[base4 + 3u] = first_instance;
+	}
+
+	bool merged = (G < actn);
+	batch_total.total = merged ? G : actn;
 }
 )";
 
@@ -726,9 +820,15 @@ void main() {
 }
 )";
 
-// GOTOT-010: per-mesh flat color (mesh color table binding 4).
+// GOTOT-010: per-mesh flat color (mesh color table binding 4). GOTOT-011 adds
+// early-Z: layout(early_fragment_tests) lets the fixed-function depth/stencil
+// reject occluded fragments BEFORE shading (the depth test/write pipeline state
+// is unchanged - surviving pixels keep the exact same output/depth, so the 010
+// evidence photocopy is unaffected).
 const char *gpu_mesh_batch_frag_glsl = R"(
 #version 450
+
+layout(early_fragment_tests) in;
 
 layout(location = 1) flat in uint v_mesh_id;
 
@@ -741,6 +841,90 @@ layout(location = 0) out vec4 out_color;
 
 void main() {
 	out_color = mesh_colors.colors[v_mesh_id];
+}
+)";
+
+// GOTOT-011: procedural (non-indexed) batch vertex shader used by the GROUPED /
+// REORDERED multi-batch draw. One VkDrawIndirectCommand covers every instance of
+// every member mesh of a group: command.vertexCount == the largest member
+// index_count and each instance picks its OWN sub-range through the mesh table;
+// out-of-range vertex indices are pushed outside the clip volume (fully clipped,
+// no raster, no depth write). The shared vertex/index data is read as SSBO
+// storage mirrors (RD vertex/index buffer owners cannot be bound as storage).
+const char *gpu_mesh_group_batch_vert_glsl = R"(
+#version 450
+
+struct GototMeshDescStd430 {
+	uint index_buffer_slot;
+	uint vertex_buffer_slot;
+	uint index_count;
+	uint vertex_count;
+	uint first_index;
+	int vertex_offset;
+	uint reserved0;
+	uint reserved1;
+};
+
+layout(std430, set = 0, binding = 0) buffer BatchInstancesBuffer {
+	uint instances[];
+}
+batch_instances;
+
+layout(std430, set = 0, binding = 1) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std140, set = 0, binding = 2) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+layout(std430, set = 0, binding = 3) buffer MeshIdBuffer {
+	uint mesh_id[];
+}
+meshids;
+
+layout(std430, set = 0, binding = 5) buffer MeshTableBlock {
+	GototMeshDescStd430 table[64];
+}
+mesh_table;
+
+layout(std430, set = 0, binding = 6) buffer VertexDataBuffer {
+	float data[];
+}
+vertex_data;
+
+layout(std430, set = 0, binding = 7) buffer IndexDataBuffer {
+	uint data[];
+}
+index_data;
+
+layout(location = 1) flat out uint v_mesh_id;
+
+void main() {
+	uint orig = batch_instances.instances[gl_InstanceIndex];
+	uint m = meshids.mesh_id[orig];
+	GototMeshDescStd430 d = mesh_table.table[m];
+	if (gl_VertexIndex >= d.index_count) {
+		gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
+		v_mesh_id = m;
+		return;
+	}
+	uint li = index_data.data[d.first_index + gl_VertexIndex];
+	int vi = d.vertex_offset + int(li);
+	vec3 p = vec3(vertex_data.data[vi * 3 + 0], vertex_data.data[vi * 3 + 1], vertex_data.data[vi * 3 + 2]);
+	vec4 ts = transforms.position_scale[orig];
+	vec3 world = ts.xyz + p * ts.w;
+	gl_Position = viewdata.vp * vec4(world, 1.0);
+	v_mesh_id = m;
 }
 )";
 } // namespace
@@ -801,6 +985,15 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_draw_counts"), &GototRenderServer::gpu_mesh_get_draw_counts);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_args", "batch_index"), &GototRenderServer::gpu_mesh_get_batch_args);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_mesh_color", "mesh_id"), &GototRenderServer::gpu_mesh_get_mesh_color);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_set_batch_strategy", "strategy"), &GototRenderServer::gpu_mesh_set_batch_strategy);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_strategy"), &GototRenderServer::gpu_mesh_get_batch_strategy);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_group_count"), &GototRenderServer::gpu_mesh_get_batch_group_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_order"), &GototRenderServer::gpu_mesh_get_batch_order);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_indirect_count"), &GototRenderServer::gpu_mesh_get_indirect_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_draw_call_count"), &GototRenderServer::gpu_mesh_get_draw_call_count);
+	ClassDB::bind_integer_constant("GototRenderServer", "GototBatchStrategy", "GOTOT_BATCH_STRATEGY_PER_MESH", GOTOT_BATCH_STRATEGY_PER_MESH);
+	ClassDB::bind_integer_constant("GototRenderServer", "GototBatchStrategy", "GOTOT_BATCH_STRATEGY_GROUPED", GOTOT_BATCH_STRATEGY_GROUPED);
+	ClassDB::bind_integer_constant("GototRenderServer", "GototBatchStrategy", "GOTOT_BATCH_STRATEGY_REORDERED", GOTOT_BATCH_STRATEGY_REORDERED);
 }
 
 GototRenderServer::GototRenderServer() {
@@ -844,6 +1037,10 @@ bool GototRenderServer::ensure_gpu_device() {
 
 void GototRenderServer::_destroy_mesh_batch() {
 	if (rendering_device != nullptr) {
+		if (group_batch_uniform_set.is_valid()) {
+			rendering_device->free_rid(group_batch_uniform_set);
+			group_batch_uniform_set = RID();
+		}
 		if (mesh_batch_uniform_set.is_valid()) {
 			rendering_device->free_rid(mesh_batch_uniform_set);
 			mesh_batch_uniform_set = RID();
@@ -924,11 +1121,45 @@ void GototRenderServer::_destroy_mesh_batch() {
 			rendering_device->free_rid(mesh_id_buffer);
 			mesh_id_buffer = RID();
 		}
+		if (group_batch_pipeline.is_valid()) {
+			rendering_device->free_rid(group_batch_pipeline);
+			group_batch_pipeline = RID();
+		}
+		if (group_batch_shader.is_valid()) {
+			rendering_device->free_rid(group_batch_shader);
+			group_batch_shader = RID();
+		}
+		if (group_vertex_array.is_valid()) {
+			rendering_device->free_rid(group_vertex_array);
+			group_vertex_array = RID();
+		}
+		if (group_member_list_buffer.is_valid()) {
+			rendering_device->free_rid(group_member_list_buffer);
+			group_member_list_buffer = RID();
+		}
+		if (group_member_count_buffer.is_valid()) {
+			rendering_device->free_rid(group_member_count_buffer);
+			group_member_count_buffer = RID();
+		}
+		if (group_args_buffer.is_valid()) {
+			rendering_device->free_rid(group_args_buffer);
+			group_args_buffer = RID();
+		}
+		if (mesh_index_storage_buffer.is_valid()) {
+			rendering_device->free_rid(mesh_index_storage_buffer);
+			mesh_index_storage_buffer = RID();
+		}
+		if (mesh_vertex_storage_buffer.is_valid()) {
+			rendering_device->free_rid(mesh_vertex_storage_buffer);
+			mesh_vertex_storage_buffer = RID();
+		}
 	}
 	mesh_table_count = 0;
 	mesh_next_vertex_offset = 0;
 	mesh_next_index_offset = 0;
 	last_batch_count = 0;
+	last_group_count = 0;
+	last_used_group_draw = false;
 	gpu_mesh_batch_valid = false;
 	gpu_mesh_table_valid = false;
 }
@@ -2180,6 +2411,25 @@ bool GototRenderServer::gpu_mesh_create() {
 	rendering_device->buffer_update(mesh_vertex_buffer, 0, (uint32_t)vertex_bytes.size(), vertex_bytes.ptr());
 	rendering_device->buffer_update(mesh_index_buffer, 0, (uint32_t)index_bytes.size(), index_bytes.ptr());
 
+	// GOTOT-011: storage mirrors of the shared vertex/index buffers so the
+	// procedural (non-indexed) group draw can fetch geometry as SSBOs (RD
+	// vertex/index buffer owners cannot be bound in a uniform set).
+	{
+		Vector<uint8_t> vscap_bytes;
+		vscap_bytes.resize((uint32_t)GOTOT_MAX_MESH_VERTS * 12);
+		memcpy(vscap_bytes.ptrw(), vertex_bytes.ptr(), vertex_bytes.size());
+		mesh_vertex_storage_buffer = rendering_device->storage_buffer_create((uint32_t)(GOTOT_MAX_MESH_VERTS * 12), vscap_bytes);
+		Vector<uint8_t> iscap_bytes;
+		iscap_bytes.resize((uint32_t)GOTOT_MAX_MESH_INDICES * 4);
+		memcpy(iscap_bytes.ptrw(), index_bytes.ptr(), index_bytes.size());
+		mesh_index_storage_buffer = rendering_device->storage_buffer_create((uint32_t)(GOTOT_MAX_MESH_INDICES * 4), iscap_bytes);
+		if (mesh_vertex_storage_buffer.is_null() || mesh_index_storage_buffer.is_null()) {
+			print_error("[GOTOT-NEXT] gpu_mesh_create: storage mirror buffer_create failed.");
+			_destroy_mesh();
+			return false;
+		}
+	}
+
 	Vector<RID> src_buffers;
 	src_buffers.push_back(mesh_vertex_buffer);
 	mesh_vertex_array = rendering_device->vertex_array_create(8, mesh_vertex_format, src_buffers);
@@ -2362,9 +2612,18 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	batch_args_buffer = rendering_device->storage_buffer_create(
 			(uint32_t)(GOTOT_MESH_TABLE_SIZE * 20), Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
 	batch_total_buffer = rendering_device->storage_buffer_create(4);
+	// GOTOT-011: grouping outputs. group_args holds non-indexed
+	// VkDrawIndirectCommand[64] (16 bytes each, INDIRECT usage for the
+	// procedural multi-draw); group_member_count/list hold the batch order
+	// evidence (members per group + per-group mesh ids).
+	group_args_buffer = rendering_device->storage_buffer_create(
+			(uint32_t)(GOTOT_MESH_TABLE_SIZE * 16), Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
+	group_member_count_buffer = rendering_device->storage_buffer_create((uint32_t)(GOTOT_MESH_TABLE_SIZE * 4));
+	group_member_list_buffer = rendering_device->storage_buffer_create((uint32_t)(GOTOT_MESH_TABLE_SIZE * GOTOT_MESH_TABLE_SIZE * 4));
 	if (mesh_id_buffer.is_null() || mesh_table_buffer.is_null() || mesh_color_buffer.is_null() ||
 			batch_count_buffer.is_null() || batch_offset_buffer.is_null() || mesh_scratch_buffer.is_null() ||
-			batch_instances_buffer.is_null() || batch_args_buffer.is_null() || batch_total_buffer.is_null()) {
+			batch_instances_buffer.is_null() || batch_args_buffer.is_null() || batch_total_buffer.is_null() ||
+			group_args_buffer.is_null() || group_member_count_buffer.is_null() || group_member_list_buffer.is_null()) {
 		print_error("[GOTOT-NEXT] _init_mesh_table_gpu: buffer_create failed.");
 		return false;
 	}
@@ -2411,17 +2670,18 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 		return false;
 	}
 
-	// Pass 2: prefix sum + batch assembly.
+	// Pass 2: workgroup-parallel prefix sum + batch assembly + grouping.
 	if (!compile_compute(gpu_mesh_batch_assemble_glsl, "gotot_mesh_batch_assemble", batch_assemble_shader)) {
 		return false;
 	}
 	batch_assemble_pipeline = rendering_device->compute_pipeline_create(batch_assemble_shader);
 	Vector<RD::Uniform> as_uniforms;
-	const RID as_buffers[7] = {
+	const RID as_buffers[10] = {
 		batch_count_buffer, mesh_table_buffer, batch_offset_buffer, batch_args_buffer,
-		batch_instances_buffer, mesh_scratch_buffer, batch_total_buffer
+		batch_instances_buffer, mesh_scratch_buffer, batch_total_buffer, group_args_buffer,
+		group_member_count_buffer, group_member_list_buffer
 	};
-	for (uint32_t b = 0; b < 7; b++) {
+	for (uint32_t b = 0; b < 10; b++) {
 		RD::Uniform u;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 		u.binding = b;
@@ -2498,9 +2758,94 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 		return false;
 	}
 
+	// GOTOT-011: grouped (procedural, NON-indexed) draw pipeline. The vertex
+	// shader selects each instance's geometry sub-range through the mesh table,
+	// so one VkDrawIndirectCommand per GROUP draws all of its member instances.
+	// An EMPTY vertex format is used (geometry comes from the SSBO storage
+	// mirrors); depth test/write matches the per-mesh batch path; the fragment
+	// shader is the same early-Z one.
+	{
+		Vector<uint8_t> gvert_spirv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_VERTEX, String(gpu_mesh_group_batch_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (gvert_spirv.is_empty()) {
+			print_error("[GOTOT-NEXT] mesh group batch vertex shader compile failed:");
+			print_error(error);
+			return false;
+		}
+		Vector<uint8_t> gfrag_spirv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_FRAGMENT, String(gpu_mesh_batch_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (gfrag_spirv.is_empty()) {
+			print_error("[GOTOT-NEXT] mesh group batch fragment shader compile failed:");
+			print_error(error);
+			return false;
+		}
+		Vector<RD::ShaderStageSPIRVData> gstages;
+		RD::ShaderStageSPIRVData gvs;
+		gvs.shader_stage = RD::SHADER_STAGE_VERTEX;
+		gvs.spirv = gvert_spirv;
+		gstages.push_back(gvs);
+		RD::ShaderStageSPIRVData gfs;
+		gfs.shader_stage = RD::SHADER_STAGE_FRAGMENT;
+		gfs.spirv = gfrag_spirv;
+		gstages.push_back(gfs);
+		group_batch_shader = rendering_device->shader_create_from_spirv(gstages, "gotot_mesh_group_batch");
+		if (group_batch_shader.is_null()) {
+			print_error("[GOTOT-NEXT] mesh group batch shader_create_from_spirv failed.");
+			return false;
+		}
+
+		group_vertex_format = rendering_device->vertex_format_create(Vector<RD::VertexAttribute>());
+		if (group_vertex_format < 0) {
+			print_error("[GOTOT-NEXT] mesh group batch vertex_format_create failed.");
+			return false;
+		}
+		group_vertex_array = rendering_device->vertex_array_create(1, group_vertex_format, Vector<RID>(), Vector<uint64_t>());
+		if (group_vertex_array.is_null()) {
+			print_error("[GOTOT-NEXT] mesh group batch vertex_array_create failed.");
+			return false;
+		}
+
+		RD::PipelineRasterizationState grs;
+		RD::PipelineMultisampleState gms;
+		RD::PipelineDepthStencilState gds;
+		gds.enable_depth_test = true;
+		gds.enable_depth_write = true;
+		gds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
+		RD::PipelineColorBlendState gbs = RD::PipelineColorBlendState::create_disabled(1);
+		group_batch_pipeline = rendering_device->render_pipeline_create(
+				group_batch_shader, raster_framebuffer_format, group_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, grs, gms, gds, gbs, 0, 0);
+		if (group_batch_pipeline.is_null()) {
+			print_error("[GOTOT-NEXT] mesh group batch render_pipeline_create failed.");
+			return false;
+		}
+
+		Vector<RD::Uniform> guniforms;
+		const RID gdraw_buffers[8] = {
+			batch_instances_buffer, transform_buffer, view_ubo, mesh_id_buffer,
+			mesh_color_buffer, mesh_table_buffer, mesh_vertex_storage_buffer, mesh_index_storage_buffer
+		};
+		for (uint32_t b = 0; b < 8; b++) {
+			RD::Uniform u;
+			u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+			u.binding = b;
+			if (b == 2) {
+				u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+			}
+			u.append_id(gdraw_buffers[b]);
+			guniforms.push_back(u);
+		}
+		group_batch_uniform_set = rendering_device->uniform_set_create(guniforms, group_batch_shader, 0);
+		if (group_batch_uniform_set.is_null()) {
+			print_error("[GOTOT-NEXT] mesh group batch uniform_set_create failed.");
+			return false;
+		}
+	}
+
 	gpu_mesh_batch_valid = true;
 	gpu_mesh_table_valid = true;
 	last_batch_count = 0;
+	last_group_count = 0;
+	last_used_group_draw = false;
 	print_line("[GOTOT-NEXT] Mesh table (GOTOT-010) initialized. slots=" + itos(mesh_table_count) +
 			" max_verts=" + itos(GOTOT_MAX_MESH_VERTS) + " max_indices=" + itos(GOTOT_MAX_MESH_INDICES));
 	return true;
@@ -2561,6 +2906,9 @@ int GototRenderServer::gpu_mesh_create_from_arrays(const PackedVector3Array &p_v
 	vbytes.resize(vert_bytes);
 	memcpy(vbytes.ptrw(), p_verts.ptr(), (size_t)vert_bytes);
 	rendering_device->buffer_update(mesh_vertex_buffer, (uint32_t)(mesh_next_vertex_offset * 12), (uint32_t)vert_bytes, vbytes.ptr());
+	if (mesh_vertex_storage_buffer.is_valid()) {
+		rendering_device->buffer_update(mesh_vertex_storage_buffer, (uint32_t)(mesh_next_vertex_offset * 12), (uint32_t)vert_bytes, vbytes.ptr());
+	}
 
 	Vector<uint8_t> ibytes;
 	ibytes.resize(ic * 4);
@@ -2570,6 +2918,9 @@ int GototRenderServer::gpu_mesh_create_from_arrays(const PackedVector3Array &p_v
 		dst[i] = (uint32_t)src[i];
 	}
 	rendering_device->buffer_update(mesh_index_buffer, (uint32_t)(mesh_next_index_offset * 4), (uint32_t)(ic * 4), ibytes.ptr());
+	if (mesh_index_storage_buffer.is_valid()) {
+		rendering_device->buffer_update(mesh_index_storage_buffer, (uint32_t)(mesh_next_index_offset * 4), (uint32_t)(ic * 4), ibytes.ptr());
+	}
 
 	GototMeshDesc desc;
 	memset(&desc, 0, sizeof(desc));
@@ -2607,6 +2958,8 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 	int visible = gpu_cull_get_visible_count();
 	if (visible <= 0) {
 		last_batch_count = 0;
+		last_group_count = 0;
+		last_used_group_draw = false;
 		return true;
 	}
 
@@ -2626,16 +2979,18 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 	uint32_t groups = (uint32_t)(((visible - 1) / 64) + 1);
 	_run_compute_pass(batch_count_pipeline, batch_count_uniform_set, &cp, sizeof(cp), groups, 1, 1);
 
+	// GOTOT-011 pass 2: workgroup-parallel prefix sum + grouping under the
+	// current strategy. One workgroup (64 threads) covers the 64-slot table.
 	struct BatchAssembleParams {
 		uint32_t mesh_capacity;
 		uint32_t scratch_stride;
-		uint32_t pad0;
+		uint32_t strategy;
 		uint32_t pad1;
 	};
 	BatchAssembleParams ap;
 	ap.mesh_capacity = (uint32_t)GOTOT_MESH_TABLE_SIZE;
 	ap.scratch_stride = (uint32_t)gpu_instance_count;
-	ap.pad0 = 0;
+	ap.strategy = (uint32_t)mesh_batch_strategy;
 	ap.pad1 = 0;
 	_run_compute_pass(batch_assemble_pipeline, batch_assemble_uniform_set, &ap, sizeof(ap), 1, 1, 1);
 
@@ -2646,6 +3001,35 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 		last_batch_count = (int)t;
 	} else {
 		last_batch_count = 0;
+	}
+
+	// GOTOT-011: derive the grouping state on the CPU with the SAME deterministic
+	// formula as the workgroup assembler; batch_total (read from the GPU) stays
+	// the authoritative indirect draw count (SPEC 011 section 3.2 fallback).
+	int active = 0;
+	{
+		Vector<uint8_t> cb = rendering_device->buffer_get_data(batch_count_buffer, 0, (uint32_t)(GOTOT_MESH_TABLE_SIZE * 4));
+		const uint32_t *fptr = (const uint32_t *)cb.ptr();
+		int nn = cb.size() / 4;
+		for (int i = 0; i < nn; i++) {
+			if (fptr[i] > 0) {
+				active++;
+			}
+		}
+	}
+	int G = active;
+	if (mesh_batch_strategy == GOTOT_BATCH_STRATEGY_GROUPED || mesh_batch_strategy == GOTOT_BATCH_STRATEGY_REORDERED) {
+		G = active > 5 ? 5 : active;
+	}
+	if (G <= 0) {
+		G = 1;
+	}
+	last_group_count = G;
+	last_used_group_draw = (G < active);
+	int expect = last_used_group_draw ? G : active;
+	if (last_batch_count != expect) {
+		print_line("[GOTOT-NEXT] gpu_mesh_batch_dispatch: batch_total(" + itos(last_batch_count) +
+				") != expected(" + itos(expect) + ") - using GPU value.");
 	}
 	return true;
 }
@@ -2672,9 +3056,20 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 	rendering_device->draw_list_bind_vertex_array(dl, mesh_010_vertex_array);
 	rendering_device->draw_list_bind_index_array(dl, mesh_010_index_array);
 	if (last_batch_count > 0) {
-		// Multi-draw: draw_count == number of distinct visible meshes (not the
-		// instance count); 20 = sizeof(VkDrawIndexedIndirectCommand).
-		rendering_device->draw_list_draw_indirect(dl, true, batch_args_buffer, 0, (uint32_t)last_batch_count, 20);
+		if (last_used_group_draw) {
+			// GOTOT-011 grouped/reordered: one PROCEDURAL (non-indexed)
+			// VkDrawIndirectCommand per batch GROUP (<=5 for 64 visible meshes);
+			// 16 = sizeof(VkDrawIndirectCommand). draw_count is the GPU-written,
+			// frame-varying batch_total (SPEC 011 3.2 draw_indirect fallback).
+			rendering_device->draw_list_bind_render_pipeline(dl, group_batch_pipeline);
+			rendering_device->draw_list_bind_uniform_set(dl, group_batch_uniform_set, 0);
+			rendering_device->draw_list_bind_vertex_array(dl, group_vertex_array);
+			rendering_device->draw_list_draw_indirect(dl, false, group_args_buffer, 0, (uint32_t)last_batch_count, 16);
+		} else {
+			// Multi-draw (010 per-mesh path): draw_count == number of distinct
+			// visible meshes; 20 = sizeof(VkDrawIndexedIndirectCommand).
+			rendering_device->draw_list_draw_indirect(dl, true, batch_args_buffer, 0, (uint32_t)last_batch_count, 20);
+		}
 	}
 	rendering_device->draw_list_end();
 
@@ -2732,6 +3127,67 @@ Color GototRenderServer::gpu_mesh_get_mesh_color(int p_mesh_id) const {
 		return Color(0, 0, 0, 1);
 	}
 	return mesh_colors[p_mesh_id];
+}
+
+bool GototRenderServer::gpu_mesh_set_batch_strategy(int p_strategy) {
+	if (p_strategy < GOTOT_BATCH_STRATEGY_PER_MESH || p_strategy > GOTOT_BATCH_STRATEGY_REORDERED) {
+		print_error("[GOTOT-NEXT] gpu_mesh_set_batch_strategy: invalid strategy " + itos(p_strategy));
+		return false;
+	}
+	mesh_batch_strategy = p_strategy;
+	print_line("[GOTOT-NEXT] Batch strategy set to " + itos(p_strategy));
+	return true;
+}
+
+int GototRenderServer::gpu_mesh_get_batch_strategy() const {
+	return mesh_batch_strategy;
+}
+
+int GototRenderServer::gpu_mesh_get_batch_group_count() const {
+	return last_group_count;
+}
+
+PackedInt32Array GototRenderServer::gpu_mesh_get_batch_order() {
+	PackedInt32Array ret;
+	if (!gpu_scene_valid || !gpu_mesh_batch_valid || group_member_list_buffer.is_null() || group_member_count_buffer.is_null()) {
+		return ret;
+	}
+	int n = last_group_count;
+	if (n <= 0 || n > GOTOT_MESH_TABLE_SIZE) {
+		return ret;
+	}
+	Vector<uint8_t> mcbytes = rendering_device->buffer_get_data(group_member_count_buffer, 0, (uint32_t)(GOTOT_MESH_TABLE_SIZE * 4));
+	if (mcbytes.size() != (int)(GOTOT_MESH_TABLE_SIZE * 4)) {
+		return ret;
+	}
+	const uint32_t *mc = (const uint32_t *)mcbytes.ptr();
+	for (int g = 0; g < n; g++) {
+		uint32_t mg = mc[g];
+		if (mg == 0 || mg > GOTOT_MESH_TABLE_SIZE) {
+			continue;
+		}
+		Vector<uint8_t> bytes = rendering_device->buffer_get_data(group_member_list_buffer, (uint32_t)(g * GOTOT_MESH_TABLE_SIZE * 4), mg * 4);
+		if (bytes.size() != (int)(mg * 4)) {
+			continue;
+		}
+		const uint32_t *fptr = (const uint32_t *)bytes.ptr();
+		for (uint32_t i = 0; i < mg; i++) {
+			ret.push_back((int32_t)fptr[i]);
+		}
+	}
+	return ret;
+}
+
+int GototRenderServer::gpu_mesh_get_indirect_count() const {
+	// The draw count consumed by draw_list_draw_indirect. It originates on the
+	// GPU (batch_total readback) and is frame-varying - the SPEC 011 section 3.2
+	// fallback for the missing vkCmdDrawIndexedIndirectCount API.
+	return last_batch_count;
+}
+
+int GototRenderServer::gpu_mesh_get_draw_call_count() const {
+	// Number of indirect draw commands executed by the last gpu_mesh_batch_draw.
+	return last_batch_count;
 }
 
 bool GototRenderServer::gpu_raster_indirect_draw() {

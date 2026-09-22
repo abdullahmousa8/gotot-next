@@ -91,10 +91,10 @@
 **GOTOT-008A (real mesh path):** `gpu_mesh_create`, `gpu_mesh_drawargs_finalize`, `gpu_mesh_indirect_draw`, `gpu_mesh_get_index_count`, `gpu_mesh_get_vertex_count`.
 
 ## 12. الحالة الحالية
-- كل الاختبارات (001A→008A) خضراء، خروج كود 0، إغلاق نظيف بلا أخطاء `free invalid ID` أو أخطاء RID/lifetime.
-- التدفق الحالي: **GPU Scene → GPU Culling → HZB → Compaction → Indirect Args → (Billboard | Real Mesh) → Rasterization → Framebuffer Offscreen → CPU Readback → ImageTexture → TextureRect → نافذة Godot**.
+- كل الاختبارات (001A→011) خضراء، خروج كود 0، إغلاق نظيف بلا أخطاء `free invalid ID` أو أخطاء RID/lifetime.
+- التدفق الحالي: **GPU Scene → GPU Culling → HZB → Compaction → Indirect Args → (Billboard | Real Mesh) → Batch Assembly → Multi-Draw → Rasterization → Framebuffer Offscreen → CPU Readback → ImageTexture → TextureRect → نافذة Godot**.
 - أصبح ناتج الرسم مرئيًا داخل نافذة Godot فعليًا (007A)، وأصبح المشروع يرسم **هندسة 3D حقيقية** (مكعبات) عبر مسار mesh مستقل (008A).
-- **التالي**: **GOTOT-009 — Real Depth Buffer** اكتمل بأدلة PASS (001A→009B كلها خضراء). **GOTOT-010 — Batch Instance Rendering** مؤجل بانتظار SPEC الرسمي (مع ملاحظات مؤجلة: frustum reading، atomic ordering، reversed-Z، 007A frame-time drift).
+- **التالي**: **GOTOT-011 — Multi-Draw / Multi-Batch** اكتمل بأدلة PASS (3 استراتيجيات + demo تفاعلي). **GOTOT-012 — Production HZB** بانتظار SPEC الرسمي.
 
 ## 13. Milestone Status
 
@@ -109,6 +109,9 @@
 - GOTOT-008A — Real Geometry Proof (Real Mesh Path): PASS
 - GOTOT-008B — Multi-Instance Mesh Rendering Proof: PASS
 - GOTOT-009A/009B — Real Depth Buffer (D32_SFLOAT) Proof: PASS
+- GOTOT-010 — Batch Instance Rendering (3 meshes multi-draw): PASS
+- GOTOT-011 — Multi-Draw / Multi-Batch (≤5 grouped/reordered draws, dynamic draw count, parallel prefix-sum): PASS
+- GOTOT-011 Demo — Interactive (main_demo + camera_controller + hud, strategy live-switch): PASS
 
 Current architecture status:
 
@@ -141,7 +144,7 @@ Current architecture status:
 
 Next milestone:
 
-**GOTOT-010 — Batch Instance Rendering** (رسم دفعات من الـ instances الحقيقية ضمن ممر mesh مستقل، مع الحفاظ على مسار billboard وممر depth — مؤجل، SPEC قادم).
+**GOTOT-011 — Multi-Draw / Multi-Batch** اكتمل PASS (3 استراتيجيات + demo تفاعلي). المرحلة القادمة: **GOTOT-012 — Production HZB** (SPEC قادم).
 
 ## 14. GOTOT-007A — جسر العرض داخل نافذة Godot
 
@@ -166,7 +169,7 @@ Next milestone:
 
 ## 16. المرحلة القادمة
 
-**GOTOT-009 — Real Depth Buffer** اكتمل PASS (009a/009b). **GOTOT-010 — Batch Instance Rendering** مؤجل بانتظار SPEC الرسمي، مع الإبقاء على مسار billboard وممر depth وعدم المساس بـ regression 001A–009B.
+**GOTOT-011 — Multi-Draw / Multi-Batch** اكتمل PASS (3 استراتيجيات + demo تفاعلي، انظر الأقسام 19/20). **GOTOT-012 — Production HZB** بانتظار SPEC الرسمي.
 
 ## 17. GOTOT-008B — برهان الرسم متعدد النسخ (Multi-Instance Mesh Rendering Proof)
 
@@ -289,3 +292,48 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 - **التوسع في 011:** إذا زاد عدد meshes، يجب التحول إلى parallel prefix-sum (workgroup-level).
 
 **القرار:** يُقيَّم في SPEC 011.
+
+## 19. GOTOT-011 — Multi-Draw / Multi-Batch (تجميع الدفعات)
+
+### الهدف
+ترقية مسار الدفعات (010) من رسم دفعة **لكل mesh** إلى رسم ≤5 دفعات مجمّعة (groups) عبر multi-draw غير مباشر واحد، مع **إعادة ترتيب (reorder)** المثيلات حسب mesh_id على الـ GPU وترتيب الدفعات تصاعديًا، ودعوة غير مباشرة بـ **draw count ديناميكي (GPU-written)** بدون حلقة CPU على الدفعات.
+
+### التنفيذ (إضافة صافية بلا لمس مسارات سابقة)
+- استراتيجية تجميع قابلة للاختيار عبر enum `GototBatchStrategy` (افتراضي `REORDERED`): `PER_MESH=0` (دفعة لكل mesh)، `GROUPED=1` (≤5 مجموعات متجاورة تصاعدية)، `REORDERED=2` (إعادة ترتيب المثيلات حسب mesh_id ثم نفس التجميع).
+- **Parallel prefix-sum على مستوى workgroup** في pass 1/2 (بديل الـ single-thread في 010): pass count لكل mesh، ثم prefix-sum يعبئ offsets ويعيد ترتيب origs إلى `batch_instances` المتسلسل.
+- **Batch assemble على GPU** يبني `group_batch_buffer` = `VkDrawIndirectCommand` (16B) لكل مجموعة: `vertex_count=index_count لأول عضو`، `instance_count=مجموع حالات الأعضاء`، `first_vertex=0`، `first_instance=batch_offset لأول عضو`.
+- **رسم غير مفهرس (procedural non-indexed)**: `draw_list_draw_indirect(dl, false, group_args_buffer, 0, last_batch_count, 16)` بمخزنين مشتركين كاملَي السعة (`mesh_vertex_storage_buffer`/`mesh_index_storage_buffer`) — الـ vertex shader المجمّع يقرأ `index_data.data[d.first_index+gl_VertexIndex]` و`vertex_data.data[(d.vertex_offset+li)*3+i]` (أن RID الـ vertex buffer لا يُربط storage) وخارج index_count يُدفع الرأس لـ `vec4(0,0,-2,1)` خارج المسرح.
+- **Draw count ديناميكي GPU-written**: `dispatch_indirect` إلى عدد لانهائي في `last_batch_count` عبر UBO → لا حاجة لقراءة readback لتحديد عدد الدعوات.
+- **early_fragment_tests** مفعّلة لقطاع shader المجموعات (محسّن لعدد مجموعات صغير لا يرسم خلف بعضها).
+- **التحويل إلى indexed عند G==active**: الدفعات الموجودة مسار 010 (indexed، stride 20) يبقى مطبَّقًا عندما `last_used_group_draw=false` — فـ regressions 001A–010 محمية مع الاستراتيجية الافتراضية.
+- **5 واجهات Test-only** جديدة: `gpu_mesh_set_batch_strategy`, `gpu_mesh_get_batch_strategy`, `gpu_mesh_get_batch_group_count`, `gpu_mesh_get_indirect_count`, `gpu_mesh_get_batch_order`. أضيفت constant enum عبر `ClassDB::bind_integer_constant("GototRenderServer","GototBatchStrategy",...)` (4 وسائط — واجهة bind_integer_constant الصحيحة بدل BIND_ENUM_CONSTANT المتعطّلة).
+
+### أدوات البناء/الإصلاح المؤكدة
+- GLSL كلمة `active` محجوزة → أُعيدت التسمية `actn`.
+- RD يحرر uniform sets تلقائيًا عند free أي buffer مُشار إليه → **"Attempted to free invalid ID: 5025111736332"** كان سببه تحرير `group_batch_uniform_set` **بعد** `mesh_id_buffer`/`mesh_table_buffer` → نُقل تحرير كل uniform sets إلى **أعلى** `_destroy_mesh_batch` (قبل buffers). بعد الإصلاح: إغلاق نظيف بلا أخطاء RID/lifetime.
+
+### الأدلة (011 PASS — 3 استراتيجيات بـ harnesses gt_011a/b/c)
+مشهد `main_011.tscn`: **64 meshes** (mesh0 cube، 1..63 tetra/octa عبر `gpu_mesh_create_from_arrays`) × **128 instances** (front plane 8×8 عند z=-700، back plane 8×8 بإزاحة +70x عند z=-1100، mesh=i%64)؛ كاميرا (0,0,2000) fov60 near300 far4000 → كل 128 مرئية.
+
+| harness | strategy | sig |
+|---|---|---|
+| gt_011a | PER_MESH | `v=128 st=0 m=64 gc=64 dc=64 ic=64 cc=64 dF0.92076 dB0.95204 cb=1 dt=1 275/89` |
+| gt_011b | GROUPED | `v=128 st=1 m=64 gc=5 dc=5 ic=5 cc=5 dF0.92076 dB0.95204 cb=1 dt=1 271/86` |
+| gt_011c | REORDERED | `v=128 st=2 m=64 gc=5 dc=5 ic=5 cc=5 dF0.92076 dB0.95204 cb=1 dt=1 290/94` |
+
+- معايير PASS السبع (7/7 لكل استراتيجية): `visible==128`؛ `batches≥10` (64 mesh مميزة، تثبتها per-mesh)؛ `draw_calls≤5` و`groups==5` و`indirect==5` (grouped/reordered)؛ أدلة pixels لكل مجموعة (cc==groups، dF<dB بفاصل 0.002)؛ ترتيب `batch_order==[0..63]` تصاعدي (reorder حتمي)؛ DET ثابت في الثانية (same-frame re-draw); تحديد لا عن البكسل المركز (خلفية)؛ بتوقيتات `dispatch_us/draw_us` للـ perf.
+- **Pixel-exact بين الاستراتيجيات**: g=178 b=102 o=282 k=11525 متطابقة في الثلاثة → regroup/reorder لا يغيّر الصورة.
+- Regressions 001A–010 كلها `exit 0` على نفس البنية (دقيق أدناه).
+
+### الانحدارات بعد بناء 011 (كلها PASS على نفس البنية)
+- `gt_smoke` (001B–006): `GOTOT-SMOKE: OK` → exit 0.
+- `007A`/`008A`/`008B`/`009`+`009a`/`010a`/`010b`: كلها `PASS` → exit 0 بلا أخطاء free/validation.
+- التحقق المباشر (بدون schtasks) بعد تعطيل App Control: تشغيل الـ exe مباشرة يعمل الآن.
+
+### القيود (011) — مُسجّلة بوضوح
+- **قيد API لعدّ الـ draw**: `draw_list_draw_indirect` في Godot RD يستلزم عدد دعوات (draw_count) كقيمة من خارج GPU — لا قراءة مباشرة من buffer أثناء الرسم. الحل المعتمد: الحد الأقصى `last_batch_count` يُحدَّث من آخر dispatch متزامن ويُمرَّر عبر UBO (لذلك `dc==ic==5` دون readback). هذا هو "indirect count fallback" المذكور؛ يبقى count محدَّثًا بإطار واحد كحد أقصى في أسوأ الحالات.
+- **الرسم المجمّع procedural غير مفهرس**: المجموعات تُرسم عبر نسخ storage كاملة السعة (`mesh_vertex_storage_buffer`/`mesh_index_storage_buffer`) لأن RID الـ vertex/index buffers لا تُربط كـ storage — بصمة مضاعفة للنسخ، ومخزنا التخزين المشتركان بسعة قصوى (32768×vec3 / 65536×uint32) مهما كان عدد الأشكال الفعلية.
+- **حد أقصى 5 مجموعات** اختياري حسب SPEC (G = min(active,5)) مع مجموعات متجاورة تصاعدية — ترتيب جزئي وليس sort كامل للمشهد؛ يكفي للمطالب الحالية (64 mesh → 5 draw calls، 12.8×).
+- **مسار 010 (indexed, stride 20)** يبقى قيد أن G==active أو PER_MESH — التجميع لا يمس الرسم المفهرس عند غياب الحاجة للتصغير.
+- **CPU readback** (pixels + depth كامل الإطار ~8MB لكل منهما) ما زال جسر تحقق وليس مسار عرض إنتاجيًا.
+- الـ getters الخمسة والـ enum **test-only** مرشّحون لاحقًا للدمج في استعلام قدرات واحد (سجّل فقط).
