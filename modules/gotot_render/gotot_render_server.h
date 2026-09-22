@@ -293,7 +293,45 @@ class GototRenderServer : public Object {
 	RID ml_raster_pipeline;
 	RID ml_raster_uniform_set;
 
+	// GOTOT-014: GPU Scene Manager (SPEC 014, additive TEST-ONLY evidence
+	// bridge). A GPU-resident scene database over a unified id space:
+	//   64-byte AoS record per id (transform, bounds, meshlet_ordinal +
+	//   mesh_ref + flags, per-instance LOD config);
+	//   a 16 MB CPU write-back update ring (deltas applied on GPU);
+	//   a compute apply pass (consumes the ring - add/remove/move),
+	//   a compact pass (dense ascending-id active list) and
+	//   a snapshot pass (32-byte draw records = 015 render-graph hand-off).
+	// Nothing here touches the 001B scene, the 008A/010/011 mesh batch path,
+	// the 009 depth buffer or the 013 meshlet pipeline: allocations are fully
+	// separate buffers and the manager only mirrors the 013 meshlet ordinal
+	// space + LOD config in its draw records (hand-off evidence).
+	enum {
+		GMS_RING_BYTES = 16 * 1024 * 1024,
+		GMS_DELTA_BYTES = 80,
+		GMS_RECORD_BYTES = 64,
+		GMS_DRAW_RECORD_BYTES = 32,
+		GMS_MAX_CAPACITY = 4000000,
+		GMS_STATS_UINTS = 16,
+		GMS_MESH_SLOTS = 64,
+	};
+	bool gpu_scene_mgr_valid = false;
+	int gms_capacity = 0;
+	int gms_active_cpu = 0;     // CPU mirror (set_instances / update accounting)
+	uint32_t gms_ring_tail = 0; // CPU write cursor (bytes); head is always 0
+	uint32_t gms_dispatch_seq = 0;
+	RID gms_record_buffer;
+	RID gms_active_buffer;       // uint[capacity] dense ascending-id list
+	RID gms_active_count_buffer; // uint[1]
+	RID gms_ring_buffer;         // GMS_RING_BYTES update ring
+	RID gms_snapshot_buffer;     // 32-byte draw records
+	RID gms_stats_buffer;        // uint[16]
+	RID gms_mesh_count_buffer;   // uint[64] per mesh_ref draw-record counts
+	RID gms_shader;
+	RID gms_pipeline;
+	RID gms_uniform_set;
+
 	void _destroy_meshlet();
+	void _destroy_scene_manager();
 	bool _upload_meshlet_view();
 	void _destroy_hzb_prod();
 	void _destroy_gpu_scene();
@@ -526,6 +564,36 @@ public:
 	// [covered_px, subpixel_tris, winner_px, fnv1a_over_winner_ids].
 	PackedFloat32Array gpu_meshlet_raster_evidence();
 	void gpu_meshlet_destroy();
+
+	// GOTOT-014: GPU Scene Manager API (TEST-ONLY evidence bridge; additive -
+	// every pre-014 signature is byte-identical until a manager alloc runs).
+	// Allocates a GPU scene database of p_max_instances unified ids (record
+	// buffer + active list + snapshot + 16 MB update ring). Returns false when
+	// the device/capacity is unavailable. Re-alloc is destructive.
+	bool gpu_scene_manager_alloc(int p_max_instances);
+	// Bulk-writes p_instances (16 floats per 64-byte record: transform,
+	// bounds, refs orb/mesh/flags, lodcfg t0/t1) as ids 0..N-1, all active;
+	// resets the ring and active state. N must be <= capacity.
+	bool gpu_scene_manager_set_instances(const PackedFloat32Array &p_instances);
+	// Queues deltas into the 16 MB ring for the next dispatch. Each delta is
+	// 20 floats (80 bytes): [op 1=add 2=remove 3=move, id, seq, flags,
+	// transform, bounds, refs, lodcfg]. Add/move write the record fields;
+	// remove clears the active bit. Returns false when the ring overflows.
+	bool gpu_scene_manager_update(const Array &p_deltas);
+	// GPU apply (consumes the ring) + compact (dense active ids) + snapshot
+	// (draw records + per-mesh counts). Zero readbacks in the critical path.
+	bool gpu_scene_manager_dispatch();
+	// Evidence dict: capacity/active/applied add-remove-move counts, ring
+	// used/free bytes, snapshot record count, distinct meshes, 011 group
+	// count (min(distinct,5)), SSBO footprint, dispatch seq.
+	Dictionary gpu_scene_manager_get_stats();
+	// [snap_records, distinct_meshes, group_count_011] + 64 per-mesh counts.
+	PackedInt32Array gpu_scene_manager_get_draw_counts();
+	// First u32 (meshlet_ordinal) of the first p_count draw records.
+	PackedInt32Array gpu_scene_manager_get_snapshot(int p_count);
+	// First p_count ids of the compacted dense active list.
+	PackedInt32Array gpu_scene_manager_get_active_ids(int p_count);
+	void gpu_scene_manager_destroy();
 };
 
 #endif

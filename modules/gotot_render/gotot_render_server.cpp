@@ -1414,6 +1414,16 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_buffer", "level"), &GototRenderServer::gpu_hzb_dbg_scan_buffer);
 	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_sim2"), &GototRenderServer::gpu_hzb_dbg_sim2);
 
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_alloc", "max_instances"), &GototRenderServer::gpu_scene_manager_alloc);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_set_instances", "instances"), &GototRenderServer::gpu_scene_manager_set_instances);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_update", "deltas"), &GototRenderServer::gpu_scene_manager_update);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_dispatch"), &GototRenderServer::gpu_scene_manager_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_stats"), &GototRenderServer::gpu_scene_manager_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_draw_counts"), &GototRenderServer::gpu_scene_manager_get_draw_counts);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_snapshot", "count"), &GototRenderServer::gpu_scene_manager_get_snapshot);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_active_ids", "count"), &GototRenderServer::gpu_scene_manager_get_active_ids);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_destroy"), &GototRenderServer::gpu_scene_manager_destroy);
+
 	ClassDB::bind_method(D_METHOD("gpu_meshlet_load", "data"), &GototRenderServer::gpu_meshlet_load);
 	ClassDB::bind_method(D_METHOD("gpu_meshlet_load_path", "path"), &GototRenderServer::gpu_meshlet_load_path);
 	ClassDB::bind_method(D_METHOD("gpu_meshlet_set_lod_thresholds", "t0", "t1"), &GototRenderServer::gpu_meshlet_set_lod_thresholds);
@@ -1918,6 +1928,7 @@ void GototRenderServer::shutdown() {
 		return;
 	}
 
+	_destroy_scene_manager();
 	_destroy_meshlet();
 	_destroy_gpu_scene();
 
@@ -5626,4 +5637,449 @@ PackedFloat32Array GototRenderServer::gpu_meshlet_raster_evidence() {
 
 void GototRenderServer::gpu_meshlet_destroy() {
 	_destroy_meshlet();
+}
+
+// GOTOT-014: GPU Scene Manager (SPEC 014).
+// See header block comment. Layouts (std430, all storage buffers):
+//   record (64 B / 16 u32 per unified id, slot id*16):
+//     [0..3]   vec4 transform (pos.xyz, scale)
+//     [4..7]   vec4 bounds   (center.xyz, radius)
+//     [8..11]  uvec4 refs    (x=meshlet_ordinal, y=mesh_ref, z=flags, w=pad)
+//     [12..15] uvec4 lodcfg  (x=lod_t0 bits, y=lod_t1 bits, z/w=pad)
+//   ring delta (80 B / 20 u32): [op,id,seq,flags, transform, bounds, refs, lodcfg]
+//   snapshot draw record (32 B / 8 u32): [ordinal, mesh_ref, flags, pad, bounds]
+//   stats uint[16]: 0=active(compact), 1=adds, 2=removes, 3=moves,
+//                   4=reserved, 5=ring bytes consumed, 6=snap records,
+//                   7=distinct meshes.
+// The single shader/pipe/set runs three deterministic passes (each pass is
+// submit+sync'ed via _run_compute_pass): apply (consume ring), compact (dense
+// ascending-id active list), snapshot (draw records + per-mesh counts). Only
+// tiny 4-byte verify counters (active count) are read back - verification
+// bridge, same class as the 013 evidence getters.
+namespace {
+// Record (16 vec4 = 64 B): [0] transform(xyz,scale) [4] bounds(center.xyz,radius)
+//   [8] refs(ord,mesh,flags,pad as floats) [12] lodcfg(t0,t1,pad,pad).
+// Small int-ish values (ordinal/mesh/flags/op/id) travel as floats (exact for
+// <2^24) - the CPU uploads raw floats and the GPU casts float->uint on use.
+const char *gpu_scene_manager_glsl = R"(
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform GmsParams {
+	uvec4 cfg; // x=pass(0 apply,1 compact,2 snapshot), y=capacity, z=delta_count, w=0
+}
+params;
+
+layout(std430, set = 0, binding = 0) buffer RecordBuffer { vec4 rec[]; } records;
+layout(std430, set = 0, binding = 1) buffer RingBuffer { float rbuf[]; } ring;
+layout(std430, set = 0, binding = 2) buffer StatsBuffer { uint st[]; } stats;
+layout(std430, set = 0, binding = 3) buffer ActiveBuffer { uint act[]; } actlist;
+layout(std430, set = 0, binding = 4) buffer ActiveCount { uint cnt; } acnt;
+layout(std430, set = 0, binding = 5) buffer SnapshotBuffer { uvec4 snap[]; } snap;
+layout(std430, set = 0, binding = 6) buffer MeshCountBuffer { uint mc[]; } meshc;
+
+void main() {
+	uint gi = gl_GlobalInvocationID.x;
+
+	// Pass 0 - apply: consume the ring. Non-invoked if there are no deltas.
+	if (params.cfg.x == 0u) {
+		uint dn = params.cfg.z;
+		if (gi >= dn) {
+			return;
+		}
+		uint base = gi * 20u;
+		uint op = uint(ring.rbuf[base + 0u]);
+		uint id = uint(ring.rbuf[base + 1u]);
+		uint r = id * 4u; // record base in vec4 units (16 floats per record)
+		if (op == 1u) { // add: write all fields, raise the active flag
+			records.rec[r + 0u] = vec4(ring.rbuf[base + 4u], ring.rbuf[base + 5u], ring.rbuf[base + 6u], ring.rbuf[base + 7u]);
+			records.rec[r + 1u] = vec4(ring.rbuf[base + 8u], ring.rbuf[base + 9u], ring.rbuf[base + 10u], ring.rbuf[base + 11u]);
+			records.rec[r + 2u] = vec4(ring.rbuf[base + 12u], ring.rbuf[base + 13u], ring.rbuf[base + 14u] + 1.0, ring.rbuf[base + 15u]);
+			records.rec[r + 3u] = vec4(ring.rbuf[base + 16u], ring.rbuf[base + 17u], ring.rbuf[base + 18u], ring.rbuf[base + 19u]);
+			atomicAdd(stats.st[1u], 1u);
+		} else if (op == 3u) { // move: transform + bounds only
+			records.rec[r + 0u] = vec4(ring.rbuf[base + 4u], ring.rbuf[base + 5u], ring.rbuf[base + 6u], ring.rbuf[base + 7u]);
+			records.rec[r + 1u] = vec4(ring.rbuf[base + 8u], ring.rbuf[base + 9u], ring.rbuf[base + 10u], ring.rbuf[base + 11u]);
+			atomicAdd(stats.st[3u], 1u);
+		} else if (op == 2u) { // remove: clear the active flag
+			records.rec[r + 2u].z = max(records.rec[r + 2u].z - 1.0, 0.0);
+			atomicAdd(stats.st[2u], 1u);
+		}
+		return;
+	}
+
+	// Pass 1 - compact: dense ascending-id active list (scan record space once).
+	if (params.cfg.x == 1u) {
+		if (gi >= params.cfg.y) {
+			return;
+		}
+		uint r = gi * 4u;
+		if (records.rec[r + 2u].z >= 1.0) {
+			uint slot = atomicAdd(acnt.cnt, 1u);
+			actlist.act[slot] = gi;
+		}
+		return;
+	}
+
+	// Pass 2 - snapshot: emit 32-byte draw records from the compacted list.
+	uint n = stats.st[0u];
+	if (gi >= n) {
+		return;
+	}
+	uint id = actlist.act[gi];
+	uint r = id * 4u;
+	uint base = gi * 2u; // 2 x uvec4 = 32 bytes per draw record
+	snap.snap[base + 0u] = uvec4(uint(records.rec[r + 2u].x), uint(records.rec[r + 2u].y), uint(records.rec[r + 2u].z), floatBitsToUint(records.rec[r + 3u].x));
+	snap.snap[base + 1u] = floatBitsToUint(records.rec[r + 1u]);
+	atomicAdd(stats.st[6u], 1u);
+	if (atomicAdd(meshc.mc[uint(records.rec[r + 2u].y) & 63u], 1u) == 0u) {
+		atomicAdd(stats.st[7u], 1u);
+	}
+}
+)";
+} // namespace
+
+void GototRenderServer::_destroy_scene_manager() {
+	if (rendering_device == nullptr) {
+		gpu_scene_mgr_valid = false;
+		return;
+	}
+	if (gms_uniform_set.is_valid()) {
+		rendering_device->free_rid(gms_uniform_set);
+		gms_uniform_set = RID();
+	}
+	if (gms_pipeline.is_valid()) {
+		rendering_device->free_rid(gms_pipeline);
+		gms_pipeline = RID();
+	}
+	if (gms_shader.is_valid()) {
+		rendering_device->free_rid(gms_shader);
+		gms_shader = RID();
+	}
+	if (gms_mesh_count_buffer.is_valid()) {
+		rendering_device->free_rid(gms_mesh_count_buffer);
+		gms_mesh_count_buffer = RID();
+	}
+	if (gms_stats_buffer.is_valid()) {
+		rendering_device->free_rid(gms_stats_buffer);
+		gms_stats_buffer = RID();
+	}
+	if (gms_snapshot_buffer.is_valid()) {
+		rendering_device->free_rid(gms_snapshot_buffer);
+		gms_snapshot_buffer = RID();
+	}
+	if (gms_ring_buffer.is_valid()) {
+		rendering_device->free_rid(gms_ring_buffer);
+		gms_ring_buffer = RID();
+	}
+	if (gms_active_count_buffer.is_valid()) {
+		rendering_device->free_rid(gms_active_count_buffer);
+		gms_active_count_buffer = RID();
+	}
+	if (gms_active_buffer.is_valid()) {
+		rendering_device->free_rid(gms_active_buffer);
+		gms_active_buffer = RID();
+	}
+	if (gms_record_buffer.is_valid()) {
+		rendering_device->free_rid(gms_record_buffer);
+		gms_record_buffer = RID();
+	}
+	gpu_scene_mgr_valid = false;
+	gms_capacity = 0;
+	gms_active_cpu = 0;
+	gms_ring_tail = 0;
+	gms_dispatch_seq = 0;
+}
+
+bool GototRenderServer::gpu_scene_manager_alloc(int p_max_instances) {
+	if (!ensure_gpu_device()) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: no RenderingDevice.");
+		return false;
+	}
+	if (p_max_instances <= 0 || p_max_instances > GMS_MAX_CAPACITY) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: capacity must be in (0, " + itos(GMS_MAX_CAPACITY) + "].");
+		return false;
+	}
+	_destroy_scene_manager();
+
+	gms_capacity = p_max_instances;
+	int64_t record_bytes = (int64_t)gms_capacity * (int64_t)GMS_RECORD_BYTES;
+	int64_t active_bytes = (int64_t)gms_capacity * 4;
+	int64_t snapshot_bytes = (int64_t)gms_capacity * (int64_t)GMS_DRAW_RECORD_BYTES;
+
+	gms_record_buffer = rendering_device->storage_buffer_create((uint32_t)record_bytes);
+	gms_active_buffer = rendering_device->storage_buffer_create((uint32_t)active_bytes);
+	gms_active_count_buffer = rendering_device->storage_buffer_create(4);
+	gms_ring_buffer = rendering_device->storage_buffer_create((uint32_t)GMS_RING_BYTES);
+	gms_snapshot_buffer = rendering_device->storage_buffer_create((uint32_t)snapshot_bytes);
+	gms_stats_buffer = rendering_device->storage_buffer_create((uint32_t)GMS_STATS_UINTS * 4);
+	gms_mesh_count_buffer = rendering_device->storage_buffer_create((uint32_t)GMS_MESH_SLOTS * 4);
+
+	String cerr;
+	Vector<uint8_t> spv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_COMPUTE, String(gpu_scene_manager_glsl), RD::SHADER_LANGUAGE_GLSL, &cerr);
+	if (spv.is_empty()) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: shader compile failed:");
+		print_error(cerr);
+		_destroy_scene_manager();
+		return false;
+	}
+	RD::ShaderStageSPIRVData stage;
+	stage.shader_stage = RD::SHADER_STAGE_COMPUTE;
+	stage.spirv = spv;
+	Vector<RD::ShaderStageSPIRVData> stages;
+	stages.push_back(stage);
+	gms_shader = rendering_device->shader_create_from_spirv(stages, "gotot_scene_manager");
+	if (gms_shader.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: shader_create_from_spirv failed.");
+		_destroy_scene_manager();
+		return false;
+	}
+	gms_pipeline = rendering_device->compute_pipeline_create(gms_shader);
+
+	const RID gms_buffers[7] = { gms_record_buffer, gms_ring_buffer, gms_stats_buffer, gms_active_buffer, gms_active_count_buffer, gms_snapshot_buffer, gms_mesh_count_buffer };
+	Vector<RD::Uniform> uniforms;
+	for (uint32_t b = 0; b < 7; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		u.append_id(gms_buffers[b]);
+		uniforms.push_back(u);
+	}
+	gms_uniform_set = rendering_device->uniform_set_create(uniforms, gms_shader, 0);
+	if (gms_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: uniform_set_create failed.");
+		_destroy_scene_manager();
+		return false;
+	}
+
+	gpu_scene_mgr_valid = true;
+	gms_active_cpu = 0;
+	gms_ring_tail = 0;
+	gms_dispatch_seq = 0;
+	print_line("[GOTOT-NEXT] gpu_scene_manager_alloc: capacity=", gms_capacity,
+			" record_buf=", (int64_t)record_bytes, " snapshot_buf=", (int64_t)snapshot_bytes,
+			" ring=16MiB");
+	return true;
+}
+
+bool GototRenderServer::gpu_scene_manager_set_instances(const PackedFloat32Array &p_instances) {
+	if (!gpu_scene_mgr_valid) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_set_instances: no manager. Call gpu_scene_manager_alloc first.");
+		return false;
+	}
+	int n = p_instances.size();
+	if (n <= 0 || n % 16 != 0) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_set_instances: size must be a positive multiple of 16 floats (64-byte record).");
+		return false;
+	}
+	int count = n / 16;
+	if (count > gms_capacity) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_set_instances: " + itos(count) + " instances exceed capacity " + itos(gms_capacity) + ".");
+		return false;
+	}
+	// Reset the whole record space (so ids >= count are inactive), then write 0..count-1.
+	rendering_device->buffer_clear(gms_record_buffer, 0, (uint32_t)((int64_t)gms_capacity * (int64_t)GMS_RECORD_BYTES));
+	rendering_device->submit();
+	rendering_device->sync();
+	if (count > 0) {
+		rendering_device->buffer_update(gms_record_buffer, 0, (uint32_t)((int64_t)count * (int64_t)GMS_RECORD_BYTES), p_instances.ptr());
+	}
+	gms_active_cpu = count;
+	gms_ring_tail = 0;
+	print_line("[GOTOT-NEXT] gpu_scene_manager_set_instances: instances=", count, " active_cpu=", gms_active_cpu);
+	return true;
+}
+
+bool GototRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
+	if (!gpu_scene_mgr_valid) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_update: no manager.");
+		return false;
+	}
+	const int nitems = p_deltas.size();
+	if (nitems <= 0) {
+		return true;
+	}
+	int64_t total_bytes = (int64_t)nitems * (int64_t)GMS_DELTA_BYTES;
+	if ((int64_t)gms_ring_tail + total_bytes > (int64_t)GMS_RING_BYTES) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_update: ring overflow (need " + itos((int64_t)total_bytes) + " at tail " + itos((int64_t)gms_ring_tail) + "/" + itos((int64_t)GMS_RING_BYTES) + ").");
+		return false;
+	}
+	Vector<uint8_t> cpu;
+	cpu.resize((int64_t)nitems * (int64_t)GMS_DELTA_BYTES);
+	uint8_t *w = cpu.ptrw();
+	for (int i = 0; i < nitems; i++) {
+		Variant v = p_deltas[i];
+		PackedFloat32Array d = v; // Array of PackedFloat32Array (20 floats / 80 bytes)
+		if (d.size() != 20) {
+			print_error("[GOTOT-NEXT] gpu_scene_manager_update: delta " + itos(i) + " must be 20 floats (80 bytes), got " + itos(d.size()) + ".");
+			return false;
+		}
+		memcpy(w + (int64_t)i * (int64_t)GMS_DELTA_BYTES, d.ptr(), GMS_DELTA_BYTES);
+	}
+	rendering_device->buffer_update(gms_ring_buffer, gms_ring_tail, (uint32_t)total_bytes, cpu.ptr());
+	gms_ring_tail += (uint32_t)total_bytes;
+	return true;
+}
+
+bool GototRenderServer::gpu_scene_manager_dispatch() {
+	if (!gpu_scene_mgr_valid) {
+		print_error("[GOTOT-NEXT] gpu_scene_manager_dispatch: no manager.");
+		return false;
+	}
+	struct GmsPush {
+		uint32_t pass;
+		uint32_t capacity;
+		uint32_t delta_count;
+		uint32_t pad;
+	};
+	GmsPush push;
+	uint32_t delta_count = gms_ring_tail / (uint32_t)GMS_DELTA_BYTES;
+
+	// Reset the per-dispatch counters (stats words 1..8) and the compact counter.
+	rendering_device->buffer_clear(gms_stats_buffer, 4, 8 * 4);
+	rendering_device->buffer_clear(gms_active_count_buffer, 0, 4);
+	rendering_device->buffer_clear(gms_mesh_count_buffer, 0, (uint32_t)GMS_MESH_SLOTS * 4);
+	rendering_device->submit();
+	rendering_device->sync();
+	// Record the consumed ring bytes for evidence (words 5).
+	uint32_t consumed = gms_ring_tail;
+	rendering_device->buffer_update(gms_stats_buffer, 5 * 4, 4, &consumed);
+
+	if (delta_count > 0) {
+		push.pass = 0;
+		push.capacity = (uint32_t)gms_capacity;
+		push.delta_count = delta_count;
+		push.pad = 0;
+		uint32_t groups = (delta_count + 63) / 64;
+		_run_compute_pass(gms_pipeline, gms_uniform_set, &push, sizeof(GmsPush), groups, 1, 1);
+		gms_ring_tail = 0;
+	}
+
+	// Compact: dense ascending-id active list.
+	push.pass = 1;
+	push.capacity = (uint32_t)gms_capacity;
+	push.delta_count = 0;
+	push.pad = 0;
+	uint32_t cap_groups = ((uint32_t)gms_capacity + 63) / 64;
+	_run_compute_pass(gms_pipeline, gms_uniform_set, &push, sizeof(GmsPush), cap_groups, 1, 1);
+	// Mirror the GPU active count into stats[0] (4-byte verification readback,
+	// evidence bridge - not a critical path).
+	Vector<uint8_t> ac = rendering_device->buffer_get_data(gms_active_count_buffer, 0, 4);
+	uint32_t active = 0;
+	memcpy(&active, ac.ptr(), 4);
+	rendering_device->buffer_update(gms_stats_buffer, 0, 4, &active);
+	gms_active_cpu = (int)active;
+
+	// Snapshot: emit 32-byte draw records from the compacted list.
+	push.pass = 2;
+	push.capacity = (uint32_t)gms_capacity;
+	push.delta_count = 0;
+	push.pad = 0;
+	uint32_t snap_groups = (active + 63) / 64;
+	if (active > 0) {
+		_run_compute_pass(gms_pipeline, gms_uniform_set, &push, sizeof(GmsPush), snap_groups, 1, 1);
+	}
+
+	gms_dispatch_seq++;
+	return true;
+}
+
+Dictionary GototRenderServer::gpu_scene_manager_get_stats() {
+	Dictionary d;
+	d["valid"] = gpu_scene_mgr_valid;
+	if (!gpu_scene_mgr_valid) {
+		return d;
+	}
+	d["capacity"] = gms_capacity;
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(gms_stats_buffer, 0, (uint32_t)GMS_STATS_UINTS * 4);
+	int32_t v[GMS_STATS_UINTS];
+	for (int i = 0; i < GMS_STATS_UINTS; i++) {
+		memcpy(&v[i], bytes.ptr() + i * 4, 4);
+	}
+	d["active"] = v[0];
+	d["adds"] = v[1];
+	d["removes"] = v[2];
+	d["moves"] = v[3];
+	d["ring_consumed_bytes"] = v[5];
+	d["snap_records"] = v[6];
+	d["distinct_meshes"] = v[7];
+	d["ring_bytes"] = (int)GMS_RING_BYTES;
+	d["ring_used_bytes"] = (int)gms_ring_tail;
+	d["ring_free_bytes"] = (int)GMS_RING_BYTES - (int)gms_ring_tail;
+	int groups = v[7] < 5 ? v[7] : 5;
+	d["group_count_011"] = groups;
+	int64_t ssbo = (int64_t)gms_capacity * (int64_t)GMS_RECORD_BYTES +
+			(int64_t)gms_capacity * 4 +
+			(int64_t)gms_capacity * (int64_t)GMS_DRAW_RECORD_BYTES +
+			(int64_t)GMS_RING_BYTES + 4 + (int64_t)GMS_STATS_UINTS * 4 + (int64_t)GMS_MESH_SLOTS * 4;
+	d["ssbo_bytes"] = (int)ssbo;
+	d["dispatch_seq"] = (int)gms_dispatch_seq;
+	return d;
+}
+
+PackedInt32Array GototRenderServer::gpu_scene_manager_get_draw_counts() {
+	PackedInt32Array ret;
+	if (!gpu_scene_mgr_valid) {
+		return ret;
+	}
+	Vector<uint8_t> sbytes = rendering_device->buffer_get_data(gms_stats_buffer, 6 * 4, 2 * 4);
+	int32_t snap = 0, distinct = 0;
+	memcpy(&snap, sbytes.ptr(), 4);
+	memcpy(&distinct, sbytes.ptr() + 4, 4);
+	ret.append(snap);
+	ret.append(distinct);
+	ret.append(distinct < 5 ? distinct : 5);
+	Vector<uint8_t> mbytes = rendering_device->buffer_get_data(gms_mesh_count_buffer, 0, (uint32_t)GMS_MESH_SLOTS * 4);
+	for (int i = 0; i < GMS_MESH_SLOTS; i++) {
+		int32_t c;
+		memcpy(&c, mbytes.ptr() + i * 4, 4);
+		ret.append(c);
+	}
+	return ret;
+}
+
+PackedInt32Array GototRenderServer::gpu_scene_manager_get_snapshot(int p_count) {
+	PackedInt32Array ret;
+	if (!gpu_scene_mgr_valid || p_count <= 0) {
+		return ret;
+	}
+	Vector<uint8_t> sbytes = rendering_device->buffer_get_data(gms_stats_buffer, 6 * 4, 4);
+	int32_t snap = 0;
+	memcpy(&snap, sbytes.ptr(), 4);
+	int n = p_count < snap ? p_count : snap;
+	if (n <= 0) {
+		return ret;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(gms_snapshot_buffer, 0, (uint32_t)n * (uint32_t)GMS_DRAW_RECORD_BYTES);
+	ret.resize(n);
+	for (int i = 0; i < n; i++) {
+		int32_t ord;
+		memcpy(&ord, bytes.ptr() + (int64_t)i * (int64_t)GMS_DRAW_RECORD_BYTES, 4);
+		ret.set(i, ord);
+	}
+	return ret;
+}
+
+PackedInt32Array GototRenderServer::gpu_scene_manager_get_active_ids(int p_count) {
+	PackedInt32Array ret;
+	if (!gpu_scene_mgr_valid || p_count <= 0) {
+		return ret;
+	}
+	int n = p_count < gms_active_cpu ? p_count : gms_active_cpu;
+	if (n <= 0) {
+		return ret;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(gms_active_buffer, 0, (uint32_t)n * 4);
+	ret.resize(n);
+	for (int i = 0; i < n; i++) {
+		int32_t id;
+		memcpy(&id, bytes.ptr() + i * 4, 4);
+		ret.set(i, id);
+	}
+	return ret;
+}
+
+void GototRenderServer::gpu_scene_manager_destroy() {
+	_destroy_scene_manager();
 }
