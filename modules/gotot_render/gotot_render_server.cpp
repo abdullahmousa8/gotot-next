@@ -1,6 +1,7 @@
 #include "gotot_render_server.h"
 
 #include "core/os/memory.h"
+#include "core/io/file_access.h"
 #include "core/string/print_string.h"
 #include "servers/rendering/rendering_server.h"
 
@@ -411,9 +412,12 @@ const char *gpu_raster_frag_glsl = R"(
 #version 450
 
 layout(location = 0) out vec4 out_color;
+// GOTOT-012: view-space depth copy for the production pyramid (z_view).
+layout(location = 1) out float out_view_z;
 
 void main() {
 	out_color = vec4(0.95, 0.18, 0.9, 1.0);
+	out_view_z = -1.0 / gl_FragCoord.w;
 }
 )";
 
@@ -498,9 +502,12 @@ const char *gpu_mesh_frag_glsl = R"(
 #version 450
 
 layout(location = 0) out vec4 out_color;
+// GOTOT-012: view-space depth copy for the production pyramid (z_view).
+layout(location = 1) out float out_view_z;
 
 void main() {
 	out_color = vec4(0.15, 0.85, 0.35, 1.0);
+	out_view_z = -1.0 / gl_FragCoord.w;
 }
 )";
 
@@ -838,9 +845,12 @@ layout(std430, set = 0, binding = 4) buffer MeshColorBuffer {
 mesh_colors;
 
 layout(location = 0) out vec4 out_color;
+// GOTOT-012: view-space depth copy for the production pyramid (z_view).
+layout(location = 1) out float out_view_z;
 
 void main() {
 	out_color = mesh_colors.colors[v_mesh_id];
+	out_view_z = -1.0 / gl_FragCoord.w;
 }
 )";
 
@@ -927,6 +937,435 @@ void main() {
 	v_mesh_id = m;
 }
 )";
+
+// GOTOT-012: build HZB base layer by sampling the PREVIOUS frame's D32_SFLOAT
+// depth. Given A = projection.columns[2][2], B = projection.columns[3][2] the
+// Godot 4 perspective maps clip.z = A*z_cam + B, clip.w = -z_cam, so
+// ndc_z = -A + B/z_view -> z_view = B / (A + ndc_z) (device depth d -> ndc
+// via d*2-1 since the depth attachment is cleared to 1.0 = far). Stored as
+// equal tower than the 004 occlusion test. One thread per base texel; viewport (window) size drives
+// the square grid mapping and the raster image size drives the depth sample
+// UV, so texels map to the SAME screen texels the cull pass tests. The source
+// is the R32 view-space-depth color attachment (color-opaque sampling), NOT the
+// D32 - sampling a D32 attachment's current version is a no-op in this RDG fork,
+// while the R32 coexists with the D32 in the same draw pass and is written by
+// the same fragment shaders (out_view_z = -1/gl_FragCoord.w).
+const char *gpu_hzb_depth_source_glsl = R"(
+#version 450
+#ifdef GL_EXT_samplerless_texture_functions
+#extension GL_EXT_samplerless_texture_functions : enable
+#endif
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform DepthSourceParams {
+	uint level0_size;
+	uint levels;
+	float viewport_w;
+	float viewport_h;
+	float image_w;
+	float image_h;
+	float far_plane;
+}
+params;
+
+layout(set = 0, binding = 0) uniform sampler2D depth_tex;
+layout(set = 0, binding = 1, r32ui) uniform uimage2DArray hzb_img;
+layout(std430, set = 0, binding = 2) buffer ProbeBuffer {
+	uint pcount;
+	uint pmax_inv;
+	uint pd_at_probe;
+	uint pndc_at_probe;
+}
+probe;
+
+// Flat mirror of the pyramid for the occlusion passes (the array layers are for
+// CPU readback evidence only). Level L starts at off(L) = sum_{k<L} (size>>k)^2.
+layout(std430, set = 0, binding = 3) buffer PyramidDataBuffer {
+	uint data[];
+}
+pyrbuf;
+
+// Builds ALL levels in ONE dispatch by re-sampling the R32 view-z attachment at
+// every scale (R32 samplers in the same submission as the draw are the ONE
+// reliable GPU read in this RDG fork - imageLoad of a compute-written image is
+// always stale). Level texel (x,y) covers the 2^level x 2^level level-0 block;
+// the stored value is the max inverted depth over that block's R32 pixels.
+void main() {
+	ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+	int size = int(params.level0_size);
+	if (px.x >= size || px.y >= size) {
+		return;
+	}
+	for (int level = 0; level < int(params.levels); level++) {
+		int lsize = int(params.level0_size) >> level;
+		if (px.x >= lsize || px.y >= lsize) {
+			continue;
+		}
+		int span = 1 << level;
+		int bx = px.x << level;
+		int by = px.y << level;
+		uint best = 0u;
+		for (int ay = 0; ay < span; ay++) {
+			for (int ax = 0; ax < span; ax++) {
+				int lx = bx + ax;
+				int ly = by + ay;
+				// Texel -> viewport pixel (inverse of the cull mapping pixel*texels/viewport).
+				vec2 c = vec2(float(lx), float(ly)) + 0.5;
+				vec2 pixel = c * vec2(params.viewport_w, params.viewport_h) / float(params.level0_size);
+				// Viewport pixel -> depth image UV (the raster image is a fixed res).
+				vec2 uv = clamp(pixel / vec2(params.image_w, params.image_h), vec2(0.0), vec2(1.0));
+				float z_view = textureLod(depth_tex, uv, 0.0).r;
+				uint inv = floatBitsToUint(max(params.far_plane - z_view, 0.0));
+				if (inv > best) {
+					best = inv;
+				}
+			}
+		}
+		if (level == 0) {
+			if (px.x == 864 && px.y == 1024) {
+				probe.pd_at_probe = floatBitsToUint(best);
+				probe.pndc_at_probe = floatBitsToUint(1.0);
+			}
+			if (best > 0u) {
+				atomicAdd(probe.pcount, 1u);
+				atomicMax(probe.pmax_inv, best);
+			}
+		}
+		imageStore(hzb_img, ivec3(px, level), uvec4(best));
+		uint poff = 0u;
+		for (int k = 0; k < level; k++) {
+			uint s = uint(int(params.level0_size) >> k);
+			poff += s * s;
+		}
+		pyrbuf.data[poff + uint(px.x) * uint(lsize) + uint(px.y)] = best;
+	}
+}
+)";
+
+// GOTOT-012 (FINAL pyramid source): OCCLUDER-BOX rasterization. The pyramid is
+// built by projecting each registered occluder's world-space AABB into the
+// view (matching exactly what 004 proved reliable) and writing its near-face
+// inverted depth over every texel of every level that the projected box
+// covers - into the FLAT storage buffer the phases read cross-submission (the
+// ONLY reliable GPU pipeline in this RDG fork; image/R32 attachment reads and
+// compute-image loads are all stale). Conservative (fills the whole AABB) so
+// no false dropout. Level texels index the SAME poff layout the phases use.
+const char *gpu_hzb_occbuf_glsl = R"(
+#version 450
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) buffer OccluderMinBuffer {
+	vec4 mn[];
+}
+occmin;
+
+layout(std430, set = 0, binding = 1) buffer OccluderMaxBuffer {
+	vec4 mx[];
+}
+occmax;
+
+layout(std140, set = 0, binding = 2) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+vd;
+
+layout(std430, set = 0, binding = 3) buffer PyramidDataBuffer {
+	uint data[];
+}
+pyrbuf;
+
+layout(set = 0, binding = 4, r32ui) uniform uimage2DArray hzb_evimg;
+
+void main() {
+	if (vd.occ_count == 0u) {
+		return;
+	}
+	for (uint o = 0u; o < vd.occ_count; o++) {
+		vec3 bmin = occmin.mn[o].xyz;
+		vec3 bmax = occmax.mx[o].xyz;
+
+		// Nearest corner in view space (largest inverted depth = closest).
+		float nz = 1e30;
+		for (int i = 0; i < 8; i++) {
+			vec3 c = mix(bmin, bmax, vec3(float(i & 1), float((i >> 1) & 1), float((i >> 2) & 1)));
+			float cz = vd.view[0][2] * c.x + vd.view[1][2] * c.y + vd.view[2][2] * c.z + vd.view[3][2];
+			nz = min(nz, -cz);
+		}
+		uint inv = floatBitsToUint(max(vd.far_plane - nz, 0.0));
+		if (inv == 0u) {
+			continue;
+		}
+
+		// Projected screen AABB.
+		vec2 s0 = vec2(1e30);
+		vec2 s1 = vec2(-1e30);
+		bool behind = false;
+		for (int i = 0; i < 8; i++) {
+			bool xb = (i & 1) == 1;
+			bool yb = ((i >> 1) & 1) == 1;
+			bool zb = ((i >> 2) & 1) == 1;
+			vec3 c = vec3(xb ? bmax.x : bmin.x, yb ? bmax.y : bmin.y, zb ? bmax.z : bmin.z);
+			vec4 clip = vd.vp * vec4(c, 1.0);
+			if (clip.w <= 0.0) {
+				behind = true;
+			} else {
+				vec2 ndc = clip.xy / clip.w;
+				vec2 px = (ndc * 0.5 + 0.5) * vd.viewport.xy;
+				s0 = min(s0, px);
+				s1 = max(s1, px);
+			}
+		}
+		if (behind || s1.x <= s0.x || s1.y <= s0.y) {
+			continue;
+		}
+
+		for (int level = 0; level < 12; level++) {
+			uint uv_texels = 2048u >> uint(level);
+			uint t0x = uint(clamp(floor(s0.x * float(uv_texels) / vd.viewport.x), 0.0, float(uv_texels - 1)));
+			uint t1x = uint(clamp(ceil(s1.x * float(uv_texels) / vd.viewport.x), 0.0, float(uv_texels)));
+			uint t0y = uint(clamp(floor(s0.y * float(uv_texels) / vd.viewport.y), 0.0, float(uv_texels - 1)));
+			uint t1y = uint(clamp(ceil(s1.y * float(uv_texels) / vd.viewport.y), 0.0, float(uv_texels)));
+			uint poff = 0u;
+			for (int k = 0; k < level; k++) {
+				uint s = 2048u >> uint(k);
+				poff += s * s;
+			}
+			for (uint ty = t0y; ty < t1y; ty++) {
+				for (uint tx = t0x; tx < t1x; tx++) {
+					uint idx = poff + tx * uv_texels + ty;
+					if (inv > pyrbuf.data[idx]) {
+						pyrbuf.data[idx] = inv;
+					}
+					imageStore(hzb_evimg, ivec3(int(tx), int(ty), level), uvec4(inv));
+				}
+			}
+		}
+	}
+}
+)";
+
+// GOTOT-012 phase 1: FRUSTUM-ONLY cull. Every instance is tested against the 6
+// frustum planes (no HZB here - the pyramid is consumed by phase 2 only); each
+// survivor is appended to the phase-1 list and every instance's visibility flag
+// is written. phase2 (running over this list) later decides true survivors.
+const char *gpu_hzb_phase1_glsl = R"(
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform Phase1Params {
+	uint instance_count;
+	uint pad0;
+	uint pad1;
+	uint pad2;
+}
+params;
+
+layout(std430, set = 0, binding = 0) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std430, set = 0, binding = 1) buffer Phase1CompactBuffer {
+	uint row[];
+}
+phase1;
+
+layout(std430, set = 0, binding = 2) buffer Phase1CountBuffer {
+	uint count;
+}
+p1count;
+
+layout(std430, set = 0, binding = 3) buffer VisibilityBuffer {
+	uint visible[];
+}
+visibility;
+
+layout(std140, set = 0, binding = 5) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+void main() {
+	uint i = gl_GlobalInvocationID.x;
+	if (i >= params.instance_count) {
+		return;
+	}
+	vec4 ts = transforms.position_scale[i];
+	vec3 center = ts.xyz;
+	float radius = ts.w;
+	uint vis = 1u;
+	for (uint p = 0u; p < 6u; p++) {
+		vec4 pl = viewdata.planes[p];
+		float d = dot(pl.xyz, center) + pl.w;
+		if (d < -radius) {
+			vis = 0u;
+			break;
+		}
+	}
+	visibility.visible[i] = vis;
+	if (vis == 1u) {
+		uint slot = atomicAdd(p1count.count, 1u);
+		phase1.row[slot] = i;
+	}
+}
+)";
+
+// GOTOT-012 phase 2: HZB occlusion over ALL instances (run inside the same
+// submission as the pyramid build). Each instance frustum-checks itself too
+// (phase 1 remains as the frustum-only EVIDENCE count). The bounding sphere of
+// each instance is projected and tested against the 12-level pyramid exactly
+// like the 004 test (2x2 texel max against the level matching the projected
+// radius). params.inflate scales the radius conservatively. The pyramid is read
+// from the flat STORAGE buffer mirror (buffers are the only reliable GPU reads
+// in this RDG fork). Survivors compact into compact[]/visible_count[] - the
+// SAME buffers the 011 batch assembler consumes.
+const char *gpu_hzb_phase2_glsl = R"(
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform Phase2Params {
+	uint instance_count;
+	float inflate;
+	uint pad0;
+	uint pad1;
+}
+params;
+
+layout(std430, set = 0, binding = 0) buffer Phase1CompactBuffer {
+	uint row[];
+}
+phase1;
+
+layout(std430, set = 0, binding = 1) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std430, set = 0, binding = 2) buffer CountBuffer {
+	uint count;
+}
+counter;
+
+layout(std430, set = 0, binding = 3) buffer CompactBuffer {
+	uint row[];
+}
+compact;
+
+layout(std430, set = 0, binding = 4) buffer PyramidDataBuffer {
+	uint data[];
+}
+pyrbuf;
+
+layout(std430, set = 0, binding = 6) buffer DbgProbeBuffer {
+	uint pcount;
+	uint pmax_inv;
+	uint pd_at_probe;
+	uint pndc_at_probe;
+}
+dprobe;
+
+layout(std140, set = 0, binding = 5) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+void main() {
+	uint j = gl_GlobalInvocationID.x;
+	if (j >= params.instance_count) {
+		return;
+	}
+	vec4 ts = transforms.position_scale[j];
+	vec3 center = ts.xyz;
+	float radius = ts.w * params.inflate;
+
+	uint vis = 1u;
+	for (uint p = 0u; p < 6u; p++) {
+		vec4 pl = viewdata.planes[p];
+		float d = dot(pl.xyz, center) + pl.w;
+		if (d < -radius) {
+			vis = 0u;
+			break;
+		}
+	}
+
+	if (vis == 1u && viewdata.hzb_valid != 0u) {
+		vec3 vc = (viewdata.view * vec4(center, 1.0)).xyz;
+		float z_view = -vc.z;
+		float r_px = (radius * 0.5 * viewdata.viewport.y) / (viewdata.viewport.w * max(z_view, 0.0001));
+		if (r_px >= 1.0) {
+			vec4 clip = viewdata.vp * vec4(center, 1.0);
+			vec2 ndc = clip.xy / clip.w;
+			// Sample the square 2048-grid the writer (occbuf) projects into:
+			// writer texel = frac_ndc * (2048>>L) (the aspect cancels because it
+			// scales px by uv_texels/viewport.xy), so the reader must sample
+			// frac_ndc * texels, NOT the raster viewport-xy pixels (=0.94 x and
+			// 0.53 y factors - guaranteed misses on the y axis).
+			float logt = ceil(log2(r_px));
+			int level = clamp(int(logt), 0, int(log2(viewdata.viewport.z)));
+			float scale = exp2(float(level));
+			int texels = int(viewdata.viewport.z) >> level;
+			vec2 uv = clamp((ndc * 0.5 + 0.5) * vec2(float(texels)), vec2(0.0), vec2(float(texels - 1)));
+			ivec2 t = ivec2(uv);
+			float z_sphere = max(z_view - radius, 0.0);
+			uint sphere_inv = floatBitsToUint(max(viewdata.far_plane - z_sphere, 0.0));
+			uint poff = 0u;
+			int base = int(viewdata.viewport.z);
+			for (int k = 0; k < level; k++) {
+				uint s = uint(base >> k);
+				poff += s * s;
+			}
+			uint max_inv = 0u;
+			for (int dy = 0; dy <= 1; dy++) {
+				for (int dx = 0; dx <= 1; dx++) {
+					ivec2 tc = clamp(t + ivec2(dx, dy), ivec2(0), ivec2(texels - 1));
+					max_inv = max(max_inv, pyrbuf.data[poff + uint(tc.x) * uint(texels) + uint(tc.y)]);
+				}
+			}
+			if (max_inv > sphere_inv) {
+				vis = 0u;
+			}
+
+			// GOTOT-012 debug: dump instance 91's occlusion math into the probe
+			// buffer (level, pyramid max_inv, sphere_inv, texel x*2048+y).
+			if (j == 91u) {
+				dprobe.pcount = uint(level);
+				dprobe.pmax_inv = max_inv;
+				dprobe.pd_at_probe = sphere_inv;
+				dprobe.pndc_at_probe = uint(t.x) * 2048u + uint(t.y);
+			}
+		}
+	}
+
+	if (vis == 1u) {
+		uint slot = atomicAdd(counter.count, 1u);
+		compact.row[slot] = j;
+	}
+}
+)";
 } // namespace
 
 void GototRenderServer::_bind_methods() {
@@ -959,12 +1398,44 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_scene_set_occluders", "occluders"), &GototRenderServer::gpu_scene_set_occluders);
 	ClassDB::bind_method(D_METHOD("gpu_visibility_dispatch"), &GototRenderServer::gpu_visibility_dispatch);
 
+	ClassDB::bind_method(D_METHOD("gpu_hzb_prod_create"), &GototRenderServer::gpu_hzb_prod_create);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_build"), &GototRenderServer::gpu_hzb_build);
+	ClassDB::bind_method(D_METHOD("gpu_visibility_prod_dispatch"), &GototRenderServer::gpu_visibility_prod_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_enable_temporal", "enabled"), &GototRenderServer::gpu_hzb_enable_temporal);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_set_occluders", "occluders"), &GototRenderServer::gpu_hzb_set_occluders);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_get_level_count"), &GototRenderServer::gpu_hzb_get_level_count);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_get_phase_counts"), &GototRenderServer::gpu_hzb_get_phase_counts);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_get_coherent"), &GototRenderServer::gpu_hzb_get_coherent);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_valid"), &GototRenderServer::gpu_hzb_dbg_valid);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_level0", "x", "y"), &GototRenderServer::gpu_hzb_dbg_level0);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_probe"), &GototRenderServer::gpu_hzb_dbg_probe);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_level0"), &GototRenderServer::gpu_hzb_dbg_scan_level0);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_level1", "level"), &GototRenderServer::gpu_hzb_dbg_scan_level1);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_buffer", "level"), &GototRenderServer::gpu_hzb_dbg_scan_buffer);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_sim2"), &GototRenderServer::gpu_hzb_dbg_sim2);
+
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_load", "data"), &GototRenderServer::gpu_meshlet_load);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_load_path", "path"), &GototRenderServer::gpu_meshlet_load_path);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_set_lod_thresholds", "t0", "t1"), &GototRenderServer::gpu_meshlet_set_lod_thresholds);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_cull_dispatch"), &GototRenderServer::gpu_meshlet_cull_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_raster_dispatch"), &GototRenderServer::gpu_meshlet_raster_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_total_meshlets"), &GototRenderServer::gpu_meshlet_get_total_meshlets);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_lod0_tri_count"), &GototRenderServer::gpu_meshlet_get_lod0_tri_count);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_lod0_meshlet_count"), &GototRenderServer::gpu_meshlet_get_lod0_meshlet_count);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_stats"), &GototRenderServer::gpu_meshlet_stats);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_cluster_counts"), &GototRenderServer::gpu_meshlet_get_cluster_counts);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_instance_lods"), &GototRenderServer::gpu_meshlet_get_instance_lods);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_cull_debug"), &GototRenderServer::gpu_meshlet_get_cull_debug);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_raster_evidence"), &GototRenderServer::gpu_meshlet_raster_evidence);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_destroy"), &GototRenderServer::gpu_meshlet_destroy);
+
 	ClassDB::bind_method(D_METHOD("gpu_raster_indirect_draw"), &GototRenderServer::gpu_raster_indirect_draw);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_pixels"), &GototRenderServer::gpu_raster_read_pixels);
 	ClassDB::bind_method(D_METHOD("gpu_scene_get_vp"), &GototRenderServer::gpu_scene_get_vp);
 
 	ClassDB::bind_method(D_METHOD("gpu_scene_set_instance_transform", "index", "position", "scale"), &GototRenderServer::gpu_scene_set_instance_transform);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_depth"), &GototRenderServer::gpu_raster_read_depth);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz", "x", "y"), &GototRenderServer::gpu_raster_read_viewz);
 	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_format"), &GototRenderServer::gpu_raster_get_depth_format);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_depth_enabled"), &GototRenderServer::gpu_mesh_get_depth_enabled);
 	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_enabled"), &GototRenderServer::gpu_raster_get_depth_enabled);
@@ -1217,8 +1688,55 @@ void GototRenderServer::_destroy_mesh() {
 	gpu_mesh_valid = false;
 }
 
+void GototRenderServer::_destroy_hzb_prod() {
+	if (rendering_device == nullptr) {
+		gpu_hzb_prod_valid = false;
+		hzb_pyramid_fresh = false;
+		hzb_phase1_count = 0;
+		hzb_phase2_count = 0;
+		return;
+	}
+
+	auto free_rid = [&](RID &r) {
+		if (r.is_valid()) {
+			rendering_device->free_rid(r);
+			r = RID();
+		}
+	};
+
+	free_rid(hzb_phase2_uniform_set);
+	free_rid(hzb_phase2_pipeline);
+	free_rid(hzb_phase2_shader);
+	free_rid(hzb_phase1_uniform_set);
+	free_rid(hzb_phase1_pipeline);
+	free_rid(hzb_phase1_shader);
+	free_rid(hzb_occbuf_uniform_set);
+	free_rid(hzb_occbuf_pipeline);
+	free_rid(hzb_occbuf_shader);
+	free_rid(hzb_depth_source_uniform_set);
+	free_rid(hzb_depth_source_pipeline);
+	free_rid(hzb_depth_source_shader);
+	free_rid(hzb_depth_sampler);
+	free_rid(hzb_prod_down_set);
+	free_rid(hzb_prod_occ_set);
+	free_rid(hzb_prod_clear_set);
+	free_rid(hzb_dbg_probe_buffer);
+	free_rid(phase1_count_buffer);
+	free_rid(phase1_compact_buffer);
+	free_rid(hzb_pyramid_data_buffer);
+	free_rid(hzb_prod_array);
+
+	gpu_hzb_prod_valid = false;
+	hzb_pyramid_fresh = false;
+	hzb_coherent = false;
+	hzb_stable_frames = 0;
+	hzb_phase1_count = 0;
+	hzb_phase2_count = 0;
+}
+
 void GototRenderServer::_destroy_gpu_scene() {
 	_destroy_mesh();
+	_destroy_hzb_prod();
 
 	if (rendering_device == nullptr) {
 		gpu_scene_valid = false;
@@ -1301,6 +1819,10 @@ void GototRenderServer::_destroy_gpu_scene() {
 	if (raster_depth_texture.is_valid()) {
 		rendering_device->free_rid(raster_depth_texture);
 		raster_depth_texture = RID();
+	}
+	if (raster_viewz_texture.is_valid()) {
+		rendering_device->free_rid(raster_viewz_texture);
+		raster_viewz_texture = RID();
 	}
 	raster_framebuffer_format = -1;
 	raster_depth_attached = false;
@@ -1396,6 +1918,7 @@ void GototRenderServer::shutdown() {
 		return;
 	}
 
+	_destroy_meshlet();
 	_destroy_gpu_scene();
 
 	memdelete(rendering_device);
@@ -1422,6 +1945,7 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 		return false;
 	}
 
+	_destroy_meshlet();
 	_destroy_gpu_scene();
 
 	int count = p_instance_count;
@@ -1746,6 +2270,25 @@ void GototRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transfo
 	}
 	frustum_valid = true;
 
+	// GOTOT-013: capture the camera data UNCONDITIONALLY (independent of the
+	// HZB path) so the meshlet pipeline - which has its OWN UBO, not view_ubo -
+	// always receives a fresh vp/planes/cam/far even when HZB is not active.
+	// last_vp keeps the same value the 004/009/012 paths compute, so nothing
+	// downstream changes.
+	meshlet_camera_position[0] = p_camera_transform.origin.x;
+	meshlet_camera_position[1] = p_camera_transform.origin.y;
+	meshlet_camera_position[2] = p_camera_transform.origin.z;
+	far_plane = p_projection.get_z_far();
+	{
+		Projection ml_cam_view(p_camera_transform.inverse());
+		Projection ml_vp_mat = p_projection * ml_cam_view;
+		for (int c013 = 0; c013 < 4; c013++) {
+			for (int r013 = 0; r013 < 4; r013++) {
+				last_vp[c013 * 4 + r013] = ml_vp_mat.columns[c013][r013];
+			}
+		}
+	}
+
 	if (rendering_device == nullptr || !gpu_hzb_valid) {
 		return;
 	}
@@ -1776,6 +2319,14 @@ void GototRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transfo
 	vd.occ_count = (uint32_t)occluder_count;
 	vd.far_plane = p_projection.get_z_far();
 	vd.hzb_valid = 0;
+
+	// GOTOT-012: store the depth-reconstruction projection coefficients for the
+	// production pyramid (ndc_z = -A - B/z_view). Only the projection decides
+	// them (the view matrix cancels out), so the same camera/view space used to
+	// write the previous frame's D32 depth is recoverable exactly.
+	far_plane = p_projection.get_z_far();
+	hzb_proj_a = p_projection.columns[2][2];
+	hzb_proj_b = p_projection.columns[3][2];
 
 	rendering_device->buffer_update(view_ubo, 0, sizeof(GototViewData), &vd);
 	camera_view_valid = true;
@@ -2125,6 +2676,741 @@ bool GototRenderServer::gpu_visibility_dispatch() {
 	return true;
 }
 
+// GOTOT-012: build the production pyramid resources. Reuses the 004 clear/occ/
+// down SHADERS and PIPELINES with separate uniform sets bound to the 2048x2048
+// prod array (uniform-set reuse is valid as long as each set is created against
+// the matching shader). The depth-source and the two-phase cull passes are new.
+bool GototRenderServer::gpu_hzb_prod_create() {
+	if (!ensure_gpu_device()) {
+		return false;
+	}
+	if (!gpu_scene_valid || !gpu_hzb_valid || !raster_depth_attached) {
+		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: requires an existing GPU scene (gpu_scene_create) with the D32 raster depth attachment.");
+		return false;
+	}
+	if (gpu_hzb_prod_valid) {
+		return true;
+	}
+
+	String error;
+	auto compile_compute = [&](const char *p_glsl, const char *p_name, RID &r_shader) -> bool {
+		Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_COMPUTE, String(p_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (spirv.is_empty()) {
+			print_error(String("[GOTOT-NEXT] ") + p_name + " shader compile failed:");
+			print_error(error);
+			return false;
+		}
+		RD::ShaderStageSPIRVData stage;
+		stage.shader_stage = RD::SHADER_STAGE_COMPUTE;
+		stage.spirv = spirv;
+		Vector<RD::ShaderStageSPIRVData> stages;
+		stages.push_back(stage);
+		r_shader = rendering_device->shader_create_from_spirv(stages, p_name);
+		return r_shader.is_valid();
+	};
+
+	// Production pyramid texture: 2048x2048 R32UI 2D-array, 12 levels.
+	RD::TextureFormat tf;
+	tf.format = RD::DATA_FORMAT_R32_UINT;
+	tf.texture_type = RD::TEXTURE_TYPE_2D_ARRAY;
+	tf.width = HZB_PROD_TEXEL_COUNT;
+	tf.height = HZB_PROD_TEXEL_COUNT;
+	tf.depth = 1;
+	tf.array_layers = HZB_PROD_LEVELS;
+	tf.mipmaps = 1;
+	tf.samples = RD::TEXTURE_SAMPLES_1;
+	tf.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	hzb_prod_array = rendering_device->texture_create(tf, RD::TextureView());
+	if (hzb_prod_array.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: prod pyramid texture_create failed.");
+		return false;
+	}
+
+	phase1_compact_buffer = rendering_device->storage_buffer_create((uint32_t)gpu_instance_count * 4u);
+	phase1_count_buffer = rendering_device->storage_buffer_create(4);
+	hzb_pyramid_data_buffer = rendering_device->storage_buffer_create(HZB_PYRAMID_DATA_UINTS * 4u);
+	if (hzb_pyramid_data_buffer.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: pyramid data buffer_create failed.");
+		_destroy_hzb_prod();
+		return false;
+	}
+
+	hzb_depth_sampler = rendering_device->sampler_create(RD::SamplerState());
+	hzb_dbg_probe_buffer = rendering_device->storage_buffer_create(16);
+	if (hzb_depth_sampler.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: depth sampler_create failed.");
+		_destroy_hzb_prod();
+		return false;
+	}
+
+	// Reused uniform sets (004 shaders/pipelines) bound to the prod array.
+	{
+		Vector<RD::Uniform> cu;
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		u.binding = 0;
+		u.append_id(hzb_prod_array);
+		cu.push_back(u);
+		hzb_prod_clear_set = rendering_device->uniform_set_create(cu, hzb_clear_shader, 0);
+		if (hzb_prod_clear_set.is_null()) {
+			print_error("[GOTOT-NEXT] gpu_hzb_prod_create: prod clear uniform_set_create failed.");
+			_destroy_hzb_prod();
+			return false;
+		}
+	}
+	{
+		Vector<RD::Uniform> ou;
+		RD::Uniform u0;
+		u0.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		u0.binding = 0;
+		u0.append_id(hzb_prod_array);
+		ou.push_back(u0);
+		RD::Uniform u1;
+		u1.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u1.binding = 1;
+		u1.append_id(occluder_min_buffer);
+		ou.push_back(u1);
+		RD::Uniform u2;
+		u2.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u2.binding = 2;
+		u2.append_id(occluder_max_buffer);
+		ou.push_back(u2);
+		RD::Uniform u5;
+		u5.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		u5.binding = 5;
+		u5.append_id(view_ubo);
+		ou.push_back(u5);
+		hzb_prod_occ_set = rendering_device->uniform_set_create(ou, hzb_occ_shader, 0);
+		if (hzb_prod_occ_set.is_null()) {
+			print_error("[GOTOT-NEXT] gpu_hzb_prod_create: prod occ uniform_set_create failed.");
+			_destroy_hzb_prod();
+			return false;
+		}
+	}
+	{
+		Vector<RD::Uniform> du;
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		u.binding = 0;
+		u.append_id(hzb_prod_array);
+		du.push_back(u);
+		hzb_prod_down_set = rendering_device->uniform_set_create(du, hzb_down_shader, 0);
+		if (hzb_prod_down_set.is_null()) {
+			print_error("[GOTOT-NEXT] gpu_hzb_prod_create: prod down uniform_set_create failed.");
+			_destroy_hzb_prod();
+			return false;
+		}
+	}
+
+	// Depth-source pass: sampler2D (0) + image (1) + probe buffer (2) +
+	// pyramid-data storage buffer (3) - the buffer is the RELIABLE pyramid the
+	// phase-2 occlusion reads (storage buffers sync correctly in this fork).
+	if (!compile_compute(gpu_hzb_depth_source_glsl, "gotot_hzb_depth_source", hzb_depth_source_shader)) {
+		_destroy_hzb_prod();
+		return false;
+	}
+	hzb_depth_source_pipeline = rendering_device->compute_pipeline_create(hzb_depth_source_shader);
+	Vector<RD::Uniform> ds_uniforms;
+	RD::Uniform ds0;
+	ds0.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+	ds0.binding = 0;
+	ds0.append_id(hzb_depth_sampler);
+	ds0.append_id(raster_viewz_texture);
+	ds_uniforms.push_back(ds0);
+	RD::Uniform ds1;
+	ds1.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+	ds1.binding = 1;
+	ds1.append_id(hzb_prod_array);
+	ds_uniforms.push_back(ds1);
+	RD::Uniform ds2;
+	ds2.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	ds2.binding = 2;
+	ds2.append_id(hzb_dbg_probe_buffer);
+	ds_uniforms.push_back(ds2);
+	RD::Uniform ds3;
+	ds3.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	ds3.binding = 3;
+	ds3.append_id(hzb_pyramid_data_buffer);
+	ds_uniforms.push_back(ds3);
+	hzb_depth_source_uniform_set = rendering_device->uniform_set_create(ds_uniforms, hzb_depth_source_shader, 0);
+	if (hzb_depth_source_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: depth-source uniform_set_create failed.");
+		_destroy_hzb_prod();
+		return false;
+	}
+
+	// GOTOT-012 final source: occluder-box pyramid (occmin(0)/occmax(1)/UBO(2)/
+	// pyramid-data(3)/evidence image(4)). Only the flat storage buffer is read
+	// by the phases - the image keeps a readback copy for evidence.
+	if (!compile_compute(gpu_hzb_occbuf_glsl, "gotot_hzb_occbuf", hzb_occbuf_shader)) {
+		_destroy_hzb_prod();
+		return false;
+	}
+	hzb_occbuf_pipeline = rendering_device->compute_pipeline_create(hzb_occbuf_shader);
+	Vector<RD::Uniform> ob_uniforms;
+	RD::Uniform ob0;
+	ob0.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	ob0.binding = 0;
+	ob0.append_id(occluder_min_buffer);
+	ob_uniforms.push_back(ob0);
+	RD::Uniform ob1;
+	ob1.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	ob1.binding = 1;
+	ob1.append_id(occluder_max_buffer);
+	ob_uniforms.push_back(ob1);
+	RD::Uniform ob2;
+	ob2.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+	ob2.binding = 2;
+	ob2.append_id(view_ubo);
+	ob_uniforms.push_back(ob2);
+	RD::Uniform ob3;
+	ob3.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	ob3.binding = 3;
+	ob3.append_id(hzb_pyramid_data_buffer);
+	ob_uniforms.push_back(ob3);
+	RD::Uniform ob4;
+	ob4.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+	ob4.binding = 4;
+	ob4.append_id(hzb_prod_array);
+	ob_uniforms.push_back(ob4);
+	hzb_occbuf_uniform_set = rendering_device->uniform_set_create(ob_uniforms, hzb_occbuf_shader, 0);
+	if (hzb_occbuf_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: occbuf uniform_set_create failed.");
+		_destroy_hzb_prod();
+		return false;
+	}
+
+	// Phase 1 (frustum only): transforms(0), phase1 list(1), phase1 count(2),
+	// visibility(3), view UBO(5).
+	if (!compile_compute(gpu_hzb_phase1_glsl, "gotot_hzb_phase1", hzb_phase1_shader)) {
+		_destroy_hzb_prod();
+		return false;
+	}
+	hzb_phase1_pipeline = rendering_device->compute_pipeline_create(hzb_phase1_shader);
+	Vector<RD::Uniform> p1_uniforms;
+	RD::Uniform p1u0;
+	p1u0.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p1u0.binding = 0;
+	p1u0.append_id(transform_buffer);
+	p1_uniforms.push_back(p1u0);
+	RD::Uniform p1u1;
+	p1u1.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p1u1.binding = 1;
+	p1u1.append_id(phase1_compact_buffer);
+	p1_uniforms.push_back(p1u1);
+	RD::Uniform p1u2;
+	p1u2.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p1u2.binding = 2;
+	p1u2.append_id(phase1_count_buffer);
+	p1_uniforms.push_back(p1u2);
+	RD::Uniform p1u3;
+	p1u3.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p1u3.binding = 3;
+	p1u3.append_id(visibility_buffer);
+	p1_uniforms.push_back(p1u3);
+	RD::Uniform p1u5;
+	p1u5.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+	p1u5.binding = 5;
+	p1u5.append_id(view_ubo);
+	p1_uniforms.push_back(p1u5);
+	hzb_phase1_uniform_set = rendering_device->uniform_set_create(p1_uniforms, hzb_phase1_shader, 0);
+	if (hzb_phase1_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: phase1 uniform_set_create failed.");
+		_destroy_hzb_prod();
+		return false;
+	}
+
+	// Phase 2 (HZB occlusion): phase1 list(0), transforms(1), count(2),
+	// compact(3), pyramid data buffer(4), view UBO(5).
+	if (!compile_compute(gpu_hzb_phase2_glsl, "gotot_hzb_phase2", hzb_phase2_shader)) {
+		_destroy_hzb_prod();
+		return false;
+	}
+	hzb_phase2_pipeline = rendering_device->compute_pipeline_create(hzb_phase2_shader);
+	Vector<RD::Uniform> p2_uniforms;
+	RD::Uniform p2u0;
+	p2u0.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p2u0.binding = 0;
+	p2u0.append_id(phase1_compact_buffer);
+	p2_uniforms.push_back(p2u0);
+	RD::Uniform p2u1;
+	p2u1.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p2u1.binding = 1;
+	p2u1.append_id(transform_buffer);
+	p2_uniforms.push_back(p2u1);
+	RD::Uniform p2u2;
+	p2u2.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p2u2.binding = 2;
+	p2u2.append_id(visible_count_buffer);
+	p2_uniforms.push_back(p2u2);
+	RD::Uniform p2u3;
+	p2u3.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p2u3.binding = 3;
+	p2u3.append_id(compact_buffer);
+	p2_uniforms.push_back(p2u3);
+	RD::Uniform p2u4;
+	p2u4.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p2u4.binding = 4;
+	p2u4.append_id(hzb_pyramid_data_buffer);
+	p2_uniforms.push_back(p2u4);
+	RD::Uniform p2u5;
+	p2u5.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+	p2u5.binding = 5;
+	p2u5.append_id(view_ubo);
+	p2_uniforms.push_back(p2u5);
+	RD::Uniform p2u6;
+	p2u6.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	p2u6.binding = 6;
+	p2u6.append_id(hzb_dbg_probe_buffer);
+	p2_uniforms.push_back(p2u6);
+	hzb_phase2_uniform_set = rendering_device->uniform_set_create(p2_uniforms, hzb_phase2_shader, 0);
+	if (hzb_phase2_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: phase2 uniform_set_create failed.");
+		_destroy_hzb_prod();
+		return false;
+	}
+
+	gpu_hzb_prod_valid = true;
+	hzb_temporal_enabled = true;
+	hzb_pyramid_fresh = false;
+	hzb_coherent = false;
+	hzb_stable_frames = 0;
+	hzb_inflate_factor = 2.0f;
+	hzb_phase1_count = 0;
+	hzb_phase2_count = 0;
+
+	print_line("[GOTOT-NEXT] Production HZB created. levels=" + itos(HZB_PROD_LEVELS) +
+			" base=" + itos(HZB_PROD_TEXEL_COUNT) + "x" + itos(HZB_PROD_TEXEL_COUNT));
+
+	return true;
+}
+
+// GOTOT-012: rebuild the production pyramid from the PREVIOUS frame's depth and
+// run the temporal bookkeeping. The pyramid may only be used when the camera vp
+// that wrote that depth matches the CURRENT vp; otherwise hzb_valid is left 0
+// (frustum-only, conservative - no false dropout) and the pyramid is rebuilt
+// next frame from depth the settled camera just wrote.
+bool GototRenderServer::gpu_hzb_build() {
+	if (!gpu_scene_valid || !gpu_hzb_prod_valid) {
+		print_error("[GOTOT-NEXT] gpu_hzb_build: production HZB not created.");
+		return false;
+	}
+	if (!camera_view_valid || !frustum_valid) {
+		print_error("[GOTOT-NEXT] gpu_hzb_build: no camera. Call gpu_scene_set_camera first.");
+		return false;
+	}
+
+	bool same_vp = hzb_pyramid_fresh && (memcmp(hzb_build_vp, last_vp, sizeof(last_vp)) == 0);
+	hzb_coherent = (hzb_stable_frames >= 2) && hzb_temporal_enabled;
+	memcpy(hzb_build_vp, last_vp, sizeof(last_vp));
+	hzb_pyramid_fresh = true;
+
+	if (!same_vp) {
+		// Camera moved since the last build (or first frame before any depth).
+		// The previous depth buffer lives in a different view space -> do NOT
+		// build a pyramid from it. Conservative: frustum-only this frame.
+		hzb_stable_frames = 1;
+		hzb_coherent = false;
+		uint32_t zero = 0;
+		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &zero);
+		return true;
+	}
+	hzb_stable_frames++;
+
+	// Patch the shared view UBO for the production square grid.
+	int32_t texel_count = HZB_PROD_TEXEL_COUNT;
+	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
+	int32_t occ_count = occluder_count;
+	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &occ_count);
+	uint32_t hzb_one = 1;
+	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &hzb_one);
+
+	// Queue the pyramid passes to run INSIDE the next gpu_mesh_batch_draw
+	// submission (clear, R32 depth-source sample, box occluders, downsample
+	// chain). The depth source samples the R32 color attachment written by the
+	// draw of the very same command stream - cross-submission attachment
+	// sampling returns the pre-draw (cleared) version in this RDG fork.
+	hzb_rebuild_requested = true;
+	return true;
+}
+
+// GOTOT-012: two-phase production visibility dispatch. Phase 1 produces the
+// frustum survivors (phase-1 list + count + visibility flags), phase 2 applies
+// the HZB occlusion to that list and compacts the survivors into the FINAL
+// compact[]/visible_count[] consumed by the 011 batch assembler.
+bool GototRenderServer::gpu_visibility_prod_dispatch() {
+	if (!gpu_scene_valid || !gpu_cull_valid || !gpu_hzb_valid || !gpu_hzb_prod_valid) {
+		print_error("[GOTOT-NEXT] gpu_visibility_prod_dispatch: no production HZB. Call gpu_hzb_prod_create first.");
+		return false;
+	}
+	if (!frustum_valid || !camera_view_valid) {
+		print_error("[GOTOT-NEXT] gpu_visibility_prod_dispatch: no camera. Call gpu_scene_set_camera first.");
+		return false;
+	}
+
+	// Patch the shared view UBO for the production square grid + the freshest
+	// occluder count (hzb_valid reflects what gpu_hzb_build left in the UBO).
+	{
+		int32_t texel_count = HZB_PROD_TEXEL_COUNT;
+		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
+		int32_t occ_count = occluder_count;
+		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &occ_count);
+	}
+
+	// Two-phase cull in THIS synced submission. First rebuild the pyramid from
+	// the registered occluder AABBs (flat storage buffer - cross-submission
+	// reads are the ONE reliable GPU route in this RDG fork), then phase 1
+	// (frustum-only evidence count) and phase 2 (frustum + HZB occlusion into
+	// compact[]/visible_count[]).
+	rendering_device->buffer_clear(phase1_count_buffer, 0, 4);
+	rendering_device->buffer_clear(visible_count_buffer, 0, 4);
+	rendering_device->buffer_clear(hzb_pyramid_data_buffer, 0, HZB_PYRAMID_DATA_UINTS * 4);
+	if (occluder_count > 0) {
+		RD::ComputeListID ocl = rendering_device->compute_list_begin();
+		rendering_device->compute_list_bind_compute_pipeline(ocl, hzb_occbuf_pipeline);
+		rendering_device->compute_list_bind_uniform_set(ocl, hzb_occbuf_uniform_set, 0);
+		rendering_device->compute_list_dispatch(ocl, 1, 1, 1);
+		rendering_device->compute_list_end();
+	}
+
+	struct Phase1Params {
+		uint32_t instance_count;
+		uint32_t pad0;
+		uint32_t pad1;
+		uint32_t pad2;
+	};
+	Phase1Params ph1;
+	ph1.instance_count = (uint32_t)gpu_instance_count;
+	ph1.pad0 = 0;
+	ph1.pad1 = 0;
+	ph1.pad2 = 0;
+	uint32_t pgroups = (uint32_t)(((gpu_instance_count - 1) / 64) + 1);
+	_run_compute_pass(hzb_phase1_pipeline, hzb_phase1_uniform_set, &ph1, sizeof(ph1), pgroups, 1, 1);
+
+	struct Phase2Params {
+		uint32_t instance_count;
+		float inflate;
+		uint32_t pad0;
+		uint32_t pad1;
+	};
+	Phase2Params ph2;
+	ph2.instance_count = (uint32_t)gpu_instance_count;
+	ph2.inflate = hzb_coherent ? 1.0f : hzb_inflate_factor;
+	ph2.pad0 = 0;
+	ph2.pad1 = 0;
+	_run_compute_pass(hzb_phase2_pipeline, hzb_phase2_uniform_set, &ph2, sizeof(ph2), pgroups, 1, 1);
+
+	hzb_phase1_count = -1;
+	{
+		Vector<uint8_t> p1bytes = rendering_device->buffer_get_data(phase1_count_buffer, 0, 4);
+		if (p1bytes.size() == 4) {
+			uint32_t c = 0;
+			memcpy(&c, p1bytes.ptr(), 4);
+			hzb_phase1_count = (int)c;
+		}
+	}
+	uint32_t p1count = (uint32_t)MAX(hzb_phase1_count, 0);
+
+	// Phase 2 result (visible_count = survivors after occlusion).
+	hzb_phase2_count = (int)p1count;
+	{
+		Vector<uint8_t> p2bytes = rendering_device->buffer_get_data(visible_count_buffer, 0, 4);
+		if (p2bytes.size() == 4) {
+			uint32_t c = 0;
+			memcpy(&c, p2bytes.ptr(), 4);
+			hzb_phase2_count = (int)c;
+		}
+	}
+
+	return true;
+}
+
+void GototRenderServer::gpu_hzb_enable_temporal(bool p_enabled) {
+	hzb_temporal_enabled = p_enabled;
+	if (!p_enabled) {
+		hzb_coherent = false;
+	}
+}
+
+void GototRenderServer::gpu_hzb_set_occluders(const Vector<Vector4> &p_occluders) {
+	gpu_scene_set_occluders(p_occluders);
+}
+
+int GototRenderServer::gpu_hzb_get_level_count() {
+	if (gpu_hzb_prod_valid) {
+		return HZB_PROD_LEVELS;
+	}
+	return gpu_hzb_valid ? HZB_LEVELS : 0;
+}
+
+PackedInt32Array GototRenderServer::gpu_hzb_get_phase_counts() {
+	PackedInt32Array ret;
+	ret.resize(2);
+	ret.set(0, hzb_phase1_count);
+	ret.set(1, hzb_phase2_count);
+	return ret;
+}
+
+bool GototRenderServer::gpu_hzb_get_coherent() const {
+	return hzb_coherent;
+}
+
+// CPU replica of the phase-2 shader's occlusion math for a probe set of
+// instances, using the REAL GPU buffers phase 2 reads (view UBO, transform
+// buffer, pyramid data buffer). Returns [level, t.x, t.y, max_inv, sphere_inv,
+// vis] rows. Validates the index mapping + pyramid content end-to-end.
+PackedInt32Array GototRenderServer::gpu_hzb_dbg_sim2() {
+	PackedInt32Array out;
+	if (!gpu_hzb_prod_valid) {
+		return out;
+	}
+	const int probe_insts[8] = { 0, 64, 72, 91, 97, 120, 128, 131 };
+	Vector<uint8_t> vb = rendering_device->buffer_get_data(view_ubo, 0, 256);
+	Vector<uint8_t> tb = rendering_device->buffer_get_data(transform_buffer, 0, (uint32_t)gpu_instance_count * 16);
+	Vector<uint8_t> pb = rendering_device->buffer_get_data(hzb_pyramid_data_buffer, 0, HZB_PYRAMID_DATA_UINTS * 4);
+	if (vb.size() < 256 || tb.size() < (size_t)gpu_instance_count * 16 || pb.size() < HZB_PYRAMID_DATA_UINTS * 4) {
+		return out;
+	}
+	const float *vp = (const float *)vb.ptr();
+	const float *view = vp + 16;
+	const float *viewport = vp + 16 + 16 + 24; // after planes[6]
+	float far_plane = ((const float *)vb.ptr())[61];
+	float tanv = viewport[3];
+	const float *ts = (const float *)tb.ptr();
+	const uint32_t *pyr = (const uint32_t *)pb.ptr();
+	float inflate = hzb_coherent ? 1.0f : hzb_inflate_factor;
+
+	for (int n = 0; n < 8; n++) {
+		int j = probe_insts[n];
+		Vector3 center(ts[j * 4 + 0], ts[j * 4 + 1], ts[j * 4 + 2]);
+		float radius = ts[j * 4 + 3] * inflate;
+		float cx = vp[0] * center.x + vp[4] * center.y + vp[8] * center.z + vp[12];
+		float cy = vp[1] * center.x + vp[5] * center.y + vp[9] * center.z + vp[13];
+		float cw = vp[3] * center.x + vp[7] * center.y + vp[11] * center.z + vp[15];
+		float vx = view[0] * center.x + view[4] * center.y + view[8] * center.z + view[12];
+		float vy = view[1] * center.x + view[5] * center.y + view[9] * center.z + view[13];
+		float vz = view[2] * center.x + view[6] * center.y + view[10] * center.z + view[14];
+		float z_view = -vz;
+		float r_px = (radius * 0.5f * viewport[1]) / (viewport[3] * MAX(z_view, 0.0001f));
+		int level = 0;
+		int tx = -1;
+		int ty = -1;
+		uint32_t max_inv = 0;
+		uint32_t sphere_inv = 0;
+		int vis = 1;
+		if (r_px >= 1.0f) {
+			float ndcx = cx / cw;
+			float ndcy = cy / cw;
+			float px_sx = (ndcx * 0.5f + 0.5f) * viewport[0];
+			float px_sy = (ndcy * 0.5f + 0.5f) * viewport[1];
+			float logt = ceil(log2(r_px));
+			level = CLAMP((int)logt, 0, (int)log2((double)viewport[2]));
+			float scale = exp2((float)level);
+			int texels = (int)viewport[2] >> level;
+			int txi = CLAMP((int)(px_sx / scale), 0, texels - 1);
+			int tyi = CLAMP((int)(px_sy / scale), 0, texels - 1);
+			float z_sphere = MAX(z_view - radius, 0.0f);
+			sphere_inv = (uint32_t)floor(MAX(far_plane - z_sphere, 0.0f));
+			uint64_t poff = 0;
+			for (int k = 0; k < level; k++) {
+				uint64_t s = HZB_PROD_TEXEL_COUNT >> k;
+				poff += s * s;
+			}
+			for (int dy = 0; dy <= 1; dy++) {
+				for (int dx = 0; dx <= 1; dx++) {
+					int tcx = CLAMP(txi + dx, 0, texels - 1);
+					int tcy = CLAMP(tyi + dy, 0, texels - 1);
+					uint32_t v = pyr[poff + tcx * (uint64_t)texels + tcy];
+					if (v > max_inv) {
+						max_inv = v;
+					}
+				}
+			}
+			if (max_inv > sphere_inv) {
+				vis = 0;
+			}
+			tx = txi;
+			ty = tyi;
+		} else {
+			vis = -2; // r_px<1 (sphere under a pixel): always visible
+		}
+		out.append(j);
+		out.append(level);
+		out.append(tx);
+		out.append(ty);
+		out.append((int)max_inv);
+		out.append((int)sphere_inv);
+		out.append(vis);
+		out.append((int)r_px);
+	}
+	return out;
+}
+
+int GototRenderServer::gpu_hzb_dbg_valid() {
+	if (!gpu_hzb_prod_valid) {
+		return -1;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(view_ubo, offsetof(GototViewData, hzb_valid), 4);
+	if (bytes.size() != 4) {
+		return -2;
+	}
+	uint32_t v = 0;
+	memcpy(&v, bytes.ptr(), 4);
+	return (int)v;
+}
+
+int GototRenderServer::gpu_hzb_dbg_level0(int p_x, int p_y) {
+	if (!gpu_hzb_prod_valid) {
+		return -1;
+	}
+	if (p_x < 0 || p_x >= HZB_PROD_TEXEL_COUNT || p_y < 0 || p_y >= HZB_PROD_TEXEL_COUNT) {
+		return -3;
+	}
+	Vector<uint8_t> bytes = rendering_device->texture_get_data(hzb_prod_array, 0);
+	if (bytes.size() < (p_y * HZB_PROD_TEXEL_COUNT + p_x + 1) * 4) {
+		return -2;
+	}
+	uint32_t v = 0;
+	memcpy(&v, bytes.ptr() + (p_y * HZB_PROD_TEXEL_COUNT + p_x) * 4, 4);
+	return (int)v;
+}
+
+// Whole level-0 scan: returns [max_inv, max_x, max_y, count_of_nonzero] so the
+// verify-bridge can tell whether real geometry ever lands in the pyramid (the
+// per-texel probes above sit on far/sky pixels chosen blindly).
+PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_level0() {
+	PackedInt32Array out;
+	if (!gpu_hzb_prod_valid) {
+		return out;
+	}
+	Vector<uint8_t> bytes = rendering_device->texture_get_data(hzb_prod_array, 0);
+	if (bytes.size() < HZB_PROD_TEXEL_COUNT * HZB_PROD_TEXEL_COUNT * 4) {
+		return out;
+	}
+	const uint32_t *vals = (const uint32_t *)bytes.ptr();
+	uint32_t maxv = 0;
+	int maxx = -1;
+	int maxy = -1;
+	uint32_t nonzero = 0;
+	for (int y = 0; y < HZB_PROD_TEXEL_COUNT; y++) {
+		for (int x = 0; x < HZB_PROD_TEXEL_COUNT; x++) {
+			uint32_t v = vals[y * HZB_PROD_TEXEL_COUNT + x];
+			if (v > 0u) {
+				nonzero++;
+				if (v > maxv) {
+					maxv = v;
+					maxx = x;
+					maxy = y;
+				}
+			}
+		}
+	}
+	out.append((int32_t)maxv);
+	out.append(maxx);
+	out.append(maxy);
+	out.append((int32_t)nonzero);
+	return out;
+}
+
+// Same scan restricted to a SINGLE pyramid layer (downsample verification).
+PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_level1(int p_level) {
+	PackedInt32Array out;
+	if (!gpu_hzb_prod_valid) {
+		return out;
+	}
+	if (p_level < 0 || p_level >= HZB_PROD_LEVELS) {
+		return out;
+	}
+	int size = HZB_PROD_TEXEL_COUNT >> p_level;
+	Vector<uint8_t> bytes = rendering_device->texture_get_data(hzb_prod_array, p_level);
+	if (bytes.size() < size * size * 4) {
+		return out;
+	}
+	const uint32_t *vals = (const uint32_t *)bytes.ptr();
+	uint32_t maxv = 0;
+	int maxx = -1;
+	int maxy = -1;
+	uint32_t nonzero = 0;
+	for (int y = 0; y < size; y++) {
+		for (int x = 0; x < size; x++) {
+			uint32_t v = vals[y * size + x];
+			if (v > 0u) {
+				nonzero++;
+				if (v > maxv) {
+					maxv = v;
+					maxx = x;
+					maxy = y;
+				}
+			}
+		}
+	}
+	out.append((int32_t)maxv);
+	out.append(maxx);
+	out.append(maxy);
+	out.append((int32_t)nonzero);
+	return out;
+}
+
+PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_buffer(int p_level) {
+	PackedInt32Array out;
+	if (!gpu_hzb_prod_valid) {
+		return out;
+	}
+	if (p_level < 0 || p_level >= HZB_PROD_LEVELS) {
+		return out;
+	}
+	int size = HZB_PROD_TEXEL_COUNT >> p_level;
+	uint64_t poff = 0;
+	for (int k = 0; k < p_level; k++) {
+		uint64_t s = HZB_PROD_TEXEL_COUNT >> k;
+		poff += s * s;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(hzb_pyramid_data_buffer, (uint32_t)(poff * 4), size * size * 4);
+	if (bytes.size() < size * size * 4) {
+		return out;
+	}
+	const uint32_t *vals = (const uint32_t *)bytes.ptr();
+	uint32_t maxv = 0;
+	int maxx = -1;
+	int maxy = -1;
+	uint32_t nonzero = 0;
+	for (int y = 0; y < size; y++) {
+		for (int x = 0; x < size; x++) {
+			uint32_t v = vals[y * size + x];
+			if (v > 0u) {
+				nonzero++;
+				if (v > maxv) {
+					maxv = v;
+					maxx = x;
+					maxy = y;
+				}
+			}
+		}
+	}
+	out.append((int32_t)maxv);
+	out.append(maxx);
+	out.append(maxy);
+	out.append((int32_t)nonzero);
+	return out;
+}
+
+PackedInt32Array GototRenderServer::gpu_hzb_dbg_probe() {
+	PackedInt32Array out;
+	if (!gpu_hzb_prod_valid) {
+		return out;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(hzb_dbg_probe_buffer, 0, 16);
+	if (bytes.size() != 16) {
+		return out;
+	}
+	const uint32_t *vals = (const uint32_t *)bytes.ptr();
+	for (int i = 0; i < 4; i++) {
+		out.append((int32_t)vals[i]);
+	}
+	return out;
+}
+
 bool GototRenderServer::_create_raster_pipeline() {
 	String error;
 
@@ -2174,7 +3460,9 @@ bool GototRenderServer::_create_raster_pipeline() {
 	}
 
 	// GOTOT-009: real depth attachment, D32_SFLOAT, cleared to 1.0 (far) at the
-	// start of every frame by the draw list flags (DRAW_CLEAR_DEPTH).
+	// start of every frame by the draw list flags (DRAW_CLEAR_DEPTH). Exact 004
+	// usage bits (the prod pyramid reads the R32 view-space-depth copy below, so
+	// the D32 needs no sampling usage).
 	RD::TextureFormat df;
 	df.format = RD::DATA_FORMAT_D32_SFLOAT;
 	df.width = RASTER_TARGET_W;
@@ -2185,6 +3473,24 @@ bool GototRenderServer::_create_raster_pipeline() {
 	raster_depth_texture = rendering_device->texture_create(df, RD::TextureView());
 	if (raster_depth_texture.is_null()) {
 		print_error("[GOTOT-NEXT] raster depth texture_create failed.");
+		return false;
+	}
+
+	// GOTOT-012: R32_SFLOAT view-space depth (positive z_view) written by the
+	// batch/group/raster fragment shaders as output location 1 in the SAME draw
+	// pass as the D32. The production pyramid's depth-source pass samples THIS
+	// color texture instead of the D32 (the D32 sampled view is a broken/no-op
+	// path in this RDG fork), keeping the occlusion build 100% GPU-side.
+	RD::TextureFormat vf;
+	vf.format = RD::DATA_FORMAT_R32_SFLOAT;
+	vf.width = RASTER_TARGET_W;
+	vf.height = RASTER_TARGET_H;
+	vf.depth = 1;
+	vf.texture_type = RD::TEXTURE_TYPE_2D;
+	vf.usage_bits = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	raster_viewz_texture = rendering_device->texture_create(vf, RD::TextureView());
+	if (raster_viewz_texture.is_null()) {
+		print_error("[GOTOT-NEXT] raster view-z texture_create failed.");
 		return false;
 	}
 
@@ -2199,6 +3505,11 @@ bool GototRenderServer::_create_raster_pipeline() {
 	df_af.samples = RD::TEXTURE_SAMPLES_1;
 	df_af.usage_flags = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	afs.push_back(df_af);
+	RD::AttachmentFormat vf_af;
+	vf_af.format = RD::DATA_FORMAT_R32_SFLOAT;
+	vf_af.samples = RD::TEXTURE_SAMPLES_1;
+	vf_af.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	afs.push_back(vf_af);
 	raster_framebuffer_format = rendering_device->framebuffer_format_create(afs);
 	if (raster_framebuffer_format < 0) {
 		print_error("[GOTOT-NEXT] raster framebuffer_format_create failed.");
@@ -2207,8 +3518,11 @@ bool GototRenderServer::_create_raster_pipeline() {
 
 	Vector<RID> attachments;
 	attachments.push_back(raster_color_texture);
+	attachments.push_back(raster_viewz_texture);
 	attachments.push_back(raster_depth_texture);
-	raster_framebuffer = rendering_device->framebuffer_create(attachments, raster_framebuffer_format);
+	// Skip the format-check id so RD recomputes the format from the textures
+	// themselves (identical layout; the check only guards against stale ids).
+	raster_framebuffer = rendering_device->framebuffer_create(attachments, RD::INVALID_ID);
 	if (raster_framebuffer.is_null()) {
 		print_error("[GOTOT-NEXT] raster framebuffer_create failed.");
 		return false;
@@ -2221,7 +3535,7 @@ bool GototRenderServer::_create_raster_pipeline() {
 	RD::PipelineRasterizationState rs;
 	RD::PipelineMultisampleState ms;
 	RD::PipelineDepthStencilState ds;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(1);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
 	raster_pipeline = rendering_device->render_pipeline_create(
 			raster_shader, raster_framebuffer_format, RD::INVALID_ID, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (raster_pipeline.is_null()) {
@@ -2303,7 +3617,7 @@ bool GototRenderServer::_create_mesh_pipeline() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(1);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
 	mesh_pipeline = rendering_device->render_pipeline_create(
 			mesh_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mesh_pipeline.is_null()) {
@@ -2551,7 +3865,8 @@ bool GototRenderServer::gpu_mesh_indirect_draw() {
 
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
-	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
+	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
+	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_COLOR_1 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
 	if (dl == RD::INVALID_ID) {
 		print_error("[GOTOT-NEXT] gpu_mesh_indirect_draw: draw_list_begin failed.");
 		return false;
@@ -2730,7 +4045,7 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(1);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
 	mesh_batch_pipeline = rendering_device->render_pipeline_create(
 			mesh_batch_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mesh_batch_pipeline.is_null()) {
@@ -2811,7 +4126,7 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 		gds.enable_depth_test = true;
 		gds.enable_depth_write = true;
 		gds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-		RD::PipelineColorBlendState gbs = RD::PipelineColorBlendState::create_disabled(1);
+		RD::PipelineColorBlendState gbs = RD::PipelineColorBlendState::create_disabled(2);
 		group_batch_pipeline = rendering_device->render_pipeline_create(
 				group_batch_shader, raster_framebuffer_format, group_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, grs, gms, gds, gbs, 0, 0);
 		if (group_batch_pipeline.is_null()) {
@@ -3044,9 +4359,16 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 		return false;
 	}
 
+	// Phase-count buffers are cleared inside gpu_visibility_prod_dispatch
+	// (where phase1/phase2 actually run).
+	if (hzb_rebuild_requested && gpu_hzb_prod_valid) {
+		rendering_device->buffer_clear(hzb_dbg_probe_buffer, 0, 16);
+	}
+
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
-	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
+	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
+	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_COLOR_1 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
 	if (dl == RD::INVALID_ID) {
 		print_error("[GOTOT-NEXT] gpu_mesh_batch_draw: draw_list_begin failed.");
 		return false;
@@ -3072,6 +4394,24 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 		}
 	}
 	rendering_device->draw_list_end();
+
+	// GOTOT-012: the production pyramid is built in gpu_visibility_prod_dispatch
+	// (own synced submission) by projecting the registered occluder AABBs with
+	// the occbuf pass into the flat storage buffer the phases read
+	// cross-submission - the ONE reliable GPU route in this RDG fork (R32
+	// attachment writes and compute-image loads are both stale). This draw
+	// submission only patches the shared view UBO; nothing pyramid-related.
+	int32_t otexel_count = HZB_PROD_TEXEL_COUNT;
+	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &otexel_count);
+	int32_t oocc_count = occluder_count;
+	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &oocc_count);
+
+	if (gpu_hzb_prod_valid) {
+		RD::ComputeListID cl = rendering_device->compute_list_begin();
+		uint32_t ogroups = HZB_PROD_TEXEL_COUNT / 8;
+
+		rendering_device->compute_list_end();
+	}
 
 	rendering_device->submit();
 	rendering_device->sync();
@@ -3202,7 +4542,8 @@ bool GototRenderServer::gpu_raster_indirect_draw() {
 
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
-	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
+	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
+	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_COLOR_1 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
 	if (dl == RD::INVALID_ID) {
 		print_error("[GOTOT-NEXT] gpu_raster_indirect_draw: draw_list_begin failed.");
 		return false;
@@ -3243,6 +4584,23 @@ PackedFloat32Array GototRenderServer::gpu_raster_read_depth() {
 	return ret;
 }
 
+// GOTOT-012: read a single R32 view-z texel (bits as the depth source sees it).
+float GototRenderServer::gpu_raster_read_viewz(int p_x, int p_y) {
+	if (!gpu_scene_valid || !gpu_raster_valid) {
+		return 0.0f;
+	}
+	if (p_x < 0 || p_x >= RASTER_TARGET_W || p_y < 0 || p_y >= RASTER_TARGET_H) {
+		return 0.0f;
+	}
+	Vector<uint8_t> data = rendering_device->texture_get_data(raster_viewz_texture, 0);
+	if (data.size() < ((p_y * RASTER_TARGET_W + p_x + 1) * 4)) {
+		return 0.0f;
+	}
+	float v = 0.0f;
+	memcpy(&v, data.ptr() + (p_y * RASTER_TARGET_W + p_x) * 4, 4);
+	return v;
+}
+
 // GOTOT-009: overwrite a single instance's transform (position_scale) in the
 // SoA transform buffer. Pure fill helper for the 009 overlay demo; the fill/
 // cull/HZB/compaction/drawargs layout is untouched.
@@ -3279,4 +4637,993 @@ PackedFloat32Array GototRenderServer::gpu_scene_get_vp() {
 		ret.set(i, last_vp[i]);
 	}
 	return ret;
+}
+
+// GOTOT-013: Meshlets / LOD / cluster culling.
+// See header block comment. The .gomlet format (tools/meshlet_import/main.cpp):
+//   file header: "GOTOML11" + u32 version(1) + u32 lod_count + u32 reserved
+//   per LOD: u32 vertex_count, u32 tri_count, u32 meshlet_count, u32 ref_count
+//            vec4 positions[vertex_count], u32 refs[ref_count],
+//            u8 micro_tris[3 * tri_count], desc[meshlet_count] (48 B each);
+//   per-meshlet desc (48 B): u32 vertex_offset, u32 vertex_count,
+//            u32 triangle_offset (u8 units), u32 triangle_count,
+//            f32 center[3], f32 radius, f32 cone_axis[3], f32 cone_cutoff.
+namespace {
+// std140 layout shared by the meshlet cull/raster UBO. Mirrors GototViewData
+// conventions (column-major vp, Godot plane test dot(n,p)+d used by 001B/004).
+struct GOTOTMeshletViewData {
+	float vp[16];          // 0
+	float viewport[4];     // 64
+	float planes[6][4];    // 80
+	float cam[4];          // 176
+	float far_plane;       // 192
+	float pad_align[3];    // 196-207 padding to 16-byte boundary
+	alignas(16) float pad0[3]; // 208-219 (shader vec3)
+};
+struct GpuMlLodDesc {
+	uint32_t a[4]; // vert_base, tri_base, meshlet_ordinal, pad
+	uint32_t b[4]; // vert_count, tri_count, meshlet_count, pad
+	uint32_t c[4];
+};
+struct GpuMlMeshletDesc {
+	uint32_t a[4]; // tri_base, vertex_count, triangle_count, pad
+	float b[4];    // center.xyz, radius
+	float c[4];    // cone_axis.xyz, cone_cutoff
+};
+struct MlCullPush {
+	uint32_t ic;
+	uint32_t ml0;
+	uint32_t lod_count;
+	uint32_t pad;
+	float lod_t0;
+	float lod_t1;
+	float pad1;
+	float pad2;
+};
+struct MlRasterPush {
+	uint32_t ic;
+	uint32_t ml0;
+	uint32_t vis_w;
+	uint32_t vis_h;
+	uint32_t pass;
+	uint32_t pad0;
+	uint32_t pad1;
+	uint32_t pad2;
+};
+static_assert(sizeof(GOTOTMeshletViewData) == 224, "meshlet view data layout");
+static_assert(sizeof(GpuMlLodDesc) == 48, "lod desc layout");
+static_assert(sizeof(GpuMlMeshletDesc) == 48, "meshlet desc layout");
+static_assert(sizeof(MlCullPush) == 32, "cull push layout");
+static_assert(sizeof(MlRasterPush) == 32, "raster push layout");
+
+// Cluster cull: LOD by distance (world-space point distance), frustum (Godot
+// plane convention), backface normal cone (meshoptimizer strict form). Dense
+// deterministic mapping: thread (i, m) <-> slot i*ml0+m; no compaction atomics.
+const char *gpu_meshlet_cull_glsl = R"(
+#version 450
+#extension GL_EXT_samplerless_texture_functions : enable
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform CullParams {
+	uvec4 cfg; // x = instance_count, y = ml0_max, z = lod_count, w = 0
+	vec4 thr;  // x = lod_t0, y = lod_t1
+}
+params;
+
+layout(std140, set = 0, binding = 1) uniform MeshletView {
+	mat4 vp;
+	vec4 viewport;
+	vec4 planes[6];
+	vec4 cam;
+	float far_plane;
+	vec3 pad0;
+}
+mv;
+
+layout(std430, set = 0, binding = 0) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std430, set = 0, binding = 2) buffer DescBuffer {
+	uvec4 desc[];
+}
+descs;
+
+layout(std430, set = 0, binding = 3) buffer StateBuffer {
+	uint data[];
+}
+state;
+
+layout(std430, set = 0, binding = 4) buffer DebugBuffer {
+	uint data[];
+}
+dbg;
+
+const uint STATE_HEADER = 10u;
+
+void main() {
+	if (gl_GlobalInvocationID.x == 0u) {
+		// Shader-side readback of exactly the fields the cull guard consumes.
+		dbg.data[0] = uint(descs.desc[3u * 0u + 1u].z); // lod0 lod_mc
+		dbg.data[1] = uint(descs.desc[3u * 1u + 1u].z); // lod1 lod_mc
+		dbg.data[2] = uint(descs.desc[3u * 2u + 1u].z); // lod2 lod_mc
+		dbg.data[3] = 12345u; // sanity marker
+		dbg.data[4] = uint(descs.desc[3u * 0u + 0u].z); // lod0 ordinal
+		dbg.data[5] = params.cfg.y; // ml0_max (cfg)
+		dbg.data[6] = STATE_HEADER;
+		dbg.data[7] = 0u;
+		// Test B2: raw desc[0..1] dump (uvec4 per std430 vec4).
+		dbg.data[8] = uint(descs.desc[0u].x); // LOD0 a[0] vert_base
+		dbg.data[9] = uint(descs.desc[0u].y); // LOD0 a[1] tri_base
+		dbg.data[10] = uint(descs.desc[0u].z); // LOD0 a[2] ordinal
+		dbg.data[11] = uint(descs.desc[0u].w); // LOD0 a[3] pad
+		dbg.data[12] = uint(descs.desc[1u].x); // LOD0 b[0] vc
+		dbg.data[13] = uint(descs.desc[1u].y); // LOD0 b[1] tc
+		dbg.data[14] = uint(descs.desc[1u].z); // LOD0 b[2] mc (expected 10905)
+		dbg.data[15] = uint(descs.desc[1u].w); // LOD0 b[3] pad
+	}
+	uint gi = gl_GlobalInvocationID.x;
+	uint ic = params.cfg.x;
+	uint ml0 = params.cfg.y;
+	uint lc = params.cfg.z;
+	if (gi >= ic * ml0) {
+		return;
+	}
+	uint i = gi / ml0;
+	uint m = gi % ml0;
+
+	vec4 ps = transforms.position_scale[i];
+	vec3 inst_pos = ps.xyz;
+	float inst_scale = ps.w;
+
+	float dist = length(inst_pos - mv.cam.xyz);
+	uint lod = dist < params.thr.x ? 0u : (dist < params.thr.y ? 1u : 2u);
+	lod = min(lod, lc - 1u);
+
+	if (m == 0u) {
+		state.data[STATE_HEADER + i] = lod;
+	}
+
+	uint lod_mc = uint(descs.desc[3u * lod + 1u].z);
+	if (m >= lod_mc) {
+		return;
+	}
+
+	uint mn = uint(descs.desc[3u * lod + 0u].z);
+	uvec4 da = descs.desc[3u * mn + 3u * m + 0u];
+	vec4 db = uintBitsToFloat(descs.desc[3u * mn + 3u * m + 1u]);
+	vec4 dc = uintBitsToFloat(descs.desc[3u * mn + 3u * m + 2u]);
+
+	vec3 wc = inst_pos + inst_scale * db.xyz;
+	float wr = inst_scale * db.w;
+
+	bool visible = true;
+	for (uint p = 0u; p < 6u; p++) {
+		vec4 pl = mv.planes[p];
+		if (dot(pl.xyz, wc) + pl.w < -wr) {
+			visible = false;
+		}
+	}
+
+	if (visible) {
+		vec3 ctoc = wc - mv.cam.xyz;
+		float clen = length(ctoc);
+		float cd = dot(ctoc, dc.xyz) - (dc.w * clen + wr);
+		if (cd >= 0.0) {
+			visible = false;
+		}
+	}
+
+	atomicAdd(state.data[0u], 1u);
+	if (visible) {
+		atomicAdd(state.data[1u], 1u);
+		atomicAdd(state.data[4u + lod], 1u);
+		state.data[STATE_HEADER + ic + gi] = 1u;
+	}
+}
+)";
+
+// Software rasterizer over the SURVIVING clusters. Passes (self-contained, only
+// the surviving flag set from the last cull is shared):
+//   pass 0 select:  per covered pixel atomicMax(z key) + atomicMax(~id key);
+//                   sub-pixel triangles (no pixel-center hit) force-cover their
+//                   centroid and bump the subpixel counter (SPEC 013 criterion 6).
+//   pass 1 commit:  owner (z+id match) writes barycentric + lod and counts covered.
+//   pass 2 cover:   owner per-LOD pixel counts (LOD evidence on the raster side).
+// Each _run_compute_pass() ends with submit+sync, so pass N reads pass N-1's
+// final atomics. Deterministic: ids are unique per (i,m,t), the per-pixel winner
+// is the max ~id (min id), and every counter is a value-independent atomicAdd.
+const char *gpu_meshlet_raster_glsl = R"(
+#version 450
+#extension GL_EXT_samplerless_texture_functions : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_atomic_int64 : enable
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform RasterParams {
+	uvec4 cfg;  // x = instance_count, y = ml0_max, z = vis_w, w = vis_h
+	uvec4 pass; // x = 0|1|2
+}
+params;
+
+layout(std140, set = 0, binding = 1) uniform MeshletView {
+	mat4 vp;
+	vec4 viewport;
+	vec4 planes[6];
+	vec4 cam;
+	float far_plane;
+	vec3 pad0;
+}
+mv;
+
+layout(std430, set = 0, binding = 0) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std430, set = 0, binding = 2) buffer DescBuffer {
+	uvec4 desc[];
+}
+descs;
+
+layout(std430, set = 0, binding = 3) buffer StateBuffer {
+	uint data[];
+}
+state;
+
+layout(std430, set = 0, binding = 4) buffer VertexBuffer {
+	vec4 vdata[];
+}
+verts;
+
+layout(std430, set = 0, binding = 5) buffer TriangleBuffer {
+	uint tdata[];
+}
+tris;
+
+layout(std430, set = 0, binding = 6) buffer VisBuffer {
+	uint64_t key[]; // winner = single atomicMax((zkey<<32)|~idkey)
+}
+visbuf;
+
+layout(std430, set = 0, binding = 7) buffer DebugBuffer {
+	uint data[];
+}
+dbg;
+
+const uint STATE_HEADER = 10u;
+
+bool project_to_screen(vec3 wc, out vec2 sp, out float cw) {
+	vec4 clip = mv.vp * vec4(wc, 1.0);
+	cw = clip.w;
+	if (cw <= 1e-4) {
+		return false;
+	}
+	vec3 ndc = clip.xyz / cw;
+	sp = vec2(ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5);
+	return true;
+}
+
+float edge2(vec2 a, vec2 b, vec2 p) {
+	return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+}
+
+void main() {
+	uint gi = gl_GlobalInvocationID.x;
+	uint ic = params.cfg.x;
+	uint ml0 = params.cfg.y;
+	uint vis_w = params.cfg.z;
+	uint vis_h = params.cfg.w;
+	uint pass = params.pass.x;
+	uint ivw = vis_w > 0u ? vis_w : 1u;
+
+	if (gi >= ic * ml0) {
+		return;
+	}
+	uint i = gi / ml0;
+	uint m = gi % ml0;
+
+	uint lod = state.data[STATE_HEADER + i];
+	if (state.data[STATE_HEADER + ic + gi] == 0u) {
+		return;
+	}
+
+	uint lod_vert_base = uint(descs.desc[3u * lod + 0u].x);
+	uint mn = uint(descs.desc[3u * lod + 0u].z);
+	uvec4 da = descs.desc[3u * mn + 3u * m + 0u];
+	uint tri_base = uint(da.x);
+	uint tri_count = uint(da.z);
+	if (pass == 0u) atomicAdd(dbg.data[16u], tri_count);
+
+	vec4 ps = transforms.position_scale[i];
+	vec3 inst_pos = ps.xyz;
+	float inst_scale = ps.w;
+
+	for (uint t = 0u; t < tri_count; t++) {
+		uint ti = tri_base + 3u * t;
+		vec3 w0 = inst_pos + inst_scale * verts.vdata[tris.tdata[ti + 0u] + lod_vert_base].xyz;
+		vec3 w1 = inst_pos + inst_scale * verts.vdata[tris.tdata[ti + 1u] + lod_vert_base].xyz;
+		vec3 w2 = inst_pos + inst_scale * verts.vdata[tris.tdata[ti + 2u] + lod_vert_base].xyz;
+
+		vec2 s0, s1, s2;
+		float cw0, cw1, cw2;
+		if (!project_to_screen(w0, s0, cw0) || !project_to_screen(w1, s1, cw1) || !project_to_screen(w2, s2, cw2)) {
+			continue;
+		}
+		if (pass == 0u) atomicAdd(dbg.data[17u], 1u);
+		s0 *= vec2(float(vis_w), float(vis_h)); // UV -> pixel
+		s1 *= vec2(float(vis_w), float(vis_h));
+		s2 *= vec2(float(vis_w), float(vis_h));
+
+		if (pass == 0u && lod == 2u) {
+			dbg.data[24u] = 1u;
+			if (gl_GlobalInvocationID.x % 97u == 0u) {
+				vec2 sp = (s0 + s1 + s2) / 3.0;
+				dbg.data[25u] = uint(sp.x);
+				dbg.data[26u] = uint(sp.y);
+			}
+		}
+
+		vec2 smin = min(min(s0, s1), s2);
+		vec2 smax = max(max(s0, s1), s2);
+		int pxi0 = max(0, min(int(vis_w) - 1, int(floor(smin.x))));
+		int pxi1 = max(0, min(int(vis_w) - 1, int(ceil(smax.x))));
+		int pyi0 = max(0, min(int(vis_h) - 1, int(floor(smin.y))));
+		int pyi1 = max(0, min(int(vis_h) - 1, int(ceil(smax.y))));
+
+		bool hit = false;
+		for (int py = pyi0; py <= pyi1; py++) {
+			for (int px = pxi0; px <= pxi1; px++) {
+				vec2 p = vec2(float(px) + 0.5, float(py) + 0.5);
+				float e0 = edge2(s0, s1, p);
+				float e1 = edge2(s1, s2, p);
+				float e2 = edge2(s2, s0, p);
+				bool inside = (e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0) || (e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0);
+				if (!inside) {
+					continue;
+				}
+				hit = true;
+				float area = e0 + e1 + e2;
+				float inv = area == 0.0 ? 0.0 : 1.0 / area;
+				float b1 = clamp(e1 * inv, 0.0, 1.0);
+				float b2 = clamp(e2 * inv, 0.0, 1.0);
+				float wpx = (1.0 - b1 - b2) * cw0 + b1 * cw1 + b2 * cw2;
+				uint pix = uint(py) * ivw + uint(px);
+				uint zkey = floatBitsToUint(mv.far_plane + wpx);
+				uint idkey = gi * 256u + t;
+				if (pass == 0u) {
+					atomicMax(visbuf.key[pix], (uint64_t(zkey) << 32) | uint64_t(~idkey));
+					atomicAdd(state.data[7u + lod], 1u);
+					atomicAdd(dbg.data[18u], 1u);
+				} else {
+					if (visbuf.key[pix] == ((uint64_t(zkey) << 32) | uint64_t(~idkey))) {
+						if (pass == 1u) {
+							atomicAdd(dbg.data[19u], 1u);
+							atomicAdd(state.data[3u], 1u);
+						} else {
+							atomicAdd(state.data[7u + lod], 1u);
+						}
+					}
+				}
+			}
+		}
+
+		if (!hit) {
+			vec2 centro = (s0 + s1 + s2) / 3.0;
+			ivec2 cpx = ivec2(floor(centro));
+			if (cpx.x >= 0 && cpx.x < int(vis_w) && cpx.y >= 0 && cpx.y < int(vis_h)) {
+				uint pix = uint(cpx.y) * ivw + uint(cpx.x);
+				float wpx = (cw0 + cw1 + cw2) / 3.0;
+				uint zkey = floatBitsToUint(mv.far_plane + wpx);
+				uint idkey = gi * 256u + t;
+				if (pass == 0u) {
+					atomicAdd(state.data[2u], 1u);
+					atomicMax(visbuf.key[pix], (uint64_t(zkey) << 32) | uint64_t(~idkey));
+					atomicAdd(state.data[7u + lod], 1u);
+					atomicAdd(dbg.data[18u], 1u);
+				} else {
+					if (visbuf.key[pix] == ((uint64_t(zkey) << 32) | uint64_t(~idkey))) {
+						if (pass == 1u) {
+							atomicAdd(dbg.data[19u], 1u);
+							atomicAdd(state.data[3u], 1u);
+						} else {
+							atomicAdd(state.data[7u + lod], 1u);
+						}
+					}
+				}
+			}
+		}
+	}
+}
+)";
+} // namespace
+
+void GototRenderServer::_destroy_meshlet() {
+	if (rendering_device == nullptr) {
+		gpu_meshlet_valid = false;
+		return;
+	}
+	if (ml_raster_uniform_set.is_valid()) {
+		rendering_device->free_rid(ml_raster_uniform_set);
+		ml_raster_uniform_set = RID();
+	}
+	if (ml_cull_uniform_set.is_valid()) {
+		rendering_device->free_rid(ml_cull_uniform_set);
+		ml_cull_uniform_set = RID();
+	}
+	if (ml_raster_pipeline.is_valid()) {
+		rendering_device->free_rid(ml_raster_pipeline);
+		ml_raster_pipeline = RID();
+	}
+	if (ml_cull_pipeline.is_valid()) {
+		rendering_device->free_rid(ml_cull_pipeline);
+		ml_cull_pipeline = RID();
+	}
+	if (ml_raster_shader.is_valid()) {
+		rendering_device->free_rid(ml_raster_shader);
+		ml_raster_shader = RID();
+	}
+	if (ml_cull_shader.is_valid()) {
+		rendering_device->free_rid(ml_cull_shader);
+		ml_cull_shader = RID();
+	}
+	if (ml_vis_buffer.is_valid()) {
+		rendering_device->free_rid(ml_vis_buffer);
+		ml_vis_buffer = RID();
+	}
+	if (ml_state_buffer.is_valid()) {
+		rendering_device->free_rid(ml_state_buffer);
+		ml_state_buffer = RID();
+	}
+	if (ml_debug_buffer.is_valid()) {
+		rendering_device->free_rid(ml_debug_buffer);
+		ml_debug_buffer = RID();
+	}
+	if (ml_desc_buffer.is_valid()) {
+		rendering_device->free_rid(ml_desc_buffer);
+		ml_desc_buffer = RID();
+	}
+	if (ml_tri_buffer.is_valid()) {
+		rendering_device->free_rid(ml_tri_buffer);
+		ml_tri_buffer = RID();
+	}
+	if (ml_vert_buffer.is_valid()) {
+		rendering_device->free_rid(ml_vert_buffer);
+		ml_vert_buffer = RID();
+	}
+	if (ml_ubo.is_valid()) {
+		rendering_device->free_rid(ml_ubo);
+		ml_ubo = RID();
+	}
+	gpu_meshlet_valid = false;
+	ml_lod_count = 0;
+	ml0_max = 0;
+	ml_instance_count = 0;
+	ml_total_vertices = 0;
+	ml_total_tris = 0;
+	ml_total_meshlets = 0;
+	ml_lod0_tri_count = 0;
+	ml_lod0_meshlet_count = 0;
+	ml_state_uint_count = 0;
+}
+
+bool GototRenderServer::_upload_meshlet_view() {
+	GOTOTMeshletViewData vd;
+	memset(&vd, 0, sizeof(vd));
+	for (int i = 0; i < 16; i++) {
+		vd.vp[i] = last_vp[i];
+	}
+	vd.viewport[0] = hzb_viewport_w;
+	vd.viewport[1] = hzb_viewport_h;
+	for (int i = 0; i < 6; i++) {
+		vd.planes[i][0] = frustum_planes[i].normal.x;
+		vd.planes[i][1] = frustum_planes[i].normal.y;
+		vd.planes[i][2] = frustum_planes[i].normal.z;
+		vd.planes[i][3] = frustum_planes[i].d;
+	}
+	vd.cam[0] = meshlet_camera_position[0];
+	vd.cam[1] = meshlet_camera_position[1];
+	vd.cam[2] = meshlet_camera_position[2];
+	vd.far_plane = far_plane;
+	return rendering_device->buffer_update(ml_ubo, 0, sizeof(GOTOTMeshletViewData), &vd) == OK;
+}
+
+bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
+	if (!ensure_gpu_device()) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: no RenderingDevice.");
+		return false;
+	}
+	if (!gpu_scene_valid) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: no GPU scene. Call gpu_scene_create first.");
+		return false;
+	}
+
+	_destroy_meshlet();
+
+	const uint8_t *D = p_data.ptr();
+	const int64_t bytes_size = p_data.size();
+	if (bytes_size < 20) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: file too small.");
+		return false;
+	}
+	if (memcmp(D, "GOTOML11", 8) != 0) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: bad magic (not a GOTOML11 file).");
+		return false;
+	}
+	uint32_t version = 0, lod_count = 0;
+	memcpy(&version, D + 8, 4);
+	memcpy(&lod_count, D + 12, 4);
+	if (version != 1) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: unsupported version.");
+		return false;
+	}
+	if (lod_count < 1 || lod_count > ML_MAX_LODS) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: lod_count out of range.");
+		return false;
+	}
+
+		struct MlLod {
+		uint32_t vc, tc, mc, rc;
+		uint32_t vert_base;
+		uint32_t tri_base;
+		uint32_t ordinal;
+		int64_t pos_off, refs_off, micro_off, desc_off;
+	};
+	MlLod lods[ML_MAX_LODS];
+	// Each LOD's 16-byte header [vc,tc,mc,rc] lives at the start of its own
+	// strip (the tool writes header, then positions vc*16, refs rc*4, micro
+	// 3*tc, meshlet descs mc*48, back-to-back). Walk strips to read headers.
+	int64_t strip = 20;
+	for (uint32_t l = 0; l < lod_count; l++) {
+		if (strip + 16 > bytes_size) {
+			print_error("[GOTOT-NEXT] gpu_meshlet_load: truncated LOD headers.");
+			return false;
+		}
+		memcpy(&lods[l].vc, D + strip, 4);
+		memcpy(&lods[l].tc, D + strip + 4, 4);
+		memcpy(&lods[l].mc, D + strip + 8, 4);
+		memcpy(&lods[l].rc, D + strip + 12, 4);
+		if (lods[l].vc == 0 || lods[l].tc == 0 || lods[l].mc == 0) {
+			print_error("[GOTOT-NEXT] gpu_meshlet_load: zero LOD metric.");
+			return false;
+		}
+		// Record the exact byte offsets the build loop below relies on, then
+		// advance to the next strip (header + positions + refs + micro + descs).
+		lods[l].pos_off = strip + 16;
+		if (lods[l].pos_off + (int64_t)lods[l].vc * 16 > bytes_size) {
+			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD positions out of range.");
+			print_error(String("[GOTOT-NEXT] 013dbg bytes=") + itos(bytes_size) + " lod=" + itos((int)l) + " vc=" + itos((int32_t)lods[l].vc) + " pos_off=" + itos((int64_t)(lods[l].pos_off)) + " need=" + itos((int64_t)(lods[l].pos_off + (int64_t)lods[l].vc * 16)));
+			return false;
+		}
+		lods[l].refs_off = lods[l].pos_off + (int64_t)lods[l].vc * 16;
+		if (lods[l].refs_off + (int64_t)lods[l].rc * 4 > bytes_size) {
+			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD refs out of range.");
+			return false;
+		}
+		lods[l].micro_off = lods[l].refs_off + (int64_t)lods[l].rc * 4;
+		if (lods[l].micro_off + (int64_t)lods[l].tc * 3 > bytes_size) {
+			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD micro tris out of range.");
+			return false;
+		}
+		lods[l].desc_off = lods[l].micro_off + (int64_t)lods[l].tc * 3;
+		if (lods[l].desc_off + (int64_t)lods[l].mc * 48 > bytes_size) {
+			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD descs out of range.");
+			return false;
+		}
+		strip += 16;
+		int64_t end = strip;
+		end += (int64_t)lods[l].vc * 16;
+		end += (int64_t)lods[l].rc * 4;
+		end += (int64_t)lods[l].tc * 3;
+		end += (int64_t)lods[l].mc * 48;
+		if (end > bytes_size) {
+			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD strip out of range.");
+			return false;
+		}
+		strip = end;
+	}
+
+	uint32_t vert_cum = 0, tri_cum = 0, ord_cum = lod_count;
+	for (uint32_t l = 0; l < lod_count; l++) {
+		lods[l].vert_base = vert_cum;
+		lods[l].tri_base = tri_cum;
+		lods[l].ordinal = ord_cum;
+		vert_cum += lods[l].vc;
+		tri_cum += lods[l].tc * 3;
+		ord_cum += lods[l].mc;
+	}
+
+	ml_lod_count = (int)lod_count;
+	ml0_max = (int)lods[0].mc;
+	ml_instance_count = gpu_instance_count;
+	ml_total_vertices = (int)vert_cum;
+	ml_total_tris = 0;
+	ml_total_meshlets = 0;
+	ml_lod0_tri_count = (int)lods[0].tc;
+	ml_lod0_meshlet_count = (int)lods[0].mc;
+	for (uint32_t l = 0; l < lod_count; l++) {
+		ml_total_tris += (int)lods[l].tc;
+		ml_total_meshlets += (int)lods[l].mc;
+	}
+	if (ml0_max <= 0 || ml_instance_count <= 0) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: zero meshlet or instance count.");
+		return false;
+	}
+	if ((int64_t)ml_instance_count * (int64_t)ml0_max > (int64_t)1 << 27) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: instance_count x ml0_max grid too large.");
+		return false;
+	}
+	ml_state_uint_count = ML_STATE_HEADER + ml_instance_count + ml_instance_count * ml0_max;
+
+	// Build the flat CPU buffers.
+	Vector<uint8_t> vert_cpu;
+	vert_cpu.resize((int64_t)ml_total_vertices * 16);
+	Vector<uint8_t> tri_cpu;
+	tri_cpu.resize((int64_t)ml_total_tris * 3 * 4);
+	Vector<uint8_t> desc_cpu;
+	desc_cpu.resize((int64_t)(lod_count + ml_total_meshlets) * 48);
+
+	int64_t vp = 0;
+	uint32_t tri_writer = 0;
+	for (uint32_t l = 0; l < lod_count; l++) {
+		MlLod &lod = lods[l];
+		int64_t pos_off = lod.pos_off;
+		int64_t refs_off = lod.refs_off;
+		int64_t micro_off = lod.micro_off;
+		int64_t desc_off = lod.desc_off;
+
+		memcpy(vert_cpu.ptrw() + vp, D + pos_off, (size_t)lod.vc * 16);
+		vp += (int64_t)lod.vc * 16;
+
+		// LOD descriptor slot.
+		GpuMlLodDesc *ld = (GpuMlLodDesc *)(desc_cpu.ptrw() + (int64_t)l * 48);
+		ld->a[0] = lod.vert_base;
+		ld->a[1] = lod.tri_base;
+		ld->a[2] = lod.ordinal;
+		ld->a[3] = 0;
+		ld->b[0] = lod.vc;
+		ld->b[1] = lod.tc;
+		ld->b[2] = lod.mc;
+		ld->b[3] = 0;
+		memset(ld->c, 0, sizeof(ld->c));
+
+		for (uint32_t m = 0; m < lod.mc; m++) {
+			const uint8_t *md = D + desc_off + (int64_t)m * 48;
+			uint32_t mo_vertex_offset, mo_vertex_count, mo_triangle_offset, mo_triangle_count;
+			memcpy(&mo_vertex_offset, md, 4);
+			memcpy(&mo_vertex_count, md + 4, 4);
+			memcpy(&mo_triangle_offset, md + 8, 4);
+			memcpy(&mo_triangle_count, md + 12, 4);
+			const float *mo_center = (const float *)(md + 16);
+			float mo_radius;
+			memcpy(&mo_radius, md + 28, 4);
+			const float *mo_cone = (const float *)(md + 32);
+			float mo_cone_cutoff;
+			memcpy(&mo_cone_cutoff, md + 44, 4);
+
+			GpuMlMeshletDesc *gd = (GpuMlMeshletDesc *)(desc_cpu.ptrw() + (int64_t)(lod.ordinal + m) * 48);
+			gd->a[0] = lod.tri_base + mo_triangle_offset;
+			gd->a[1] = mo_vertex_count;
+			gd->a[2] = mo_triangle_count;
+			gd->a[3] = 0;
+			memcpy(gd->b, mo_center, 3 * sizeof(float));
+			gd->b[3] = mo_radius;
+			memcpy(gd->c, mo_cone, 3 * sizeof(float));
+			gd->c[3] = mo_cone_cutoff;
+
+			for (uint32_t t = 0; t < mo_triangle_count; t++) {
+				for (uint32_t k = 0; k < 3; k++) {
+					uint8_t local = D[micro_off + (int64_t)mo_triangle_offset + (int64_t)t * 3 + k];
+					uint32_t ref;
+					memcpy(&ref, D + refs_off + (int64_t)(mo_vertex_offset + local) * 4, 4);
+					memcpy(tri_cpu.ptrw() + (int64_t)(lod.tri_base + mo_triangle_offset + t * 3 + k) * 4, &ref, 4);
+				}
+			}
+			tri_writer += mo_triangle_count * 3;
+		}
+	}
+	if (tri_writer != tri_cum) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: triangle expansion mismatch.");
+		return false;
+	}
+
+	// Upload.
+	ml_ubo = rendering_device->uniform_buffer_create(sizeof(GOTOTMeshletViewData));
+	if (!_upload_meshlet_view()) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: view UBO upload failed.");
+		_destroy_meshlet();
+		return false;
+	}
+	ml_vert_buffer = rendering_device->storage_buffer_create((uint32_t)((int64_t)ml_total_vertices * 16));
+	rendering_device->buffer_update(ml_vert_buffer, 0, (uint32_t)((int64_t)ml_total_vertices * 16), vert_cpu.ptr());
+	ml_tri_buffer = rendering_device->storage_buffer_create((uint32_t)((int64_t)ml_total_tris * 3 * 4));
+	rendering_device->buffer_update(ml_tri_buffer, 0, (uint32_t)((int64_t)ml_total_tris * 3 * 4), tri_cpu.ptr());
+	ml_desc_buffer = rendering_device->storage_buffer_create((uint32_t)((int64_t)(lod_count + ml_total_meshlets) * 48));
+	rendering_device->buffer_update(ml_desc_buffer, 0, (uint32_t)((int64_t)(lod_count + ml_total_meshlets) * 48), desc_cpu.ptr());
+	// Test A: CPU-side descriptor readback (proves the GPU descriptor buffer holds
+	// the LOD headers the cull guard consumes: ord at +8, vc +16, tc +20, mc +24).
+	Vector<uint8_t> desc_rb = rendering_device->buffer_get_data(ml_desc_buffer, 0, (uint32_t)lod_count * 48);
+	for (uint32_t l = 0; l < lod_count; l++) {
+		int32_t ord, vc, tc, mc;
+		memcpy(&ord, desc_rb.ptr() + (int64_t)l * 48 + 8, 4);
+		memcpy(&vc, desc_rb.ptr() + (int64_t)l * 48 + 16, 4);
+		memcpy(&tc, desc_rb.ptr() + (int64_t)l * 48 + 20, 4);
+		memcpy(&mc, desc_rb.ptr() + (int64_t)l * 48 + 24, 4);
+		print_line("[GOTOT-NEXT] desc_cpu lod=" + itos(l) + " ord=" + itos(ord) + " vc=" + itos(vc) + " tc=" + itos(tc) + " mc=" + itos(mc));
+	}
+	ml_state_buffer = rendering_device->storage_buffer_create((uint32_t)ml_state_uint_count * 4);
+	ml_debug_buffer = rendering_device->storage_buffer_create(128);
+	ml_vis_buffer = rendering_device->storage_buffer_create((uint32_t)ml_vis_w * (uint32_t)ml_vis_h * 8);
+
+	String cull_err, raster_err;
+	Vector<uint8_t> cull_spv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_COMPUTE, String(gpu_meshlet_cull_glsl), RD::SHADER_LANGUAGE_GLSL, &cull_err);
+	Vector<uint8_t> raster_spv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_COMPUTE, String(gpu_meshlet_raster_glsl), RD::SHADER_LANGUAGE_GLSL, &raster_err);
+	if (cull_spv.is_empty() || raster_spv.is_empty()) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: shader compile failed:");
+		print_error(cull_spv.is_empty() ? cull_err : raster_err);
+		_destroy_meshlet();
+		return false;
+	}
+	RD::ShaderStageSPIRVData stage;
+	stage.shader_stage = RD::SHADER_STAGE_COMPUTE;
+	stage.spirv = cull_spv;
+	Vector<RD::ShaderStageSPIRVData> stages;
+	stages.push_back(stage);
+	ml_cull_shader = rendering_device->shader_create_from_spirv(stages, "gotot_meshlet_cull");
+	if (ml_cull_shader.is_null()) {
+		_destroy_meshlet();
+		return false;
+	}
+	stage.spirv = raster_spv;
+	Vector<RD::ShaderStageSPIRVData> stages2;
+	stages2.push_back(stage);
+	ml_raster_shader = rendering_device->shader_create_from_spirv(stages2, "gotot_meshlet_raster");
+	if (ml_raster_shader.is_null()) {
+		_destroy_meshlet();
+		return false;
+	}
+
+	ml_cull_pipeline = rendering_device->compute_pipeline_create(ml_cull_shader);
+	ml_raster_pipeline = rendering_device->compute_pipeline_create(ml_raster_shader);
+
+	Vector<RD::Uniform> cull_uniforms;
+	RD::Uniform cu0;
+	cu0.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	cu0.binding = 0;
+	cu0.append_id(transform_buffer);
+	cull_uniforms.push_back(cu0);
+	RD::Uniform cu1;
+	cu1.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+	cu1.binding = 1;
+	cu1.append_id(ml_ubo);
+	cull_uniforms.push_back(cu1);
+	RD::Uniform cu2;
+	cu2.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	cu2.binding = 2;
+	cu2.append_id(ml_desc_buffer);
+	cull_uniforms.push_back(cu2);
+	RD::Uniform cu3;
+	cu3.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	cu3.binding = 3;
+	cu3.append_id(ml_state_buffer);
+	cull_uniforms.push_back(cu3);
+	RD::Uniform cu4;
+	cu4.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	cu4.binding = 4;
+	cu4.append_id(ml_debug_buffer);
+	cull_uniforms.push_back(cu4);
+	ml_cull_uniform_set = rendering_device->uniform_set_create(cull_uniforms, ml_cull_shader, 0);
+	if (ml_cull_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: cull uniform_set_create failed.");
+		_destroy_meshlet();
+		return false;
+	}
+
+	Vector<RD::Uniform> raster_uniforms;
+	const RID raster_buffers[8] = { transform_buffer, ml_ubo, ml_desc_buffer, ml_state_buffer, ml_vert_buffer, ml_tri_buffer, ml_vis_buffer, ml_debug_buffer };
+	for (uint32_t b = 0; b < 8; b++) {
+		RD::Uniform ru;
+		ru.uniform_type = (b == 1) ? RD::UNIFORM_TYPE_UNIFORM_BUFFER : RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		ru.binding = b;
+		ru.append_id(raster_buffers[b]);
+		raster_uniforms.push_back(ru);
+	}
+	ml_raster_uniform_set = rendering_device->uniform_set_create(raster_uniforms, ml_raster_shader, 0);
+	if (ml_raster_uniform_set.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_load: raster uniform_set_create failed.");
+		_destroy_meshlet();
+		return false;
+	}
+
+	gpu_meshlet_valid = true;
+	print_line("[GOTOT-NEXT] gpu_meshlet_load: lods=", ml_lod_count, " lod0_tris=", ml_lod0_tri_count,
+			" lod0_meshlets=", ml_lod0_meshlet_count, " total_meshlets=", ml_total_meshlets,
+			" verts=", ml_total_vertices, " tris=", ml_total_tris, " instances=", ml_instance_count);
+	return true;
+}
+
+bool GototRenderServer::gpu_meshlet_load_path(const String &p_path) {
+	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);
+	if (f.is_null() || !f->is_open()) {
+		print_error(String("[GOTOT-NEXT] gpu_meshlet_load_path: cannot open ") + p_path);
+		return false;
+	}
+	Vector<uint8_t> bytes = f->get_buffer(f->get_length());
+	f->close();
+	PackedByteArray data;
+	data.resize(bytes.size());
+	if (bytes.size() > 0) {
+		memcpy(data.ptrw(), bytes.ptr(), bytes.size());
+	}
+	return gpu_meshlet_load(data);
+}
+
+bool GototRenderServer::gpu_meshlet_set_lod_thresholds(float p_t0, float p_t1) {
+	if (!(p_t0 > 0.0f && p_t1 > p_t0)) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_set_lod_thresholds: need 0 < t0 < t1.");
+		return false;
+	}
+	ml_lod_t0 = p_t0;
+	ml_lod_t1 = p_t1;
+	return true;
+}
+
+bool GototRenderServer::gpu_meshlet_cull_dispatch() {
+	if (!gpu_meshlet_valid || !gpu_scene_valid) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_cull_dispatch: meshlet not loaded or no scene.");
+		return false;
+	}
+	if (!frustum_valid) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_cull_dispatch: no camera. Call gpu_scene_set_camera first.");
+		return false;
+	}
+	_upload_meshlet_view();
+	rendering_device->buffer_clear(ml_state_buffer, 0, (uint32_t)ml_state_uint_count * 4);
+
+	MlCullPush push;
+	push.ic = (uint32_t)ml_instance_count;
+	push.ml0 = (uint32_t)ml0_max;
+	push.lod_count = (uint32_t)ml_lod_count;
+	push.pad = 0;
+	push.lod_t0 = ml_lod_t0;
+	push.lod_t1 = ml_lod_t1;
+	push.pad1 = 0;
+	push.pad2 = 0;
+	uint64_t total = (uint64_t)ml_instance_count * (uint64_t)ml0_max;
+	uint32_t groups = (uint32_t)((total + 63) / 64);
+	_run_compute_pass(ml_cull_pipeline, ml_cull_uniform_set, &push, sizeof(MlCullPush), groups, 1, 1);
+	return true;
+}
+
+bool GototRenderServer::gpu_meshlet_raster_dispatch() {
+	if (!gpu_meshlet_valid || !gpu_scene_valid) {
+		print_error("[GOTOT-NEXT] gpu_meshlet_raster_dispatch: meshlet not loaded or no scene.");
+		return false;
+	}
+	uint64_t total = (uint64_t)ml_instance_count * (uint64_t)ml0_max;
+	uint32_t groups = (uint32_t)((total + 63) / 64);
+	MlRasterPush push;
+	push.ic = (uint32_t)ml_instance_count;
+	push.ml0 = (uint32_t)ml0_max;
+	push.vis_w = (uint32_t)ml_vis_w;
+	push.vis_h = (uint32_t)ml_vis_h;
+	push.pad0 = push.pad1 = push.pad2 = 0;
+	push.pass = 0;
+	rendering_device->buffer_clear(ml_vis_buffer, 0, (uint32_t)ml_vis_w * (uint32_t)ml_vis_h * 8);
+	rendering_device->buffer_clear(ml_debug_buffer, 16 * 4, 8 * 4);
+	_run_compute_pass(ml_raster_pipeline, ml_raster_uniform_set, &push, sizeof(MlRasterPush), groups, 1, 1);
+	push.pass = 1;
+	_run_compute_pass(ml_raster_pipeline, ml_raster_uniform_set, &push, sizeof(MlRasterPush), groups, 1, 1);
+	push.pass = 2;
+	_run_compute_pass(ml_raster_pipeline, ml_raster_uniform_set, &push, sizeof(MlRasterPush), groups, 1, 1);
+	return true;
+}
+
+int GototRenderServer::gpu_meshlet_get_total_meshlets() const {
+	return ml_total_meshlets;
+}
+
+int GototRenderServer::gpu_meshlet_get_lod0_tri_count() const {
+	return ml_lod0_tri_count;
+}
+
+int GototRenderServer::gpu_meshlet_get_lod0_meshlet_count() const {
+	return ml_lod0_meshlet_count;
+}
+
+PackedInt32Array GototRenderServer::gpu_meshlet_stats() {
+	PackedInt32Array ret;
+	ret.append(ml_total_meshlets);
+	ret.append(ml_lod0_tri_count);
+	ret.append(ml_lod0_meshlet_count);
+	ret.append(ml_total_vertices);
+	ret.append(ml_total_tris);
+	return ret;
+}
+
+PackedInt32Array GototRenderServer::gpu_meshlet_get_instance_lods() {
+	PackedInt32Array ret;
+	if (!gpu_meshlet_valid) {
+		return ret;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(ml_state_buffer, (uint32_t)ML_STATE_HEADER * 4, (uint32_t)ml_instance_count * 4);
+	for (int i = 0; i < ml_instance_count; i++) {
+		int32_t v;
+		memcpy(&v, bytes.ptr() + i * 4, 4);
+		ret.append(v);
+	}
+	return ret;
+}
+
+PackedInt32Array GototRenderServer::gpu_meshlet_get_cull_debug() {
+	// binding-4 readback: [0..2]=lod_mc, [3]=12345 sanity, [4]=lod0 ordinal,
+	// [5]=ml0_max cfg.y, [6]=STATE_HEADER, [7]=0u (all written on gl_GlobalInvocationID.x==0).
+	PackedInt32Array ret;
+	ret.resize(32);
+	if (!gpu_meshlet_valid) {
+		return ret;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(ml_debug_buffer, 0, 128);
+	for (int i = 0; i < 32; i++) {
+		int32_t v;
+		memcpy(&v, bytes.ptr() + i * 4, 4);
+		ret.set(i, v);
+	}
+	return ret;
+}
+
+PackedInt32Array GototRenderServer::gpu_meshlet_get_cluster_counts() {
+	PackedInt32Array ret;
+	ret.resize(ML_STATE_HEADER);
+	if (!gpu_meshlet_valid) {
+		return ret;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(ml_state_buffer, 0, ML_STATE_HEADER * 4);
+	for (int i = 0; i < ML_STATE_HEADER; i++) {
+		int32_t v;
+		memcpy(&v, bytes.ptr() + i * 4, 4);
+		ret.set(i, v);
+	}
+	return ret;
+}
+
+PackedFloat32Array GototRenderServer::gpu_meshlet_raster_evidence() {
+	PackedFloat32Array ret;
+	ret.resize(4);
+	if (!gpu_meshlet_valid) {
+		return ret;
+	}
+	Vector<uint8_t> hbytes = rendering_device->buffer_get_data(ml_state_buffer, 0, ML_STATE_HEADER * 4);
+	int32_t covered = 0, subpixel = 0;
+	memcpy(&subpixel, hbytes.ptr() + 2 * 4, 4);
+	memcpy(&covered, hbytes.ptr() + 3 * 4, 4);
+
+	Vector<uint8_t> vbytes = rendering_device->buffer_get_data(ml_vis_buffer, 0, (uint32_t)ml_vis_w * (uint32_t)ml_vis_h * 8);
+	uint32_t fnv = 2166136261u;
+	int32_t winner = 0;
+	const int32_t count = ml_vis_w * ml_vis_h;
+	for (int32_t i = 0; i < count; i++) {
+		uint64_t c;
+		memcpy(&c, vbytes.ptr() + (int64_t)i * 8, 8);
+		uint32_t id = (uint32_t)(c & 0xFFFFFFFFu);
+		if (id != 0) {
+			winner++;
+			fnv ^= id;
+			fnv *= 16777619u;
+		}
+	}
+	ret.set(0, (float)covered);
+	ret.set(1, (float)subpixel);
+	ret.set(2, (float)winner);
+	ret.set(3, (float)fnv);
+	return ret;
+}
+
+void GototRenderServer::gpu_meshlet_destroy() {
+	_destroy_meshlet();
 }

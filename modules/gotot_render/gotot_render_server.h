@@ -91,6 +91,7 @@ class GototRenderServer : public Object {
 	bool raster_depth_attached = false;
 	int raster_depth_format_value = -1;
 	RID raster_depth_texture;
+	RID raster_viewz_texture; // R32_SFLOAT view-space depth (GOTOT-012 pyramid source).
 	bool mesh_depth_enabled = false;
 	bool raster_depth_enabled = false;
 
@@ -187,6 +188,114 @@ class GototRenderServer : public Object {
 	RID group_batch_pipeline;
 	RID group_batch_uniform_set;
 
+	// GOTOT-012: production HZB (SPEC 012, additive over 004/010/011).
+	// A 2048x2048 R32UI 2D-array pyramid (12 levels = log2(2048)+1, the SPEC
+	// minimum) is built EVERY frame from the PREVIOUS frame's actual D32_SFLOAT
+	// raster depth (the production occluder source) plus the optional 004 box
+	// occluder supplement; occlusion is then applied as a SEPARATE second phase
+	// over the phase-1 frustum survivors, and the surviving list feeds the SAME
+	// compact[]/visible_count[] that the 011 batch assembler consumes. All build
+	// and test work happens on the GPU (the only CPU reads are tiny 4-byte count
+	// readbacks on the verification/evidence bridge, same class as
+	// gpu_cull_get_visible_count). Temporal coherence: the pyramid may only be
+	// used with the SAME camera vp that wrote the previous depth; when the vp
+	// changed the pyramid is considered stale -> hzb_valid=0 (frustum-only,
+	// conservative, no false dropout) and once the camera rests the pyramid is
+	// rebuilt from the fresh depth. hzb_coherent == true after >=2 consecutive
+	// same-vp builds (static camera + static geometry). The non-occluded control
+	// (no prior depth) yields phase2 == phase1 exactly.
+	static constexpr int HZB_PROD_TEXEL_COUNT = 2048;
+	static constexpr int HZB_PROD_LEVELS = 12;
+	// Flat storage-buffer mirror of the pyramid (all levels concatenated in
+	// level order): 2048^2 * (1 + 1/4 + ... + 1/4^11) = 5,592,405 uints. The
+	// occlusion passes read THIS (storage buffers are reliable in this RDG
+	// fork, while same-submission GPU image reads are not); the image array is
+	// kept for CPU readback evidence only.
+	static constexpr int HZB_PYRAMID_DATA_UINTS = 5592405;
+	bool gpu_hzb_prod_valid = false;
+	// Set by gpu_hzb_build when pyramid rebuild work is queued; the actual GPU
+	// passes run inside the NEXT gpu_mesh_batch_draw submission (same submission
+	// as the draw - sampling an attachment written by an EARLIER submission
+	// returns the pre-draw version in this RDG fork, so the build must share the
+	// draw's command stream).
+	bool hzb_rebuild_requested = false;
+	bool hzb_temporal_enabled = true;
+	bool hzb_pyramid_fresh = false;
+	bool hzb_coherent = false;
+	int hzb_stable_frames = 0;
+	float hzb_inflate_factor = 2.0f;
+	int hzb_phase1_count = 0;
+	int hzb_phase2_count = 0;
+	float hzb_proj_a = 0.0f;
+	float hzb_proj_b = 0.0f;
+	float hzb_build_vp[16];
+	RID hzb_prod_array;
+	RID hzb_prod_clear_set;
+	RID hzb_prod_occ_set;
+	RID hzb_prod_down_set;
+	RID hzb_depth_sampler;
+	RID hzb_dbg_probe_buffer; // GOTOT-012 diagnostics (count_gt0 / max_inv / probe d / probe ndc).
+	RID hzb_depth_source_shader;
+	RID hzb_depth_source_pipeline;
+	RID hzb_depth_source_uniform_set;
+	RID hzb_occbuf_shader;
+	RID hzb_occbuf_pipeline;
+	RID hzb_occbuf_uniform_set;
+	RID hzb_phase1_shader;
+	RID hzb_phase1_pipeline;
+	RID hzb_phase1_uniform_set;
+	RID hzb_phase2_shader;
+	RID hzb_phase2_pipeline;
+	RID hzb_phase2_uniform_set;
+	RID phase1_compact_buffer;
+	RID phase1_count_buffer;
+	RID hzb_pyramid_data_buffer;
+
+	// GOTOT-013: Meshlets / LOD / cluster culling (SPEC 013). meshoptimizer is
+	// used OFFLINE ONLY (tools/meshlet_import builds the .gomlet asset); the
+	// runtime NEVER links meshoptimizer. Outcome is fully additive: loading a
+	// .gomlet mesh uploads storage buffers, a cluster-cull compute pass picks
+	// the LOD per instance by distance and frustum/backface-cone culls every
+	// meshlet (dense id mapping, deterministic), and a 3-pass software
+	// rasterizer (select -> commit bary + covered count -> per-LOD pixel cover)
+	// proves the culling is a real render front end (sub-pixel triangles are
+	// made visible - SPEC 013 criterion 6).
+	enum {
+		ML_MAX_LODS = 4,
+		ML_STATE_HEADER = 10, // total, visible, subpixel, covered, vis_lod0..2, px_lod0..2
+	};
+	float meshlet_camera_position[3] = { 0.0f, 0.0f, 2000.0f };
+	bool gpu_meshlet_valid = false;
+	int ml_lod_count = 0;
+	int ml0_max = 0; // LOD0 meshlet count == dense grid stride (instance_count x ml0_max)
+	int ml_instance_count = 0;
+	int ml_total_vertices = 0;
+	int ml_total_tris = 0;
+	int ml_total_meshlets = 0;
+	int ml_lod0_tri_count = 0;
+	int ml_lod0_meshlet_count = 0;
+	int ml_state_uint_count = 0;
+	float ml_lod_t0 = 2200.0f;
+	float ml_lod_t1 = 3200.0f;
+	int ml_vis_w = 1920;
+	int ml_vis_h = 1080;
+	RID ml_ubo;
+	RID ml_vert_buffer;
+	RID ml_tri_buffer;
+	RID ml_desc_buffer;
+	RID ml_state_buffer;
+	RID ml_debug_buffer;
+	RID ml_vis_buffer;
+	RID ml_cull_shader;
+	RID ml_cull_pipeline;
+	RID ml_cull_uniform_set;
+	RID ml_raster_shader;
+	RID ml_raster_pipeline;
+	RID ml_raster_uniform_set;
+
+	void _destroy_meshlet();
+	bool _upload_meshlet_view();
+	void _destroy_hzb_prod();
 	void _destroy_gpu_scene();
 	void _destroy_mesh();
 	void _destroy_mesh_batch();
@@ -265,6 +374,7 @@ public:
 	// (1920*1080 = 2,073,600 floats, row-major, value 1.0 == far/clear,
 	// smaller == nearer) via a blocking GPU readback. Range [-1,1]-safe: 0..1.
 	PackedFloat32Array gpu_raster_read_depth();
+	float gpu_raster_read_viewz(int p_x, int p_y);
 	//
 	// --- TEST-ONLY GETTERS --- (probe the 009 wiring from GDScript).
 	// Returns the depth attachment format enum value (125 == D32_SFLOAT) or -1
@@ -343,6 +453,79 @@ public:
 	// Number of indirect draw commands executed by the last gpu_mesh_batch_draw
 	// (64 under PER_MESH with 64 visible meshes; <=5 under GROUPED/REORDERED).
 	int gpu_mesh_get_draw_call_count() const;
+
+	// GOTOT-012: production HZB API (TEST-ONLY evidence bridge, additive over
+	// the 004/010/011 paths - when not created the pre-012 dispatch behavior is
+	// byte-identical, which keeps every 001A..011 signature unchanged).
+	// Creates the 2048^2 x 12-level R32UI pyramid, the phase-1/phase-2 shaders
+	// and the two-phase buffers. Requires a created GPU scene (with the raster
+	// D32 depth attachment). Idempotent.
+	bool gpu_hzb_prod_create();
+	// Builds the production pyramid from the PREVIOUS frame's D32 depth (+ the
+	// optional 004 box occluders) and performs the temporal-coherence
+	// bookkeeping. Safe (no-op returning true) on the first frame when the depth
+	// has not been written yet (hzb_valid stays 0 = frustum-only).
+	bool gpu_hzb_build();
+	// TWO-PHASE production dispatch: phase 1 = frustum-only cull into a phase-1
+	// list, phase 2 = HZB occlusion over that list writing the FINAL
+	// compact[]/visible_count[] consumed by gpu_mesh_batch_dispatch (GOTOT-011).
+	// Returns false when the production resources are not available.
+	bool gpu_visibility_prod_dispatch();
+	// Enables/disables the temporal-coherence reuse of the previous-frame pyramid
+	// (TEST toggle for evidence comparisons). When disabled hzb_coherent is false
+	// and the conservative inflate factor is applied to the occlusion test.
+	void gpu_hzb_enable_temporal(bool p_enabled);
+	// Alias of gpu_scene_set_occluders (SPEC 012 API name; box supplements to the
+	// production pyramid, additive to the depth source).
+	void gpu_hzb_set_occluders(const Vector<Vector4> &p_occluders);
+	// Number of pyramid levels: 12 when the production HZB is active, else the
+	// 004 legacy 10, else 0.
+	int gpu_hzb_get_level_count();
+	// [phase1_count, phase2_count] from the last production dispatch (verify-bridge).
+	PackedInt32Array gpu_hzb_get_phase_counts();
+	// True when the camera vp has been stable for >=2 consecutive builds
+	// (static camera + static geometry => exact pyramid reuse).
+	bool gpu_hzb_get_coherent() const;
+
+	// Verify-bridge probes (GOTOT-012 debug): read the UBO hzb_valid the phase-2
+	// test sees, and one pyramid level-0 texel (inverted depth, far - z_view).
+	int gpu_hzb_dbg_valid();
+	int gpu_hzb_dbg_level0(int p_x, int p_y);
+	PackedInt32Array gpu_hzb_dbg_probe();
+	PackedInt32Array gpu_hzb_dbg_scan_level0();
+	PackedInt32Array gpu_hzb_dbg_scan_level1(int p_level);
+	PackedInt32Array gpu_hzb_dbg_scan_buffer(int p_level);
+	PackedInt32Array gpu_hzb_dbg_sim2();
+
+	// GOTOT-013: meshlet API (TEST-ONLY evidence bridge; additive - until
+	// gpu_meshlet_load runs every earlier signature is byte-identical).
+	// Loads a GOTOML11 ".gomlet" mesh (cf. tools/meshlet_import/main.cpp),
+	// builds the GPU buffers/shader/uniform sets and bakes in the current GPU
+	// scene's instance count. Requires gpu_scene_create first. Idempotent
+	// (reload replaces the previous meshlet state).
+	bool gpu_meshlet_load(const PackedByteArray &p_data);
+	bool gpu_meshlet_load_path(const String &p_path);
+	bool gpu_meshlet_set_lod_thresholds(float p_t0, float p_t1);
+	// Cluster cull: LOD by distance + frustum + backface cone. Writes
+	// instance_lod[], the dense visible_flag set and the total/visible counters.
+	bool gpu_meshlet_cull_dispatch();
+	// Software rasterize the SURVIVING clusters into ml_vis (3 barrier-separated
+	// passes). Reads the visible_flag set written by the last cull dispatch.
+	bool gpu_meshlet_raster_dispatch();
+	// Introspection (counts baked at load / last dispatch).
+	int gpu_meshlet_get_total_meshlets() const;
+	int gpu_meshlet_get_lod0_tri_count() const;
+	int gpu_meshlet_get_lod0_meshlet_count() const;
+	PackedInt32Array gpu_meshlet_stats();
+	// Evidience from the last cull: [total_slots, visible_slots, vis_lod0,
+	// vis_lod1, vis_lod2, px_lod0, px_lod1, px_lod2].
+	PackedInt32Array gpu_meshlet_get_cluster_counts();
+	PackedInt32Array gpu_meshlet_get_instance_lods();
+	PackedInt32Array gpu_meshlet_get_cull_debug();
+	// Raster evidence from the last raster dispatch (proves criterion 6):
+	// [covered_px, subpixel_tris, winner_px, fnv1a_over_winner_ids].
+	PackedFloat32Array gpu_meshlet_raster_evidence();
+	void gpu_meshlet_destroy();
 };
 
 #endif

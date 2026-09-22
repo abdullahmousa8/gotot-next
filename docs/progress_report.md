@@ -389,3 +389,22 @@ godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn -- --test
 **Estimated savings:** ~35–49 engineer-days.
 
 **Status:** APPROVED by Architect — awaiting integration decision.
+
+## 24. GOTOT-013 - Meshlets + LOD + Cluster Culling (PASS)
+
+### الأهداف
+إثبات مسار GPU-driven كامل للمجموعات: توليد بيانات `.gomlet` دون اتصال (meshoptimizer v1.2، offline tooling)، LOD تلقائي يتبدل مع المسافة، cluster culling (frustum + cone + LOD)، وراسم شاشة برمجي (software rasterizer) بثلاثة ممرات مع دليل بكسل حتمي، ومساءلة per-LOD.
+
+### الأدلة (013 PASS - harness gt_013a)
+- مشهد meshlet ≥ 1M مثلث: **LOD0 = 1,048,576 مثلث**؛ مجموع meshlets = **18,613** (LOD0 = 10,905).
+- Instance LODs = **[0,1,1,2,2,0]** — يتغير مع المسافة.
+- **Coherent winner 64-bit**: atomicMax واحد مُعبّأ `(zkey<<32)|~idkey` يجعل فائز كل بكسل (عمق ثم معرّف) متماسكًا → `covered == winner == 76,685` حرفيًا (subpixel = 1,092,857).
+- Per-LOD pixel coverage = **[5853, 1265, 559566]**؛ كل LOD يساهم بكسلات.
+- DET ثابت: التوقيع الكامل `v13|t1048576|m18613|l0m10905|l0,1,1,2,2,0|a5532/5853/1265|cc37226/12650|pn5853/1265/559566|cov76685|sp1092857|w76685|f3106528256|d1`.
+- Regressions 001A–011 جميعها PASS على نفس البنية؛ صفر أخطاء RID.
+
+### رحلة الإصلاح (FAIL → PASS)
+`144` (قراءة وصف float/uint) → `149` (إحداثيات UV→بكسل) → `151` (بروتوكول الفائز الثنائي — اثنان atomicMax مستقلان ينتجان فائزين مختلفين على البكسلات متعددة التغطية → حل: مفتاح 64-bit واحد) → `152` (تغطية لكل LOD) → **PASS**.
+
+### ملاحظات
+- `.gomlet` (25 MB) أصل ثنائي مولد **دون اتصال**؛ أعِد توليده عبر `tools/meshlet_import/build.ps1` (يتطلب MSVC فقط). وقت التشغيل مستقل تمامًا عن meshoptimizer.
