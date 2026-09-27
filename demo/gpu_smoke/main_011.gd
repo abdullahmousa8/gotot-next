@@ -253,7 +253,10 @@ func _process(_delta: float) -> void:
 				" batches=", _distinct_batches())
 
 	if frame == FRAME_LIMIT:
+		var fin_t0 := Time.get_ticks_msec()
 		_finalize(pixels, depth, visible)
+		var fin_t1 := Time.get_ticks_msec()
+		print("GOTOT-NEXT 011: finalize_ms=", fin_t1 - fin_t0, " strategy=", strategy)
 
 func _distinct_batches() -> int:
 	var n := 0
@@ -378,24 +381,13 @@ func _det_check(pixels: PackedByteArray, depth: PackedFloat32Array, visible: int
 		return false
 	return true
 
-func _color_counts(pixels: PackedByteArray) -> Array:
-	# [green, blue, orange, gold] in mesh palette order.
-	var cg := _count_color(pixels, mesh_colors[0])
-	var cb := _count_color(pixels, mesh_colors[1])
-	var co := _count_color(pixels, mesh_colors[2])
-	var ck := 0
-	for m in range(3, MESH_COUNT):
-		var c := _count_color(pixels, mesh_colors[m])
-		if c > ck:
-			ck = c
-	return [cg, cb, co, ck]
-
 func _print_signature(color_counts: Array, cc: int, d_front: float, d_back: float, center_bg: bool) -> void:
-	sig = "sig=v%d|st%d|m%d|gc%d|dc%d|ic%d|cc%d|dF%.5f|dB%.5f|cb%d|dt%d|%d/%d" % [
+	sig = "sig=v%d|st%d|m%d|gc%d|dc%d|ic%d|cc%d|dF%.5f|dB%.5f|cb%d|dt%d" % [
 		INSTANCE_COUNT, strategy, _distinct_batches(), server.gpu_mesh_get_batch_group_count(),
 		server.gpu_mesh_get_draw_call_count(), server.gpu_mesh_get_indirect_count(),
-		cc, d_front, d_back, 1 if center_bg else 0, 1 if det_ok else 0, dispatch_us, draw_us]
+		cc, d_front, d_back, 1 if center_bg else 0, 1 if det_ok else 0]
 	print("GOTOT-NEXT 011-DET ", sig)
+	print("GOTOT-NEXT 011: timing dispatch_us=", dispatch_us, " draw_us=", draw_us)
 	var f := FileAccess.open(sig_file, FileAccess.WRITE)
 	if f == null:
 		print("GOTOT-NEXT 011: sig file WRITE FAILED: ", sig_file)
@@ -423,17 +415,58 @@ func _on_frame_post_draw() -> void:
 	get_tree().quit(0)
 
 # --- pixel helpers (identical conventions to main_010) ---
-func _count_color(pixels: PackedByteArray, col: Color) -> int:
+func _count_color_u32(pixels: PackedByteArray, u32_target: int) -> int:
 	var c := 0
 	var n: int = RASTER_W * RASTER_H
-	var r0 := int(round(col.r * 255.0))
-	var g0 := int(round(col.g * 255.0))
-	var b0 := int(round(col.b * 255.0))
 	for i in n:
-		var o: int = i * 4
-		if _close(pixels[o], r0) and _close(pixels[o + 1], g0) and _close(pixels[o + 2], b0):
+		if pixels.decode_u32(i * 4) == u32_target:
 			c += 1
 	return c
+
+func _color_to_u32(col: Color) -> int:
+	var r := int(round(col.r * 255.0)) & 0xFF
+	var g := int(round(col.g * 255.0)) & 0xFF
+	var b := int(round(col.b * 255.0)) & 0xFF
+	var a := int(round(col.a * 255.0)) & 0xFF
+	return r | (g << 8) | (b << 16) | (a << 24)
+
+func _color_counts(pixels: PackedByteArray) -> Array:
+	var n: int = RASTER_W * RASTER_H
+	var target_g := _color_to_u32(mesh_colors[0])
+	var target_b := _color_to_u32(mesh_colors[1])
+	var target_o := _color_to_u32(mesh_colors[2])
+	
+	var k_targets := PackedInt32Array()
+	for m in range(3, MESH_COUNT):
+		k_targets.append(_color_to_u32(mesh_colors[m]))
+	
+	var cg := 0
+	var cb := 0
+	var co := 0
+	var k_counts := PackedInt32Array()
+	k_counts.resize(k_targets.size())
+	k_counts.fill(0)
+	
+	for i in n:
+		var val: int = pixels.decode_u32(i * 4)
+		if val == target_g:
+			cg += 1
+		elif val == target_b:
+			cb += 1
+		elif val == target_o:
+			co += 1
+		else:
+			for k in range(k_targets.size()):
+				if val == k_targets[k]:
+					k_counts[k] += 1
+					break
+	
+	var ck := 0
+	for count in k_counts:
+		if count > ck:
+			ck = count
+			
+	return [cg, cb, co, ck]
 
 func _close(v: int, t: int) -> bool:
 	return absi(v - t) <= 40
@@ -442,7 +475,11 @@ func _pixel_matches(x: int, y: int, col: Color, pixels: PackedByteArray) -> bool
 	if x < 0 or x >= RASTER_W or y < 0 or y >= RASTER_H:
 		return false
 	var o: int = (y * RASTER_W + x) * 4
-	return _close(pixels[o], int(round(col.r * 255.0))) and _close(pixels[o + 1], int(round(col.g * 255.0))) and _close(pixels[o + 2], int(round(col.b * 255.0)))
+	var val: int = pixels.decode_u32(o)
+	var r := val & 0xFF
+	var g := (val >> 8) & 0xFF
+	var b := (val >> 16) & 0xFF
+	return _close(r, int(round(col.r * 255.0))) and _close(g, int(round(col.g * 255.0))) and _close(b, int(round(col.b * 255.0)))
 
 func _project_px(p: Vector3, vp: PackedFloat32Array) -> Array:
 	var ccx: float = vp[0] * p.x + vp[4] * p.y + vp[8] * p.z + vp[12]

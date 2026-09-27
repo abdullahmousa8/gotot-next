@@ -17,7 +17,11 @@
 param(
     [Parameter(Mandatory = $true)][string]$Scene,
     [Parameter(Mandatory = $true)][string]$Log,
-    [int]$MaxSec = 240
+    [int]$MaxSec = 240,
+    # Extra engine-user args appended verbatim AFTER the scene URL. Godot splits
+    # engine args from user args at "--", so a caller passes e.g.
+    #   -UserArgs "-- --strategy=1 --sigf=C:\tmp\s1.txt --png=C:\tmp\s1.png"
+    [string]$UserArgs = ''
 )
 
 $exe = 'C:\Users\opc\Documents\AI_ENGINE\godot-master\bin\godot.windows.editor.dev.x86_64.console.exe'
@@ -31,7 +35,9 @@ if (-not (Test-Path $exe)) {
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $exe
 # Note: no inner double quotes needed - neither path contains spaces.
-$psi.Arguments = '--path ' + $proj + ' --rendering-method forward_plus res://' + $Scene + '.tscn'
+$argline = '--path ' + $proj + ' --rendering-method forward_plus res://' + $Scene + '.tscn'
+if ($UserArgs -ne '') { $argline = $argline + ' ' + $UserArgs }
+$psi.Arguments = $argline
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
