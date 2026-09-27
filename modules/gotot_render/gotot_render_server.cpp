@@ -6011,7 +6011,8 @@ bool GototRenderServer::gpu_scene_manager_dispatch() {
 			}
 		}
 		if (waves.is_empty()) {
-			waves.push_back(GmsWave{ 0u, delta_count });
+			print_error("[GNE] gpu_scene_manager_update: ops log desync (have_ops != delta_count). Update aborted.");
+			return false;
 		}
 		if ((int)waves.size() > GMS_MAX_WAVES) {
 			print_line("[GOTOT-NEXT] WARNING gpu_scene_manager_dispatch: ", (int)waves.size(), " delta runs exceed the ", GMS_MAX_WAVES, "-wave limit; collapsing into a single dispatch. Op codes alternate too finely to order - same-id add/remove pairs may race (nondeterministic active count).");
