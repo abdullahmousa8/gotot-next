@@ -1422,6 +1422,7 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_draw_counts"), &GototRenderServer::gpu_scene_manager_get_draw_counts);
 	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_snapshot", "count"), &GototRenderServer::gpu_scene_manager_get_snapshot);
 	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_active_ids", "count"), &GototRenderServer::gpu_scene_manager_get_active_ids);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_wave_stats"), &GototRenderServer::gpu_scene_manager_get_wave_stats);
 	ClassDB::bind_method(D_METHOD("gpu_scene_manager_destroy"), &GototRenderServer::gpu_scene_manager_destroy);
 
 	// GOTOT-015: Render Graph (additive TEST-ONLY bridge; see header @598).
@@ -5965,6 +5966,12 @@ bool GototRenderServer::gpu_scene_manager_dispatch() {
 	GmsPush push;
 	uint32_t delta_count = gms_ring_tail / (uint32_t)GMS_DELTA_BYTES;
 
+	// Wave accounting of THIS dispatch starts clean: a dispatch with no deltas
+	// runs zero waves and never collapsed, so the stats must not inherit the
+	// previous dispatch's values.
+	gms_last_wave_count = 0;
+	gms_last_collapsed = false;
+
 	// Reset the per-dispatch counters (stats words 1..8) and the compact counter.
 	rendering_device->buffer_clear(gms_stats_buffer, 4, 8 * 4);
 	rendering_device->buffer_clear(gms_active_count_buffer, 0, 4);
@@ -6018,6 +6025,7 @@ bool GototRenderServer::gpu_scene_manager_dispatch() {
 			print_line("[GOTOT-NEXT] WARNING gpu_scene_manager_dispatch: ", (int)waves.size(), " delta runs exceed the ", GMS_MAX_WAVES, "-wave limit; collapsing into a single dispatch. Op codes alternate too finely to order - same-id add/remove pairs may race (nondeterministic active count).");
 			waves.clear();
 			waves.push_back(GmsWave{ 0u, delta_count });
+			gms_last_collapsed = true;
 		}
 		for (int i = 0; i < waves.size(); i++) {
 			push.pass = 0;
@@ -6027,6 +6035,7 @@ bool GototRenderServer::gpu_scene_manager_dispatch() {
 			uint32_t groups = (waves[i].count + 63) / 64;
 			_run_compute_pass(gms_pipeline, gms_uniform_set, &push, sizeof(GmsPush), groups, 1, 1);
 		}
+		gms_last_wave_count = (uint32_t)waves.size();
 		gms_ring_tail = 0;
 		gms_ring_ops.clear();
 	}
@@ -6090,6 +6099,18 @@ Dictionary GototRenderServer::gpu_scene_manager_get_stats() {
 			(int64_t)GMS_RING_BYTES + 4 + (int64_t)GMS_STATS_UINTS * 4 + (int64_t)GMS_MESH_SLOTS * 4;
 	d["ssbo_bytes"] = (int)ssbo;
 	d["dispatch_seq"] = (int)gms_dispatch_seq;
+	return d;
+}
+
+Dictionary GototRenderServer::gpu_scene_manager_get_wave_stats() const {
+	Dictionary d;
+	d["valid"] = gpu_scene_mgr_valid;
+	if (!gpu_scene_mgr_valid) {
+		return d;
+	}
+	d["waves"] = (int)gms_last_wave_count;
+	d["collapsed"] = gms_last_collapsed;
+	d["max_waves"] = 256;
 	return d;
 }
 

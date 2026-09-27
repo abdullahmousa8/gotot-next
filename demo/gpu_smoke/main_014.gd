@@ -301,6 +301,18 @@ func _phase_gpu_driven_update() -> bool:
 	if int(st["ring_used_bytes"]) != 0:
 		_fail(190, "ring not reset after dispatch")
 		return false
+	# Guard >256 (GOTOT-006 commit): this workload is 5,000 removes + 5,000 adds
+	# + 10,000 moves = exactly 3 consecutive equal-op runs, so the wave split
+	# must produce 3 ordered waves and the >256 collapse must NOT fire. A
+	# collapse here means the guard is folding a deterministic workload into a
+	# single racing dispatch.
+	var ws: Dictionary = server.gpu_scene_manager_get_wave_stats()
+	if bool(ws["collapsed"]):
+		_fail(212, "waves collapsed to single dispatch (deterministic workload)")
+		return false
+	if int(ws["waves"]) != 3:
+		_fail(213, "wave count " + str(ws["waves"]) + " != 3 (remove/add/move runs)")
+		return false
 	_phase2_active = 0
 	_phase3_adds = 5000
 	_phase3_removes = 5000

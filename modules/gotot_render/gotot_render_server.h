@@ -318,6 +318,11 @@ class GototRenderServer : public Object {
 	int gms_capacity = 0;
 	int gms_active_cpu = 0;     // CPU mirror (set_instances / update accounting)
 	uint32_t gms_ring_tail = 0; // CPU write cursor (bytes); head is always 0
+	// Wave accounting of the LAST dispatch (reset at dispatch start). Exposed
+	// through gpu_scene_manager_get_wave_stats() so a scene can assert that the
+	// >256-run collapse guard never fired on a deterministic workload.
+	uint32_t gms_last_wave_count = 0;
+	bool gms_last_collapsed = false;
 	// Op code per ring slot, parallel to gms_ring_tail. Used at dispatch time to
 	// split the ring into ordered waves so a remove/add pair on the same id can
 	// never race inside one parallel dispatch (the ring is an ordered stream).
@@ -597,6 +602,11 @@ public:
 	PackedInt32Array gpu_scene_manager_get_snapshot(int p_count);
 	// First p_count ids of the compacted dense active list.
 	PackedInt32Array gpu_scene_manager_get_active_ids(int p_count);
+	// Wave accounting of the last dispatch: {waves, collapsed}. `waves` is the
+	// number of ordered waves the last dispatch actually ran, and `collapsed` is
+	// true when the >256-run guard fired and the runs were folded into ONE
+	// dispatch (which is a race, and which deterministic scenes must never hit).
+	Dictionary gpu_scene_manager_get_wave_stats() const;
 	void gpu_scene_manager_destroy();
 
 	// GOTOT-015: Render Graph (SPEC 015, additive TEST-ONLY evidence bridge;
