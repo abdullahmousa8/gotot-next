@@ -295,6 +295,8 @@ GNE source is licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 Dependency/third-party licensing (permissive-only runtime policy, legal review process, dependency register, SBOM) is governed by [`docs/open_source_system_strategy_v1.md`](docs/open_source_system_strategy_v1.md).
 
+**Known issues:** measured limitations of this build (e.g. GPU timestamps unavailable on Vulkan) are listed in [`docs/known_issues.md`](docs/known_issues.md). Anything reported as `NA` there is *not measured*, never zero cost.
+
 **Offline tooling:** `tools/meshlet_import` vendors **meshoptimizer v1.2** (MIT, `9d9890c7…e95448`) — build-time only; the runtime module is dependency-free. See [`docs/dependency_register.md`](docs/dependency_register.md).
 
 ### Author
