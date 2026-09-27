@@ -5702,6 +5702,9 @@ void main() {
 		uint base = (params.cfg.w + gi) * 20u;
 		uint op = uint(ring.rbuf[base + 0u]);
 		uint id = uint(ring.rbuf[base + 1u]);
+		if (id >= params.cfg.y) { // cfg.y = capacity
+			return;
+		}
 		uint r = id * 4u; // record base in vec4 units (16 floats per record)
 		if (op == 1u) { // add: write all fields, raise the active flag
 			records.rec[r + 0u] = vec4(ring.rbuf[base + 4u], ring.rbuf[base + 5u], ring.rbuf[base + 6u], ring.rbuf[base + 7u]);
@@ -5932,6 +5935,11 @@ bool GototRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
 		PackedFloat32Array d = v; // Array of PackedFloat32Array (20 floats / 80 bytes)
 		if (d.size() != 20) {
 			print_error("[GOTOT-NEXT] gpu_scene_manager_update: delta " + itos(i) + " must be 20 floats (80 bytes), got " + itos(d.size()) + ".");
+			return false;
+		}
+		const int32_t delta_id = (int32_t)d[1]; // d[1] = instance id (float-encoded)
+		if (delta_id < 0 || delta_id >= gms_capacity) {
+			print_error("[GNE] gpu_scene_manager_update: delta " + itos(i) + " id " + itos(delta_id) + " out of range (capacity " + itos(gms_capacity) + ").");
 			return false;
 		}
 		memcpy(w + (int64_t)i * (int64_t)GMS_DELTA_BYTES, d.ptr(), GMS_DELTA_BYTES);
