@@ -11,7 +11,7 @@
 [![Renderer](https://img.shields.io/badge/renderer-Vulkan-AC162C?logo=vulkan&logoColor=white)](#-architecture)
 [![Language](https://img.shields.io/badge/language-C%2B%2B%20%7C%20GDScript-00599C?logo=cplusplus&logoColor=white)](#-repository-layout)
 [![Status](https://img.shields.io/badge/status-research%20prototype-orange)](#-project-status)
-[![Milestones](https://img.shields.io/badge/milestones-15%20passed-brightgreen)](#-milestones)
+[![Milestones](https://img.shields.io/badge/milestones-16%20reached%20%2B%200155%20partial-brightgreen)](#-milestones)
 
 [English](#-english) · [العربية](#-نظرة-عامة-بالعربية) · [Progress report](docs/progress_report.md) · [Engine spec](docs/engine_spec_v2.md)
 
@@ -107,6 +107,7 @@ The **billboard path** (GOTOT-005 / 007A) and the **real mesh path** (GOTOT-008A
 | 013 | Meshlets / LOD / Cluster Culling | ✅ PASS | 1M-tri LOD0 (1,048,576), 18,613 meshlets; instance LODs `[0,1,1,2,2,0]`; 3-pass software rasterizer with **coherent 64-bit winner** `covered==winner==76,685`; per-LOD px `[5853,1265,559566]`; DET stable (`d1`) |
 | 014 | GPU Scene Manager | ✅ PASS | SSBO SoA scene DB, 64-B records, unified ID space; **1,048,576 instances** (`active=1048576`, ssbo=121.6 MB); 16-MB ring + compute apply (20,000 deltas, zero critical-path readback); 013 ordinal hand-off (fnv=3106528256 preserved); 4096 instances/8 meshes → **5 draw calls**; DET stable (`sig=v14`, `d1`) |
 | 015 | Render Graph prototype (scheduler-only) | ✅ PASS | DAG + Kahn topo + auto-barriers + pool aliasing (TEST-ONLY); reuses 013/011/014 entry points, zero signature drift; `sig=v15-pc9-p6-e6-b6-po8753152-res9048064-sv32768-x6-6-q1-2-t18616` |
+| 015.5 | Resource Pool | ⚠️ PARTIAL (5/8) | **Real** transient pool (`pool_bytes=4,194,304`) + **real** lifetime aliasing (`alias_saved=64`) + persistent cap 256 (256 accepted / 44 rejected of 300) + auditable growth (`grow_initial=64`); sig `v15-pr1`; C6 frame-time drift **deferred**; 3 documented limits: KI-001 GPU timestamps NA, KI-002 async readback shares staging, KI-003 presentation optimization no effect |
 | 012 | Production HZB | ⚠️ WIP (XFAIL) | Deferred; `main_012` tracked as WIP, excluded from gates via XFAIL |
 
 See [`docs/progress_report.md`](docs/progress_report.md) for the full technical report (Arabic).
@@ -296,6 +297,8 @@ GNE source is licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 Dependency/third-party licensing (permissive-only runtime policy, legal review process, dependency register, SBOM) is governed by [`docs/open_source_system_strategy_v1.md`](docs/open_source_system_strategy_v1.md).
 
 **Known issues:** measured limitations of this build (e.g. GPU timestamps unavailable on Vulkan) are listed in [`docs/known_issues.md`](docs/known_issues.md). Anything reported as `NA` there is *not measured*, never zero cost.
+
+**Roadmap:** 015.5 is **PARTIAL (5/8)** — criterion C6 (frame-time drift) is **deferred** because its root cause (readback staging exhaustion) is engine-side: async readback shares the sync staging buffer (KI-002) and presentation-side tweaks do not reduce bytes copied per frame (KI-003). Next: **012-revised (HZB)**, then **016 (Materials)**.
 
 **Offline tooling:** `tools/meshlet_import` vendors **meshoptimizer v1.2** (MIT, `9d9890c7…e95448`) — build-time only; the runtime module is dependency-free. See [`docs/dependency_register.md`](docs/dependency_register.md).
 
