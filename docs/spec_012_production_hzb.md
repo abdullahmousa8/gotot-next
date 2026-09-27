@@ -1,102 +1,139 @@
-# GOTOT-012 — Production HZB (SPEC DRAFT)
+# GOTOT-012-revised — Production HZB (SPEC v2.0)
+
+**الحالة:** DRAFT v2.0 — جاهز للتنفيذ (بانتظار موافقة المعماري).
+**المرجع:** HEAD `836086d` · **السابق:** GOTOT-012 v0.1 (DEFERRED 2026-09-22) — تشخيصه **الخاطئ**.
+**م supersedes:** `docs/spec_012_production_hzb.md` v0.1 بالكامل (محفوظ في تاريخ git).
+
+---
+
+## 1. الهدف
+
+تفعيل HZB الإنتاجي في مسار الـocclusion culling: أن يُصبح `p2 < p1` في مشهد فيه معيقات فعلياً، وأن يعمل **من الإطار الأول**، مع بقاء كل التواقيق القائمة حرفية.
+
+**ليس** إصلاح إسقاط (كان تشخيصاً خاطئاً)، بل:
+- **(A) منطق التفعيل** — مُعطَّل بنيوياً.
+- **(B) جسر مفقود** — مصدر العمق لا يصل إلى المخزن الذي يقرأه القارئ.
+
+---
+
+## 2. الخلفية: كيف فشل v0.1
+
+- **v0.1 افترض** أن «الإسقاط ينهار: كل الـinstances تُسقط إلى texel (0,0)» وأن السبب «projection collapse».
+- **هذا التشخيص خاطئ** ولا دليل عليه في الكود. كل مسار الإسقاط **سليم ومتطابق** بين Writer وReader (إثبات في §3.3).
+- **الملاحظة الحقيقية** من `progress_report.md §22`: `p2 == p1 == 132` و`max_inv == 0` **بنيوياً** (ليس عيّنة unlucky).
+- ⇒ كل محاولة إصلاح «الإسقاط» كانت будут تُنفق وقتاً على عيب غير موجود. التشخيص الصحيح في §3.
+
+---
+
+## 3. الجذر (Diagnostic Report — مُثبت بالأسطر)
+
+### 3.1 التنفيذ الحالي
+| المكوّن | السطر | الدور |
+|---|---|---|
+| `gpu_hzb_depth_source` (GLSL) | 954 | يقرأ عمق الإطار ويكتب **نسيجاً** `hzb_evimg` |
+| `gpu_hzb_down_compute_glsl` | 303-333 | `imageLoad` (328) → `imageStore` (331) على **`hzb_img` النسيج فقط** — لا يكتب الـbuffer |
+| occluder pass | 1093-1152 | **الكتابة الوحيدة** إلى `hzb_pyramid_data_buffer` (1146-1147) |
+| `gpu_visibility_prod_dispatch` (Reader) | 1316-1351 | يقرأ `hzb_pyramid_data_buffer` (1346) |
+| `gpu_hzb_build` | 3033-3075 | التفعيل + جدولة البناء |
+
+### 3.2 الجذر (A) — التفعيل مُعطَّل بنيوياً
+- `gpu_hzb_build` سطر **3043**: `same_vp = hzb_pyramid_fresh && memcmp(...) == 0`.
+- `hzb_pyramid_fresh = false` عند الإنشاء (**3015**) ⇒ `same_vp` خاطئ في أول بناء على أي حال.
+- في `!same_vp` (**3054-3056**) يُكتب `hzb_valid = 0` ويُخرج **بلا بناء هرم**.
+- ⇒ `hzb_valid` لا يصير 1 إلا بعد استقرار `vp` إطارين+ ⇒ في أول إطارين **الـphase 2 مُتخطّى كلياً** ⇒ `p2 == p1` بنيوياً.
+
+### 3.3 الجذر (B) — لا جسر من مصدر العمق إلى المخزن المقروء
+- الـdownsample chain يكتب **النسيج** فقط (317-331)، والـbuffer مربوط في مجموعته (**2873**) لكن **غير معلَن في الشيدرة** ⇒ لا يُكتب منه.
+-.Reader يقرأ **الـbuffer** (1346) الذي لا يكتبه إلا الـoccluder pass.
+- ⇒ مع `occluder_count == 0` يبقى الـbuffer **أصفاراً بالكامل** ⇒ `max_inv == 0` دائماً ⇒ لا يمكن有任何 إخفاء.
+
+### 3.4 ما استُبعد بالبرهان (لا افتراض)
+| الادّعاء القديم | الحكم | الدليل |
+|---|---|---|
+| «تعارض إحداثيات العمق بين Writer وReader» | ❌ **ملغى** | Writer **1104** `floatBitsToUint(max(vd.far_plane - nz, 0.0))` ≡ Reader **1335** `floatBitsToUint(max(viewdata.far_plane - z_sphere, 0.0))` — متطابقان حرفياً |
+| «تبادل محاور الفهرسة» | ❌ **ملغى** | Writer **1145** `poff + tx*uv_texels + ty` ≡ Reader **1346** `poff + tc.x*texels + tc.y` |
+| «projection collapse إلى texel (0,0)» | ❌ **ملغى** | لا مسار إسقاط معطوب؛ العطل سببه (A)+(B) لا الإسقاط |
+
+### 3.5 قيمة مُثبتة (+) — ثبات سجل الهرم
+`HZB_PYRAMID_DATA_UINTS = 5,592,405` (`gotot_render_server.h:214`) = `Σ_{i=0..11} 4^i` = مجموع `((2048>>k)²)` لكل المستويات ⇒ **تخطيط مسطّح متسق** مع فهرسة `poff` (1338-1341). يُستخدم كبند تحقّق في `contract_012_hzb_format.md`.
+
 
 **الحالة:** SPEC 012 v0.1 DRAFT — بانتظار مراجعة المعماري وتثبيت النهائي.
 **المرجع:** docs/progress_report.md (قسم 19/20 — 011) + docs/spec_010_batch_instance_rendering.md (مبنى 010/011) + قسم GOTOT-004 (HZB prototype).
 **المرحلة السابقة:** GOTOT-011 — Multi-Draw / Multi-Batch (PASS، commit `371cb3c` على GitHub).
 
 ---
+---
 
-## 1. الهدف
+## 4. التصميم
 
-ترقية HZB من **prototype** (GOTOT-004) إلى **HZB إنتاجي** متكامل مع مسار الدفعات (011): هرم عمق متعدد المستويات (≥12 مستوى)، occlusion culling **two-phase**، **temporal coherence**، و **GPU-driven** بالكامل (بدون تدخل CPU في المسار الحرج). الهدف العملي: تقليص عدد المثيلات المرئية خلف المعيقات الواقعية قبل تجميع الدفعات (011) — لا يوكل إلى الـ GPU فقط العدد بل **القائمة نفسها** المستهلكة من `gpu_mesh_batch_dispatch`.
+### 4.1 (A) إصلاح التفعيل — يعمل من الإطار الأول
+- `gpu_hzb_build()`: عند أول بناء (`!hzb_pyramid_fresh`) يُبنى الهرم من عمق **الإطار الحالي** ويُكتب `hzb_valid = 1`، بدل الكتابة صفراً والخروج (3054-3056).
+- بوابة `same_vp` (3043) تبقى **لحساب الـcoherence فقط** (هل الهرم قابل لإعادة الاستخدام)، لا كشرط تفعيل.
+- **الحراسة:** التفعيل يبقي **محجوباً** (frustum-only) إن كان مصدر العمق غير متاح في هذا الإطار — لا إخفاء خاطئ.
+- **الأثر على التواقيق:** `hzb_valid` كان `0` في كل مشاهد 001A–011 (لا معيقات) ⇒ يبقى `0` هناك ⇒ **صفر انزياح** متوقع.
 
-> المسار المطلوب: GPU Scene → (Phase 1) Frustum Culling → (Phase 2) HZB Occlusion → Visibility → Batch Assembly (011) → Multi-Draw → Rasterization (D32_SFLOAT) → أعلى الهرم يغذي إطارًا مقبلًا (temporal).
+### 4.2 (B) جسر مصدر العمق → المخزن المقروء
+- القارئ يقرأ `hzb_pyramid_data_buffer`؛ اليوم لا يكتبه إلا الـoccluder (1146).
+- **الجسر:** ممر downsampling يكتب **أيضاً** إلى الـbuffer بنفس تخطيط `poff`، فتصل سلسلة `depth_source → hzb_img → buffer` إلى ما يقرأه الـReader.
+- شرط المطابقة: نفس الفهرسة `poff + x*texels + y` (المثبتة في §3.4) ونفس تحويل العمق (1104 ≡ 1335).
+- **مرشَّح layout-أصغر (مُفضَّل):** تحويل `hzb_img` إلى `uimage2DArray` + **storage view** (بُعد storage) فيقرأ الـReader من النسيج مباشرة ⇒ **بلا مخزن مسطّح 22 MB**. **قرار معماري مطلوب من المعماري** (§10).
+- **الأمان:** كتابة `max` (لا overwrite) حفاظاً على contributions الميقات.
 
-## 2. الخلفية والقيود الموروثة
+### 4.3 التكامل
+- `gpu_hzb_build()` ⇒ تفعيل + جدولة (مع الجسر في نفس الـsubmission).
+- `gpu_visibility_prod_dispatch()` ⇒ phase 1 ثم phase 2 على `visibility[]` نفسها.
+- **حماية الـregressions:** بلا معيقات ⇒ `hzb_valid = 0` ⇒ المسار مطابق حرفياً لـ011/013/014/015.
 
-- **004 (prototype):** نسيج `512×512 R32UI` 2D-array بـ 10 مستويات؛ ممران: (1) clear + occluder pass + downsample×9، (2) دمج HZB في الـ cull بمرور واحد (فحص 2×2 عبر `imageAtomicMax` وتحويل `sphere_inv`). `visibility_ms≈0.7`، 377 → 375 على 100K بلا معيقات في الخلفية.
-- **009/010/011:** عمق `D32_SFLOAT` حقيقي (fallback) موجود بالفعل ومكتوب كل إطار في مسار الـ mesh — يمكن بناؤه للهرم مباشرة من الـ depth buffer نفسه (مصدر أدق من معيقات push-constant المتجاهلة لعمق المشهد).
-- **011:** `gpu_mesh_batch_dispatch` يستهلك مصفوفة `visibility[]` (من `gpu_cull_dispatch`/`gpu_visibility_dispatch`). HZB الإنتاجي يجب أن يغذي **نفس** مصفوفة الـ visibility حتى يعمل التجميع/الترتيب (5 draw calls) على المجموعة **النهائية** بعد الإخفاء.
-- القيد: مشاهد 010/011 الحالية بلا معيقات → فيها كل المثيلات في الفروستوم مرئية؛ HZB يجب أن يكون **no-op تلقائياً** (علامة `hzb_valid=false` مثل 004) كي تبقى signatures الـ 011 ثابتة حرفيًا.
+---
 
-## 3. التصميم المقترح (مفتوح للتحسين في المراجعة)
+## 5. معايير القبول (PASS — 7)
 
-### 3.1 الهرم (Multi-level hierarchy ≥ 12)
+1. **تفعيل من الإطار الأول**: `hzb_get_valid() == true` في أول تشغيل (بدون انتظار إطارين).
+2. **`p2 < p1` مع معيقات**: مشهد 012 بمعيقات ⇒ عدد مخفي فعلي و**مقيس**؛ بدون معيقات ⇒ `p2 == p1` (ضابطة).
+3. **الجسر يعمل**: عمق الإطار يصل إلى المصدر المقروء ⇒ `max_inv > 0` في مشهد فيه عمق حقيقي (اختبار موجّه على `pyrbuf`).
+4. **لا انزياح توقيع**: `013` / `014` / `015` / `v15-pr1` حرفية + `012 → rc=123` (ضابط سالب).
+5. **Regressions 001A–015**: `gt_harness` كاملاً (9 ok / 0 bad / 1 xfail) و`GT_REGRESS: PASS`.
+6. **صفر أخطاء RID**: لا `RID allocations of type` في أي تشغيل.
+7. **قياس**: `p2/p1` ونسبة reduction في `dispatch_us` لأphase 1 مقابل phase 2 — **مقيسة لا مقدَّرة**.
 
-- المصدر: **عمق الـ D32_SFLOAT الفعلي** (من إطار السابق) بدل معيقات منخفضة الدقة — downsample لكل مستوى بـ max 2×2 مع تحويل العمق إلى `depth_inv = floatBitsToUint(FAR_plane - z_view)` (قيمة أعلى = أقرب، كما في 004) عبر `imageAtomicMax`.
-- البنية: نسيج 2D-array `R32UI` قاعدة `2048×2048` → `levels = log2(2048)+1 = 12` (بالضبط الحد الأدنى للموافقة). يُقاس ويُطبع `level_count` كدليل.
-- المستوى الأعلى كل مستوى يُبنى من أدنى بالتوازي (ممر downsample واحد يغطي كل المستويات)، لا حلقات CPU على المستويات.
+---
 
-### 3.2 Two-phase occlusion culling
+## 6. الواجهات (Test-only)
 
-- **Phase 1 — Frustum culling** (كما في 002/004): ينتج القائمة الأولية للمرئيات.
-- **Phase 2 — HZB occlusion**: على المجموعة الخارجة من Phase 1 فقط، فحص 2×2 (أو 4×4 لمقاومة الحركة) ضد الهرم وتحويل عكسي `sphere_inv`؛ الناتج = مجموعة مرئية نهائية.
-- المراحل منفصلة بحيث يكون العدد قابلاً للقياس **منفصلًا لكل مرحلة** (`phase1_count >= phase2_count`) مع **ضابطة no-occluder** (بدون معيقات: phase2_count == phase1_count تمامًا، كـ 004).
+| API | الغرض |
+|---|---|
+| `gpu_hzb_build()` | **مُعدَّل**: تفعيل من الإطار الأول (سلوك) — لا تغيير توقيع |
+| `gpu_hzb_set_depth_source(enabled)` | Test-only: هل يُستخدم عمق الإطار (A/B) |
+| `gpu_hzb_get_valid()` | هل `hzb_valid=1` الآن |
+| `gpu_hzb_get_phase_counts()` | `(p1, p2)` |
+| `gpu_hzb_get_pyramid_stats()` | `levels`, `texels_base`, `data_uints`, `nonzero_texels` (يكشف الجسر) |
+| `gpu_hzb_get_coherent()` | flop coherence (يبقى للقياس فقط) |
 
-### 3.3 Temporal coherence
+**قاعدة:** لا يُضاف أي مفتاح إلى `gpu_scene_manager_get_stats()` ولا `gpu_rg_get_stats()` (المستبعدة من قارئات DET).
 
-- يُعاد استخدام HZB الإطار السابق (مبني من عمق الإطار الأخير) فيما لم يتوفر عمق الإطار الحالي بعد — وهذا جوهر **GPU-driven**: لا ننتظر readback ولا نُجمِّد الإطار.
-- للأجسام الثابتة (camera/geometry ساكنة 2+ إطار): النتيجة متطابقة (coherence تُقارن بفحص `hzb_coherent`).
-- أي تحديث للمشهد (كاميرا متحركة أو تحويل جديد) يجعل الهرم قديمًا جزئيًا → **توسّع تحفظي** في فحص المركّز (لا يتلاشى بشكل خاطئ): الأجسام في حدود عتبة التوسّع تُحتفظ مرئية.
+---
 
-### 3.4 GPU-driven
-
-- لا قراءة GPU→CPU في المسار الحرج. كل بيانات الهرم تُبنى وتُفحص على الـ GPU.
-- جسر الـ readback (pixels/depth كامل الإطار) يبقى **للتحقق فقط** (نفس قاعدة 007A/009)، ولا يدخل في حساب الـ culling.
-- **الفرق الجوهري عن 004:** الـ prototype كان مقتصرًا على معيقات push-constant منخفضة الدقة وبدون temporal؛ 012 يبني الهرم من عمق `D32_SFLOAT` الفعلي مع temporal coherence.
-
-### 3.5 التكامل مع 011
-
-- الـ HZB يعمل قبل `gpu_mesh_batch_dispatch` — كتابة `visibility[]` نفسها → التجميع (≤5 draw calls) يُرى على المجموعة النهائية.
-- **حماية الـ regressions:** بدون occluders → `hzb_valid=false` → الـ Path مطابق لإخراج 011 (signatures حرفية ثابتة). مع occluders → مسار جديد test-only.
-
-### 3.6 الدليل على فعالية الأداء
-
-- مشهد مخصص 012: كثافة مثيلات عالية + معيقات كبيرة (جدران/طائرات) أمام الجزء الأكبر منها → القياس: `phase1_count` مقابل `phase2_count` + `cull/visibility dispatch_us` وكذلك تأثير المجموعة النهائية على draw counts (011) — أرقام فعلية تُسجَّل كـ Benchmark (وليست ادعاءً أداءً).
-
-## 4. معايير القبول (PASS — 7 معايير مقترحة)
-
-1. **Multi-level hierarchy**: `gpu_hzb_get_level_count() >= 12` ويُطبع؛ الهرم مُبنى بالتوازي.
-2. **Two-phase occlusion culling**: `phase2_count <= phase1_count`؛ مع المعيقات تقلُّ حقيقيًا (قياس ملموس); بدون معيقات `phase2 == phase1` (ضابطة).
-3. **Temporal coherence**: كاميرا ساكنة إطاران+ → النتيجة مستقرة (coherent); كاميرا متحركة → لا انفجارات مرئية ولا فقدان خاطئ (توسّع تحفظي مفعّل).
-4. **GPU-driven**: صفر readback في المسار الحرج (يُثبت بأن الحوسبة تعمل كل الإطارات والقراءات محصورة بالإطارات المعلَّمة للتحقق).
-5. **Determinism (DET)**: توقيع DET ثابت بين تشغيلين (نمط `sig=` كالسابق) يشمل `levels/p1/p2/coherent` و draw counts 011.
-6. **Regressions 001A–011**: `gt_smoke` / 007 / 008 / 008b / 009a / 009b / 010a / 010b / 011a / 011b / 011c — كلها `exit 0` على نفس البنية مع **signatures حرفية ثابتة** لما لا يلمسه HZB (لا-occluder).
-7. **Performance measurable**: جدولة أرقام `phase1/phase2 counts`, `dispatch_us` (cull + HZB)، وقياس أثر التجميع (draw calls) مع/بدون HZB في مشهد 012.
-
-## 5. تغييرات الواجهات المقترحة (Test-only في البداية)
-
-| API | النوع | الغرض |
-|---|---|---|
-| `gpu_hzb_set_occluders(Vector4[] boxes)` | Test-only | تعيين معيقات للمشهد (ملحق/بديل لمسار 004) |
-| `gpu_hzb_get_level_count()` | Test-only | عدد مستويات الهرم (الأدلة ≥12) |
-| `gpu_hzb_get_phase_counts()` | Test-only | `phase1` و `phase2` للأدلة |
-| `gpu_hzb_get_coherent()` | Test-only | فلاغ coherence (temporal) |
-| `gpu_hzb_enable_temporal(enabled)` | Test-only | تفعيل/تعطيل temporal (مقارنات الأدلة) |
-
-ملاحظة: البقاء على قاعدة "test-only حتى مراجعة الاستراتيجية" (Sections 19–20).
-
-## 6. نطاق خارجي (Out of scope لـ 012)
-
-Meshlets / LOD، نظام المواد، render graph، bindless/VMA، reversed-Z (مؤجل)، دمج RenderingServer/RHI، إزالة جسر الـ readback. لا تغيير في مسار البيلبورد، ولا تغيير يمس signatures 010/011 (لا-occluder).
-
-## 7. ملاحظات التكامل مع 011 (مُسجّلة — لا تطبيق خارج نطاق التقارير)
-
-- مراقبة الـ deferred القديمة: frustum reading، atomic ordering، reversed-Z، 007A frame-time drift — لا تُعالج في 012 ما لم يقرر المعماري خلاف ذلك.
-- تجميع 011 (G = min(active,5)) يعمل على المجموعة **بعد** HZB — تُوثَّق النتيجة الأرقامية في PASS criterion 7.
-- مسار المجموعات procedural يُبقي `phase2_count` أدق إدخال لجدولة الدفعات.
+## 7. النطاق
+داخل الموديول فقط. **خارج النطاق:** تعديل محرك Godot · كسر تواقيع 013/014/015 · تغيير المسار المتزامن (billboard/mesh) · Reversed-Z · bindless/VMA · المواد (016) · readback (KI-002/003).
 
 ## 8. التسليمات
-
-- C++: هرم عمق ≥12 مستوى مبني من `D32_SFLOAT` + two-phase visibility + temporal flag + getters test-only (+ حراسة no-occluder).
-- Demo: `demo/gpu_smoke/main_012.gd` + `main_012.tscn` (مشهد كثافة + معيقات كبيرة).
-- Harness: `gt_012a` / `gt_012b` (نمط 011) + مخرجات `sig` + لقطة `gt_012_window.png`.
-- توثيق: قسم 21 في `docs/progress_report.md` + تحديث README (milestone 012 + roadmap ⏳→✅) بعد PASS.
-- Sweep regressions: 001A–011 بالكامل.
-- الملفات المحمية: `docs/sac_unblock_procedure.md`, `docs/open_source_system_strategy_v1.md`, `docs/dependency_register.md` — لا تُلمس.
+- C++: إصلاح التفعيل + الجسر (أو storage view) + getters test-only.
+- Demo: `main_012_rev.gd` + `.tscn` (معيقات + قياس).
+- Harness: `tools/gt_012_rev.bat` (نمط `gt_011` + DET).
+- توثيق: `progress_report.md §31`.
+- Contracts ×5: `contract_012_projection.md` · `_hzb_format.md` · `_visibility.md` · `_sync.md` · `_determinism.md`.
 
 ## 9. الحالة
+**DRAFT v2.0 — جاهز للتنفيذ.** لا implementation ولا build ولا commit للكود قبل موافقة المعماري. (هذا الـcommit = توثيق فقط.)
 
-**SPEC 012 v0.1 DRAFT — بانتظار مراجعة المعماري والتثبيت.**
+## 10. المخاطر
 
-لا تنفيذ، لا build، لا commit، لا push قبل موافقة Owner/المعماري على البدء.
+| الخطر | التخفيف |
+|---|---|
+| تفعيل HZB يكسر تواقيع المسارات بلا-معيقات | `hzb_valid` يبقى `0` بلا معيقات ⇒ صفر انزياق متوقع — **يُتحقق ببوابة 013/014/015** |
+| الجسر يضيف pass/عرض رابط | الخيار (ب) (storage view) يلغي المخزن 22MB ويقلّل الخطر |
+| الجسر يكتب فوق مساهمات الميقات | كتابة `max` لا overwrite |
+| تخطيط مسطّح vs نسيج | `HZB_PYRAMID_DATA_UINTS = 5,592,405 = Σ4^i` ⇒ يُتحقق كـinvariant (§3.5) |
+| **قرار مطلوب**: جسر بمخزن أم storage view؟ | (§4.2) — المعماري يختار قبل التنفيذ |
+
