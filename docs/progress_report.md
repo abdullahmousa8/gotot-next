@@ -1,4 +1,4 @@
-# تقرير شامل — مشروع GOTOT-NEXT (حتى الآن)
+# تقرير شامل — مشروع GNE (حتى الآن)
 
 ## 1. الهدف والأساس
 نهدف لبناء نظام **GPU-driven rendering** حقيقي كوحدة C++ (Module) مخصصة في **Godot v4.8.dev (master)**, ننفذ خارطة طريق `docs/engine_spec_v2.md` مرحليًا. الفكرة الجوهرية: كاميرا واحدة → **ممران فقط**: Culling+HZB بالحوسبة (compute) ثم **رسم واحد غير مباشر** (indirect draw) يقوده الـ GPU مباشرة، بدون حلقات CPU على آلاف الأشياء.
@@ -68,7 +68,7 @@
 | 10M | 1.48 | 0.50 | 0.12 | 0.92 | 0.18 | 36,744 | 495.9MB |
 
 **الخلاصة الدقيقة (وليست حقيقة عامة):**
-في **هذا الاختبار تحديدًا**، ظل زمن مراحل culling/finalize/raster قريبًا من الثبات ضمن نطاق 100K–10M، لأن الـ prototype يعتمد على بنية GPU parallel ولا يحتوي حاليًا على **تكلفة رسم هندسي حقيقي متناسبة مع تعقيد meshes**. هذه أرقام **Benchmark Prototype v0.1** وليست ادعاءً بأن GOTOT-NEXT يستطيع رسم 10 ملايين جسم داخل لعبة بـ 60FPS.
+في **هذا الاختبار تحديدًا**، ظل زمن مراحل culling/finalize/raster قريبًا من الثبات ضمن نطاق 100K–10M، لأن الـ prototype يعتمد على بنية GPU parallel ولا يحتوي حاليًا على **تكلفة رسم هندسي حقيقي متناسبة مع تعقيد meshes**. هذه أرقام **Benchmark Prototype v0.1** وليست ادعاءً بأن GNE يستطيع رسم 10 ملايين جسم داخل لعبة بـ 60FPS.
 
 الفرق بين **GPU compute prototype** و **production renderer** كبير، والاختبار الحالي يحتوي:
 - موارد مبسطة جدًا، مربع واحد، شادر بسيط، framebuffer مخصص، readback للتحقق.
@@ -158,7 +158,7 @@ Next milestone:
 
 ## 15. GOTOT-008A — إثبات الهندسة الحقيقية (Real Mesh Path)
 
-- **الهدف**: إثبات أن GOTOT-NEXT يستطيع رسم **هندسة 3D حقيقية** باستخدام: vertex buffer حقيقي + index buffer حقيقي + vertex format حقيقي + indexed draw + indirect draw، معتمدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة ونفس جسر العرض 007A.
+- **الهدف**: إثبات أن GNE يستطيع رسم **هندسة 3D حقيقية** باستخدام: vertex buffer حقيقي + index buffer حقيقي + vertex format حقيقي + indexed draw + indirect draw، معتمدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة ونفس جسر العرض 007A.
 - **قاعدة معمارية**: مسار 005/007A باقٍ كما هو **دون أي استبدال** (billboard shader، quad index buffer، raster pipeline، `gpu_raster_indirect_draw`، `gpu_raster_read_pixels`). الـ Mesh مسار **مستقل ومضاف**.
 - **الهندسة**: مكعب واحد فقط — 8 رؤوس (positions فقط، `R32G32B32_SFLOAT`) و36 فهرسًا (`UINT32`). بلا normals/UVs/materials/textures.
 - **نموذج الـ instance**: نفس النموذج — `compact[gl_InstanceIndex]` → `transforms.position_scale[orig]` → `viewdata.vp`. الناتج 377 (أو ما يقابله) **مكعبًا حقيقيًا**.
@@ -269,7 +269,7 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 7. **GPU==CPU** — `visible=6` وfrustum CPU (الكرة ضد 6 مستويات بمسح positions/scales) = 6، `compact_sorted==[0..5]`.
 8. **billboard path لم ينكسر** — `gpu_raster_get_depth_enabled()==false`، ومسار depth الخاص بـ 009 محصور في مسار mesh (005/007A regressions PASS).
 
-إصلاح عمر (lifetime) أثناء التحقق: `mesh_010_vertex/index_array` كانا يُحرَّران بعد مخزنَي الـ vertex/index المشتركين → خطآن "free invalid ID" في الـ destroy؛ عولج بتحرير دفعة 010 (arrays/ubersets/pipelines/buffers) قبل تحرير المخزنَين في `_destroy_mesh`. بعد الإصلاح: **صفر** errors/leaks، إغلاق نظيف، exit 0. لقطة نافذة: `C:\Users\opc\AppData\Local\Temp\opencode\gt_010_window.png`. خروج: `GOTOT-NEXT 010: PASS`.
+إصلاح عمر (lifetime) أثناء التحقق: `mesh_010_vertex/index_array` كانا يُحرَّران بعد مخزنَي الـ vertex/index المشتركين → خطآن "free invalid ID" في الـ destroy؛ عولج بتحرير دفعة 010 (arrays/ubersets/pipelines/buffers) قبل تحرير المخزنَين في `_destroy_mesh`. بعد الإصلاح: **صفر** errors/leaks، إغلاق نظيف، exit 0. لقطة نافذة: `C:\Users\opc\AppData\Local\Temp\opencode\gt_010_window.png`. خروج: `GNE 010: PASS`.
 
 ### الانحدارات 001A–009B (كلها PASS على نفس البنية)
 - `gt_smoke` (001B fill + 002 culling + 003 indirect args + 004 HZB + 005 indirect raster + 006 10M scaling): **GOTOT-SMOKE: OK**.
@@ -478,8 +478,8 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 - **حارس صريح**: `runs > 256` ⇒ طيّة في dispatch واحد **مع تحذير صريح في السجل** (لا تراجع صامت). الدليل: `ssbo=121,635,140` و`buffer=7` و`applied=5000/5000/10000` و DET لم تتغيّر - **صفر انزياح في توقيع 014**.
 
 ### إعادة-baseline لـ 011 (DET غير زمني)
-- سطر الـsig في `main_011` (`GOTOT-NEXT 011-DET`) كان يحتوي آخر حقلين `dispatch_us/draw_us` (زمن تنفيذ) ⇒ المقارنة بين تشغيلين كانت تفشل حتى على بناء سليم (توقيتات مختلفة حرفياً).
-- الإصلاح (Commit 2): `dispatch_us/draw_us` يُطبعان الآن في سطر منفصل (`GOTOT-NEXT 011: timing dispatch_us=... draw_us=...`)، بينما `sig` خالٍ من أي حقل زمني (ينتهي عند `cb%d|dt%d`).
+- سطر الـsig في `main_011` (`GNE 011-DET`) كان يحتوي آخر حقلين `dispatch_us/draw_us` (زمن تنفيذ) ⇒ المقارنة بين تشغيلين كانت تفشل حتى على بناء سليم (توقيتات مختلفة حرفياً).
+- الإصلاح (Commit 2): `dispatch_us/draw_us` يُطبعان الآن في سطر منفصل (`GNE 011: timing dispatch_us=... draw_us=...`)، بينما `sig` خالٍ من أي حقل زمني (ينتهي عند `cb%d|dt%d`).
 - Baseline غير زمني (Commit 2، ميدان 3 استراتيجيات، الكل PASS):
   - `0: v=128 st=0 m=64 gc=64 dc=64 ic=64 cc=64 dF0.92076 dB0.95204 cb=1 dt=1`
   - `1: v=128 st=1 m=64 gc=5 dc=5 ic=5 cc=5 dF0.92076 dB0.95204 cb=1 dt=1`

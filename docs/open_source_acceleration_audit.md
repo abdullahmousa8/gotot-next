@@ -1,4 +1,4 @@
-# GOTOT-NEXT Open-Source Acceleration Audit
+# GNE Open-Source Acceleration Audit
 
 **Date:** 2026-09-22
 **Author:** Big Pickle (executing Architect Dual-Track decision)

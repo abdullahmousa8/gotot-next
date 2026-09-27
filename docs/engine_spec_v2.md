@@ -1,4 +1,4 @@
-# gotot-next — Engineering Design & Execution Specification
+# GNE — Engineering Design & Execution Specification
 
 Version 2.0 — GPU-Driven Next-Generation Rendering Architecture
 
@@ -10,7 +10,7 @@ Version 2.0 — GPU-Driven Next-Generation Rendering Architecture
 
 ## 1. الملخص التنفيذي
 
-gotot-next هو مشروع محرك ألعاب جيل قادم يهدف إلى بناء طبقة Rendering وRuntime عالية الأداء، مستوحاة من مزايا Godot في سهولة الاستخدام وخفة البنية، لكن مع Render Architecture موجهة بصورة أساسية نحو GPU-Driven Rendering. لا يفترض المشروع أن الوصول إلى مستوى Nanite/Lumen/VSM يتم بمجرد إضافة Mesh Shaders أو Ray Tracing؛ بل يتطلب إعادة تصميم متكاملة لمسار البيانات، الذاكرة، الرؤية، الأصول، الـ shaders والـ frame scheduling.
+GNE هو مشروع محرك ألعاب جيل قادم يهدف إلى بناء طبقة Rendering وRuntime عالية الأداء، مستوحاة من مزايا Godot في سهولة الاستخدام وخفة البنية، لكن مع Render Architecture موجهة بصورة أساسية نحو GPU-Driven Rendering. لا يفترض المشروع أن الوصول إلى مستوى Nanite/Lumen/VSM يتم بمجرد إضافة Mesh Shaders أو Ray Tracing؛ بل يتطلب إعادة تصميم متكاملة لمسار البيانات، الذاكرة، الرؤية، الأصول، الـ shaders والـ frame scheduling.
 
 القرار الهندسي الرئيسي: عدم إعادة كتابة المحرك كله في خطوة واحدة. يبدأ المشروع بنواة RenderCore مستقلة يمكن تشغيلها داخل بيئة Godot، ثم تُختبر على مشاهد معيارية. بعد إثبات الأداء والاستقرار، يتم نقل المسؤوليات تدريجياً من RenderingServer/RenderingDevice إلى طبقة جديدة.
 
@@ -475,7 +475,7 @@ Compatibility Layer:
 
 ## 33. الخلاصة الهندسية
 
-gotot-next ليس "نسخة Godot تحتوي Nanite/Lumen/VSM". التعريف الأدق: **Render-centric engine architecture ذات GPU Scene وRender Graph وvirtualized resources**، تسمح بإضافة هذه التقنيات كأنظمة متكاملة.
+GNE ليس "نسخة Godot تحتوي Nanite/Lumen/VSM". التعريف الأدق: **Render-centric engine architecture ذات GPU Scene وRender Graph وvirtualized resources**، تسمح بإضافة هذه التقنيات كأنظمة متكاملة.
 
 أكبر نجاح في أول سنة ليس جودة الصورة، بل إثبات أن البيانات تنتقل من العالم إلى GPU بكفاءة، وأن visibility والـ indirect commands والموارد يمكن إدارتها دون CPU overhead غير ضروري، مع profiler يكشف أين تذهب كل ميلي ثانية.
 

@@ -1,6 +1,6 @@
 <div align="center">
 
-# GOTOT-NEXT
+# GNE
 
 **A GPU-driven rendering prototype built as a custom C++ module for Godot 4.8.dev.**
 
@@ -23,7 +23,7 @@
 
 ### Overview
 
-**GOTOT-NEXT** is an experimental, GPU-driven rendering pipeline implemented as a standalone C++ module (`modules/gotot_render`) for **Godot v4.8.dev**. It uses a local `RenderingDevice` (Vulkan) — isolated from Godot's main renderer in the same style as `LightmapperRD` — to prove a fully GPU-resident scene flow:
+**GNE** is an experimental, GPU-driven rendering pipeline implemented as a standalone C++ module (`modules/gotot_render`) for **Godot v4.8.dev**. It uses a local `RenderingDevice` (Vulkan) — isolated from Godot's main renderer in the same style as `LightmapperRD` — to prove a fully GPU-resident scene flow:
 
 > **GPU Scene → Frustum Culling → HZB Occlusion → Compaction → Indirect Arguments → GPU-driven Rasterization → Real Geometry → Presentation**
 
@@ -50,7 +50,7 @@ This repository contains the module source, the Godot demo project used for veri
                            │
                            ▼
         ┌──────────────────────────────────┐
-        │            GOTOT-NEXT            │
+        │            GNE            │
         │                                  │
         │   GPU Scene (SoA instance data)  │
         │              │                   │
@@ -268,7 +268,7 @@ The numbers above are from a **Benchmark Prototype v0.1**. In this specific test
 culling / finalize / raster stages stay close to flat across 100K–10M because the
 prototype is GPU-parallel and **does not yet contain real mesh-complexity draw cost**.
 
-This is **not** a claim that GOTOT-NEXT renders 10M objects in a game at 60 FPS. The
+This is **not** a claim that GNE renders 10M objects in a game at 60 FPS. The
 current prototype has: simplified resources, a single quad/cube, simple shaders, a
 dedicated offscreen framebuffer, and readback for verification. It has **no**
 production material system, **no** real mesh/vertex streams at scale, **no**
@@ -291,7 +291,7 @@ production depth buffer, and **no** full render graph or synchronization.
 
 ### License
 
-GOTOT-NEXT source is licensed under the **MIT License** — see [`LICENSE`](LICENSE).
+GNE source is licensed under the **MIT License** — see [`LICENSE`](LICENSE).
 
 Dependency/third-party licensing (permissive-only runtime policy, legal review process, dependency register, SBOM) is governed by [`docs/open_source_system_strategy_v1.md`](docs/open_source_system_strategy_v1.md).
 
@@ -305,7 +305,7 @@ Dependency/third-party licensing (permissive-only runtime policy, legal review p
 
 ## نظرة عامة بالعربية
 
-**GOTOT-NEXT** نموذج أولي لنظام **GPU-driven rendering** مبني كوحدة C++ مخصّصة (`modules/gotot_render`) داخل **Godot v4.8.dev**، يستخدم `RenderingDevice` محليًا (Vulkan) معزولًا عن renderer المحرك بنفس أسلوب `LightmapperRD`.
+**GNE** نموذج أولي لنظام **GPU-driven rendering** مبني كوحدة C++ مخصّصة (`modules/gotot_render`) داخل **Godot v4.8.dev**، يستخدم `RenderingDevice` محليًا (Vulkan) معزولًا عن renderer المحرك بنفس أسلوب `LightmapperRD`.
 
 **الفكرة:** كاميرا واحدة → ممران فقط: culling + HZB بالحوسبة، ثم **رسم واحد غير مباشر** (indexed indirect draw) تُنتج وسائطه (arguments) على الـ GPU مباشرة. لا توجد حلقات CPU على آلاف الكائنات في المسار الحرج.
 
