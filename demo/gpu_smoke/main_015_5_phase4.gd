@@ -43,6 +43,20 @@ func _ready() -> void:
 	if server == null:
 		_fail(400, "server singleton is null")
 		return
+	# PHASE 5: the GPU timestamp query pool is enabled here (see §29 in
+	# progress_report.md for the full finding). Measured result: the pool now
+	# accepts captures (count 0 -> 1 after capture_timestamp), but the resolved
+	# GPU values never reach a reader: the engine resolves the query pool in
+	# _begin_frame() of the ENGINE's frame, and drivers/vulkan has no
+	# utilities.cpp, so the per-frame result count stays 0 for Vulkan. The
+	# columns are therefore reported as NA, never as zero cost. The wall-clock
+	# measurement below is the load-bearing one.
+	ProjectSettings.set_setting("debug/settings/profiler/max_timestamp_query_elements", 512)
+	print("GOTOT-NEXT 015.5 p5: timestamp_query_elements=", int(ProjectSettings.get_setting("debug/settings/profiler/max_timestamp_query_elements")), " (GPU results unavailable on Vulkan - see progress_report §29)")
+	if not server.ensure_gpu_device():
+		_fail(401, "local RenderingDevice not available")
+		return
+
 	if not server.ensure_gpu_device():
 		_fail(401, "local RenderingDevice not available")
 		return

@@ -574,3 +574,19 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 ### نتيجة للقرار التالي
 **Drift مُفسَّر** ⇒ لا STOP ⇒ **يُسمح بالانتقال إلى Phase 5**، والهدف محدَّد بالقياس: Passive `raster`+`output` = 81.8% من زمن الإطار، والـreadback_sync هو المشتبه به ⇒ fence-based + multi-frame staging، والمقياس هو:是否可以 تقليص Passive دون كسر التواقيع.
 
+
+### Phase 5 step 1 — GPU timestamps: **BLOCKED by engine limitation** (documented, not worked around)
+الأمر كان «أضِف `max_timestamp_query_elements=512` في `project.godot`». **هذا لا يمكن أن يعمل**، والجlaid بالقراءة لا بالتخمين:
+
+| الفرضية | الواقع المُقاس | المرجع |
+|---|---|---|
+| يمكن تفعيله من `project.godot` | **لا** — مُسجَّل بـ`GLOBAL_DEF_RST` = runtime-only، لا يُقرأ من ولا يُكتب في `project.godot` | `core/config/project_settings.cpp:1811` |
+| يُقرأ عند بدء التشغيل | ✅ لكن **مرة واحدة** داخل `initialize()` | `servers/rendering/rendering_device.cpp:8625` |
+| النطاق يسمح بـ0 | **لا** — النطاق `256..65535` | `project_settings.cpp:1811` |
+| الضبط في `_ready()` يكفي | **لا** — يجب أن يسبق `ensure_gpu_device()`، لأن جهازنا كسول: `create_local_rendering_device()` → `create_local_device()` → `rd->initialize()` وهو القارئ الوحيد | `rendering_server.cpp` / `rendering_device.cpp` |
+| تفعيل الـpool يكفي لقراءة النتائج | **لا** — بعد الضبط الصحيح (512، قبل إنشاء الجهاز) صار `captured 0 → 1` بعد `capture_timestamp()`، لكن `get_captured_timestamps_count()` يبقى **0** | قياس حي |
+
+**السبب الجذري النهائي:** حلّ نتائج الـquery يقع في `_begin_frame()` (سطر 8335–8342: `timestamp_query_pool_get_results` + `SWAP` + `timestamp_result_count = timestamp_count`). هذا المسار **موجود وصحيح**، وسائق Vulkan يطبّق القراءة كاملة (`timestamp_query_pool_get_results` → `vkGetQueryPoolResults`، سطر 6822). لكن **`drivers/vulkan` لا يحتوي `utilities.cpp`** — الملف الوحيد الذي يضبط `timestamp_result_count` للمحرّك هو `drivers/gles3/storage/utilities.cpp:367`. ⇒ على Vulkan، `timestamp_result_values` تُملأ ولا يُحدَّث `timestamp_result_count`، فيُرجع كل قارئ `0` (وقيمة غير مهيّأة عند القراءة في نفس الإطار: `1.79e18 ns`).
+
+**القرار (Owner، 2026-09-27):** إثبات التوثيق + **الانتقال إلى Phase 5 على خط wall-clock**، لأنه ما ينتج الأرقام الحقيقية اليوم. عمود GPU يبقى **`NA`** (غير مقيس) ولا يُقرأ أبداً كـ«مجانٍ». تفعيل الـpool بُقي في المشهد (512) لأنه صحيح Direction ولا يضرّ.
+
