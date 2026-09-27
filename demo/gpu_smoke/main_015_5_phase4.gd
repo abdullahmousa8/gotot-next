@@ -1,0 +1,208 @@
+extends Node
+# GOTOT-NEXT 015.5 Phase 4 — frame-time drift DIAGNOSIS (measurement only)
+#
+# Purpose: produce the BASELINE that Phase 5 (async readback) is compared
+# against. This scene MEASURES; it does not optimise and claims no improvement.
+#
+# Method (API verified against this 4.8.dev tree, see the Phase-4 block in
+# gotot_render_server.cpp): RD::capture_timestamp() marks a point on the GPU
+# timeline; get_captured_timestamp_gpu_time() returns NANOSECONDS for the
+# PREVIOUS completed frame; get_captured_timestamp_cpu_time() returns
+# MICROSECONDS. Per-pass numbers are CPU-side microsecond deltas between markers.
+#
+# Schedule: 100 warm-up frames (kept for the peak) + 200 measured = 300 total.
+
+const WARMUP_FRAMES := 100
+const MEASURE_FRAMES := 200
+const P_SCENE := 0
+const P_CULL := 1
+const P_CLUSTER := 2
+const P_BATCH := 3
+const P_RASTER := 4
+const P_OUTPUT := 5
+const RASTER_W := 1920
+const RASTER_H := 1080
+
+const PROBE_FRAMES := [1, 100, 200, 300]
+
+var server: GototRenderServer
+var camera: Camera3D
+var display: TextureRect
+var image_tex: ImageTexture
+
+var frame := 0
+var shot_done := false
+var probe_wall := {}
+var probe_gpu := {}
+var wall_series: Array = []
+var pass_count_ok := 0
+
+
+func _ready() -> void:
+	server = GototRenderServer.get_server_singleton()
+	if server == null:
+		_fail(400, "server singleton is null")
+		return
+	if not server.ensure_gpu_device():
+		_fail(401, "local RenderingDevice not available")
+		return
+	if not server.gpu_scene_create(6, 1.0):
+		_fail(402, "gpu_scene_create(6)")
+		return
+	# The scene buffers are filled by a GPU dispatch pass (seed 8 = the same
+	# seed the other scenes use), NOT by gpu_scene_create alone. Without this
+	# the cull has no instances and fails with code=410.
+	if not server.gpu_scene_dispatch(8):
+		_fail(403, "gpu_scene_dispatch(8) - scene fill pass")
+		return
+	if not server.gpu_mesh_create():
+		_fail(404, "gpu_mesh_create")
+		return
+	camera = $Camera
+	display = $Overlay/Display
+	camera.global_position = Vector3(0, 0, 2000)
+	camera.rotation = Vector3.ZERO
+	camera.near = 300.0
+	camera.far = 4000.0
+	var vp_size: Vector2 = get_viewport().get_visible_rect().size
+	server.gpu_scene_set_viewport(vp_size.x, vp_size.y)
+	# REQUIRED before any cull: sets frustum_valid. Without it gpu_cull_dispatch
+	# fails with code=410 ("no camera. Call gpu_scene_set_camera first").
+	server.gpu_scene_set_camera(camera.get_global_transform(), camera.get_camera_projection())
+	# Set the warm-up prefix explicitly (Phase 4 uses 100); per-pass samples are
+	# cleared at that boundary so averages cover the MEASURED window only.
+	server.gpu_frame_set_warmup(WARMUP_FRAMES)
+	print("GOTOT-NEXT 015.5 p4: warmup=", WARMUP_FRAMES, " measure=", MEASURE_FRAMES)
+
+
+func _process(_delta: float) -> void:
+	if shot_done:
+		return
+	frame += 1
+	if frame > WARMUP_FRAMES + MEASURE_FRAMES:
+		_finish()
+		return
+
+	server.gpu_frame_begin()
+
+	# pass 0 — scene_update: instance transforms are static in this scene, so the
+	# slot is a measured marker rather than work.
+	server.gpu_frame_mark(P_SCENE)
+
+	# pass 1 — cull: frustum + HZB visibility.
+	if not server.gpu_cull_dispatch():
+		_fail(410, "gpu_cull_dispatch")
+		return
+	var visible: int = server.gpu_cull_get_visible_count()
+	if not server.gpu_visibility_dispatch():
+		_fail(411, "gpu_visibility_dispatch")
+		return
+	server.gpu_frame_mark(P_CULL)
+
+	# pass 2 — cluster_cull: this scene has no meshlet data, so the slot exists
+	# to keep the timeline complete; it is a no-op marker, NOT a culling cost.
+	server.gpu_frame_mark(P_CLUSTER)
+
+	# pass 3 — batch_assembly.
+	if not server.gpu_mesh_batch_dispatch():
+		_fail(413, "gpu_mesh_batch_dispatch")
+		return
+	server.gpu_frame_mark(P_BATCH)
+
+	# pass 4 — raster: the real indirect draw plus BOTH readbacks (this is the
+	# pass Phase 5 will attack, so it must be measured here).
+	if not server.gpu_mesh_drawargs_finalize():
+		_fail(414, "gpu_mesh_drawargs_finalize")
+		return
+	if not server.gpu_mesh_indirect_draw():
+		_fail(415, "gpu_mesh_indirect_draw")
+		return
+	var pixels: PackedByteArray = server.gpu_raster_read_pixels()
+	var depth: PackedFloat32Array = server.gpu_raster_read_depth()
+	server.gpu_frame_mark(P_RASTER)
+
+	# pass 5 — output: CPU-side presentation.
+	if pixels.size() == RASTER_W * RASTER_H * 4:
+		var img := Image.create_from_data(RASTER_W, RASTER_H, false, Image.FORMAT_RGBA8, pixels)
+		if image_tex == null:
+			image_tex = ImageTexture.create_from_image(img)
+			display.texture = image_tex
+		else:
+			image_tex.update(img)
+	server.gpu_frame_mark(P_OUTPUT)
+	server.gpu_frame_end()
+
+	# The interval closed by this begin() is the previous frame's wall time.
+	var st: Dictionary = server.gpu_frame_stats()
+	wall_series.append(int(st["wall_last_us"]))
+	if frame in PROBE_FRAMES:
+		probe_wall[frame] = int(st["wall_last_us"])
+		probe_gpu[frame] = int(st["gpu_last_ns"])
+	if frame == 1 or frame == 50 or frame == WARMUP_FRAMES or frame == WARMUP_FRAMES + MEASURE_FRAMES:
+		print("GOTOT-NEXT 015.5 p4: dbg frame=", frame, " wall_last_us=", st["wall_last_us"], " gpu_last_ns=", st["gpu_last_ns"], " frames=", st["frames"])
+
+
+
+func _finish() -> void:
+	shot_done = true
+	pass_count_ok = int(server.gpu_frame_stats()["measured_frames"])
+	_report(server.gpu_frame_stats())
+	server.gpu_scene_destroy()
+	print("GOTOT-NEXT 015.5 p4: PASS")
+	get_tree().quit(0)
+
+
+func _report(st: Dictionary) -> void:
+	print("GOTOT-NEXT 015.5 p4: frames=", st["frames"], " warmup=", st["warmup"], " measured=", st["measured_frames"])
+	var names: PackedStringArray = st["pass_names"]
+	var per: PackedFloat64Array = st["pass_cpu_us"]
+	var line := "GOTOT-NEXT 015.5 p4: per-pass wall(us)"
+	for i in range(mini(names.size(), per.size())):
+		line += " " + names[i] + "=" + str(int(per[i]))
+	print(line)
+	print("GOTOT-NEXT 015.5 p4: pass_sum_us=", st["pass_sum_us"], " pass_share_pct=", int(st["pass_share_pct"]), " frame_total_wall_us=", st["frame_total_wall_us"])
+	print("GOTOT-NEXT 015.5 p4: wall_avg_us=", st["wall_avg_us"], " wall_peak_us=", st["wall_peak_us"], " wall_first_us=", st["wall_first_us"], " warmup_peak_us=", st["warmup_wall_peak_us"])
+	# GPU nanoseconds are UNAVAILABLE, not zero, when the engine's query pool is
+	# disabled (debug/settings/profiler/max_timestamp_query_elements = 0). The
+	# flag makes that explicit so no reader mistakes "not measured" for "free".
+	if bool(st["gpu_timestamps_available"]):
+		print("GOTOT-NEXT 015.5 p4: gpu_avg_ns=", st["gpu_avg_ns"], " gpu_avg_us=", st["gpu_avg_us"], " gpu_first_ns=", st["gpu_first_ns"])
+	else:
+		print("GOTOT-NEXT 015.5 p4: gpu UNAVAILABLE (query pool disabled) - gpu_avg_ns=NA gpu_first_ns=NA")
+	for f in PROBE_FRAMES:
+		if probe_wall.has(f):
+			print("GOTOT-NEXT 015.5 p4: probe frame=", f, " wall_us=", probe_wall[f], " gpu_ns=", probe_gpu[f])
+	_report_drift()
+
+
+func _report_drift() -> void:
+	var n: int = wall_series.size()
+	if n < 10:
+		print("GOTOT-NEXT 015.5 p4: drift NOT REPORTED (only ", n, " samples; need >= 10)")
+		return
+	# Compare the first half of the MEASURED window with the second half. The
+	# comparison is made on the ordered series, never on two hand-picked frames.
+	var half: int = n / 2
+	var first_sum := 0.0
+	var last_sum := 0.0
+	for i in range(0, half):
+		first_sum += float(wall_series[i])
+	for i in range(half, n):
+		last_sum += float(wall_series[i])
+	var first_avg: float = first_sum / float(half)
+	var last_avg: float = last_sum / float(maxi(1, n - half))
+	print("GOTOT-NEXT 015.5 p4: drift first_half_avg_us=", int(first_avg), " last_half_avg_us=", int(last_avg), " delta_us=", int(last_avg - first_avg), " samples=", n)
+	# DET-SAFE SIGNATURE: contains ONLY content that must be reproducible.
+	# Timings (wall_avg_us, drift_us) are MEASUREMENTS, not content, and they
+	# vary run to run - including the SIGN of the drift. A previous revision
+	# folded them into the signature, which made a 2-run DET comparison fail by
+	# construction (this is the same class of bug as the 011 dispatch_us/draw_us
+	# pair, fixed in commit 2). So: content-only sig + a separate timing line.
+	print("GOTOT-NEXT 015.5 p4: timings wall_avg_us=", int(first_avg), " drift_us=", int(last_avg - first_avg), " samples=", n)
+	print("GOTOT-NEXT 015.5 p4: sig=v15.5-p4 warm=", WARMUP_FRAMES, " meas=", MEASURE_FRAMES, " passes=", pass_count_ok)
+
+
+func _fail(code: int, msg: String) -> void:
+	print("GOTOT-NEXT 015.5 p4: FAIL code=", code, " ", msg)
+	get_tree().quit(code)
+

@@ -656,6 +656,37 @@ public:
 	// after their buffers yields "Attempted to free invalid ID").
 	void gpu_pool_destroy();
 
+	// --- GOTOT-015.5 Phase 4: frame-time drift measurement (Test-only) ---
+	// Additive measurement API wrapping the engine's REAL timestamp API
+	// (RD::capture_timestamp / get_captured_timestamp_gpu_time, nanoseconds)
+	// plus CPU-side per-pass deltas. No existing API or signature changes.
+	static constexpr int GNE_FT_PASSES = 6; // scene_update,cull,cluster_cull,batch_assembly,raster,output
+	int gne_ft_frames = 0;
+	int gne_ft_warm = 0;
+	int64_t gne_ft_cpu[GNE_FT_PASSES] = { 0, 0, 0, 0, 0, 0 };
+	int64_t gne_ft_gpu_total = 0;
+	int64_t gne_ft_cpu_total = 0;
+	int64_t gne_ft_wall_total = 0;
+	int64_t gne_ft_wall_peak = 0;
+	int64_t gne_ft_wall_first = 0;
+	int64_t gne_ft_cpu_first = 0;
+	int64_t gne_ft_gpu_first = 0;
+	int64_t gne_ft_wall_last = 0;
+	int64_t gne_ft_gpu_last = 0;
+	int64_t gne_ft_warmup_wall_max = 0;
+	uint64_t gne_ft_prev_frame_begin_us = 0;
+	uint64_t gne_ft_prev_wall_us = 0;
+	uint64_t gne_ft_last_mark_us = 0;
+	void gpu_frame_reset();
+	// Declares the warm-up prefix; per-pass accumulators are cleared when the
+	// boundary is crossed so averages describe the measured window only.
+	void gpu_frame_set_warmup(int p_warm);
+	// Returns the number of completed frames; the caller marks passes in order.
+	int gpu_frame_begin();
+	void gpu_frame_mark(int p_pass);
+	void gpu_frame_end();
+	Dictionary gpu_frame_stats() const;
+
 	// GOTOT-015: Render Graph (SPEC 015, additive TEST-ONLY evidence bridge;
 	// pure ADD over every pre-015 signature - before gpu_rg_create runs every
 	// earlier path is byte-identical). Brings declarative DAG pass management

@@ -529,3 +529,48 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 ### قيد صريح
 تحسين 30–50% على readback **فرضية غير مقيسة** (SPEC §3.6). و`pool_bytes=4,194,304` حجم بليت **مُختبر لهذا المشهد**، لا سقفاً للعالم.
 
+
+## 29. GOTOT-015.5 Phase 4 — Frame-Time Drift DIAGNOSIS (PASS)
+
+### الهدف
+خط أساس **مقيس** قبل Phase 5 (async readback). القياس فقط، بلا تحسين وبلا ادّعاء أي رقم مسبق.
+
+### truth: ما وُجد في الشجرة مقابل ما افترضه الأمر
+| افتراض الأمر | الواقع في 4.8.dev | الأثر |
+|---|---|---|
+| `rendering_device->get_frame_timestamp()` | **غير موجودة** | استُبدلت بالواجهة الحقيقية |
+| `RD::capture_timestamp(name)` | موجودة (`rendering_device.h:1929`) | استُخدمت |
+| `get_captured_timestamp_gpu_time(i)` | موجودة (1932) ⇒ **نانوثانية** | استُخدمت |
+| `get_captured_timestamp_cpu_time(i)` | موجودة (1933) ⇒ **ميكروثانية** | استُخدمت لـ wall |
+|Queries مفعّلة دائماً | **لا**: حجم الـpool من `debug/settings/profiler/max_timestamp_query_elements` = 0 افتراضياً ⇒ `count()==0` | GPU columns = **NA** لا صفر |
+
+### الأدلة (main_015_5_phase4 — PASS، rc=0، 300 إطار = 100 warm-up + 200 مقيس)
+**Per-pass wall-clock (µs، مجموع 200 إطار مقيس؛ `pass_share_pct=100`):**
+| pass | wall µs | حصة |
+|---|---|---|
+| scene_update | 1,257 | 0.03% |
+| cull | 651,254 | 15.1% |
+| cluster_cull | 1,823 | 0.04% (no-op marker، لا meshlets في هذا المشهد) |
+| batch_assembly | 130,752 | 3.0% |
+| **raster** | **1,549,544** | **36.0%** |
+| **output** | **1,971,030** | **45.8%** |
+| المجموع | 4,305,660 | 100% |
+
+**الإطارات:** `wall_avg=22,657 µs` · `wall_peak=47,813 µs` · `warmup_peak=33,477 µs` · `frame_total=4,811,857 µs` (= 4.31M pass + 0.51M غير مُسنَد).
+**Probes:** frame 100 = 17,453 µs · frame 200 = 15,956 µs · frame 300 = 20,325 µs.
+**Drift (أول نصف مقابل النصف الثاني من 300 عيّنة):** `22,006 → 23,308 µs` ⇒ **`drift = +1,301 µs` (~+5.9%)** — **إطار، وليس انحرافاً تصاعدياً**.
+**GPU:** `NA` — query pool معطّل ⇒ **غير مقيس، وليس صفراً** (مُبلَّغ بسطر مستقل عمداً).
+**التوقيع (content-only):** `sig=v15.5-p4 warm=100 meas=200 passes=200` — **متطابق حرفياً بين تشغيلين**.
+
+### ⭐ مصدر الانحراف: **READBACK، مُفسَّر**
+`raster + output = 3,520,574 µs = 81.8%` من زمن الإطار. وم失了ها هو بالضبط **الـreadback**: `gpu_raster_read_pixels()` (8 MB) + `gpu_raster_read_depth()` (8 MB) داخل ممر raster، ثم `Image.create_from_data` + `ImageTexture.update` في ممر output. ⇒ **الانحراف المرصود في 007A (11.36→14.16 ms) له نفس المصدر**: جسر readback المتزامن، لاّ الـculling ولا الـbarriers (cull = 15%، batch = 3%).
+
+### أربعة عيوب حقيقية كشفها هذا القياس (وأُصلحت)
+1. **`frames=0` مع per-pass غير صفرية**: `if (gne_ft_frames > 0)` كان يلتفّ على `gne_ft_frames++` ⇒ عدّاد الإطارات لا يتقدّم أبداً. الإصلاح: التقديم أولاً.
+2. **قاموس ناقص الإحداث**: `return d` مبكراً ترك `wall_last_us` مفقوداً ⇒ `SCRIPT ERROR: Invalid access to property or key` **أوقف المشهد صامتاً** (rc=0 مع PASS بلا تقرير). الإصلاح: كل المفاتيح موجودة من الإطار 1.
+3. **`//` ليست تعليقاً في GDScript**: `Parse Error: Expected statement, found "/"` ⇒ المشهد لم يعمل إطلاقاً وما بدا «أرقاماً» كان من نسخة أقدم. التُقط من **`.err`** لا من `.log` (وهو ما أبطأ التشخيص: `run_scene.ps1` يكتب منفصلاً، وكنت أقرأ `.log` فقط).
+4. **توقيع غير حتمي بالبناء**: ضمّ `drift_us` و`wall_avg_us` ⇒ فشل DET بين تشغيلين لأن **إشارة الانحراف نفسها تتغيّر** (+4865 مقابل −1602). الإصلاح: توقيع content-only + سطر `timings` منفصل — **نفس صنف خطأ `dispatch_us/draw_us` في 011 (commit 2)**، يتكرّر إن لم يُفصل القياس عن التوقيع.
+
+### نتيجة للقرار التالي
+**Drift مُفسَّر** ⇒ لا STOP ⇒ **يُسمح بالانتقال إلى Phase 5**، والهدف محدَّد بالقياس: Passive `raster`+`output` = 81.8% من زمن الإطار، والـreadback_sync هو المشتبه به ⇒ fence-based + multi-frame staging، والمقياس هو:是否可以 تقليص Passive دون كسر التواقيع.
+

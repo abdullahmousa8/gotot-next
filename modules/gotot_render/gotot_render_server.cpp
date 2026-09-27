@@ -3,6 +3,7 @@
 #include "core/os/memory.h"
 #include "core/io/file_access.h"
 #include "core/string/print_string.h"
+#include "core/os/os.h"
 #include "servers/rendering/rendering_server.h"
 
 GototRenderServer *GototRenderServer::server_singleton = nullptr;
@@ -1442,6 +1443,13 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_pool_stats"), &GototRenderServer::gpu_pool_stats);
 	ClassDB::bind_method(D_METHOD("gpu_pool_verify", "tag", "value"), &GototRenderServer::gpu_pool_verify);
 	ClassDB::bind_method(D_METHOD("gpu_pool_destroy"), &GototRenderServer::gpu_pool_destroy);
+	// GOTOT-015.5 Phase 4: frame-time drift measurement (Test-only, additive).
+	ClassDB::bind_method(D_METHOD("gpu_frame_reset"), &GototRenderServer::gpu_frame_reset);
+	ClassDB::bind_method(D_METHOD("gpu_frame_set_warmup", "warmup"), &GototRenderServer::gpu_frame_set_warmup);
+	ClassDB::bind_method(D_METHOD("gpu_frame_begin"), &GototRenderServer::gpu_frame_begin);
+	ClassDB::bind_method(D_METHOD("gpu_frame_mark", "pass"), &GototRenderServer::gpu_frame_mark);
+	ClassDB::bind_method(D_METHOD("gpu_frame_end"), &GototRenderServer::gpu_frame_end);
+	ClassDB::bind_method(D_METHOD("gpu_frame_stats"), &GototRenderServer::gpu_frame_stats);
 
 
 	ClassDB::bind_method(D_METHOD("gpu_meshlet_load", "data"), &GototRenderServer::gpu_meshlet_load);
@@ -6557,6 +6565,190 @@ Dictionary GototRenderServer::gpu_rg_dump() {
 	}
 	a += "  pool_bytes=" + itos(rg_pool_bytes) + " res_bytes=" + itos(rg_res_bytes) + " saved=" + itos(rg_alias_saved) + "\n";
 	d["ascii"] = a;
+	return d;
+}
+
+
+// ============================================================================
+//  GOTOT-015.5 Phase 4: frame-time drift diagnosis.
+//
+//  GROUND TRUTH (verified against this 4.8.dev tree, not assumed):
+//   - There is NO get_frame_timestamp() in Godot's RenderingDevice.
+//     The real API is:
+//         RD::capture_timestamp(name)                      (rendering_device.h:1929)
+//         RD::get_captured_timestamps_count()              (1930)
+//         RD::get_captured_timestamp_gpu_time(index)       (1932)  -> NANOSECONDS
+//         RD::get_captured_timestamp_cpu_time(index)       (1933)  -> MICROSECONDS
+//         RD::get_captured_timestamp_name(index)            (1934)
+//   - capture_timestamp() ERR_FAILs if a draw/compute list is OPEN, so
+//     markers must be captured BETWEEN passes, never inside one.
+//   - GPU values are only valid for the PREVIOUS completed frame, because
+//     RD::frame_end() resolves the query pool. So gpu_time(0) is the wall
+//     cost of the most recent frame and per-pass deltas are CPU-side
+//     microsecond deltas between capture points.
+//
+//  This is additive, Test-only, and touches NO existing API or signature.
+// ============================================================================
+
+void GototRenderServer::gpu_frame_reset() {
+	gne_ft_frames = 0;
+	gne_ft_warm = 0;
+	gne_ft_gpu_total = 0;
+	gne_ft_cpu_total = 0;
+	gne_ft_wall_total = 0;
+	gne_ft_wall_peak = 0;
+	gne_ft_gpu_first = 0;
+	gne_ft_wall_first = 0;
+	for (int i = 0; i < GNE_FT_PASSES; i++) {
+		gne_ft_cpu[i] = 0;
+	}
+	gne_ft_warmup_wall_max = 0;
+}
+
+int GototRenderServer::gpu_frame_begin() {
+	// Advance the frame counter FIRST. A guard of `if (gne_ft_frames > 0)`
+	// used to wrap the increment, so a run that started from 0 never counted a
+	// single frame and every wall/GPU total stayed at zero - which is why the
+	// first Phase-4 report showed frames=0 next to non-zero per-pass sums.
+	gne_ft_frames++;
+
+	// End the previous frame's interval.
+	const uint64_t now_us = OS::get_singleton()->get_ticks_usec();
+	if (gne_ft_frames > 1) {
+		const uint64_t wall = now_us - gne_ft_prev_wall_us;
+		gne_ft_wall_last = (int64_t)wall;
+		gne_ft_wall_total += wall;
+		if (wall > gne_ft_wall_peak) {
+			gne_ft_wall_peak = wall;
+		}
+		if (gne_ft_frames == 2) {
+			gne_ft_wall_first = wall;
+		}
+	}
+
+	// Frame Begin marker (name must be unique per marker; RD stores names).
+	rendering_device->capture_timestamp("gne_fb");
+
+	// GPU time for the PREVIOUS completed frame (ns). TIMESTAMP SUPPORT IS
+	// OPTIONAL: the query pool size comes from
+	// "debug/settings/profiler/max_timestamp_query_elements" and is 0 unless the
+	// project enables it, in which case count() stays 0 and every GPU number
+	// stays 0. That must NOT silently invalidate the wall-clock measurement, so
+	// the wall interval below is measured from our own clock and the timestamp
+	// values are treated as an optional refinement.
+	const uint32_t n = rendering_device->get_captured_timestamps_count();
+	if (n > 0) {
+		const uint64_t g = rendering_device->get_captured_timestamp_gpu_time(0);
+		gne_ft_gpu_last = (int64_t)g;
+		if (gne_ft_frames > 1) {
+			gne_ft_gpu_total += g;
+			if (gne_ft_frames == 2) {
+				gne_ft_gpu_first = g;
+			}
+		}
+		const uint64_t cpu0 = rendering_device->get_captured_timestamp_cpu_time(0);
+		gne_ft_cpu_total += cpu0 - gne_ft_prev_frame_begin_us;
+	} else if (gne_ft_frames > 1) {
+		// Fallback: our own wall interval is the frame total.
+		gne_ft_cpu_total += now_us - gne_ft_prev_frame_begin_us;
+	}
+
+	// Begin the new interval.
+	gne_ft_prev_wall_us = now_us;
+	gne_ft_prev_frame_begin_us = now_us;
+	gne_ft_last_mark_us = now_us;
+	// Crossing the warm-up boundary: drop warm-up cost from the per-pass means
+	// and from the GPU total so the report describes the MEASURED window.
+	if (gne_ft_warm > 0 && gne_ft_frames == gne_ft_warm) {
+		for (int i = 0; i < GNE_FT_PASSES; i++) {
+			gne_ft_cpu[i] = 0;
+		}
+		gne_ft_cpu_total = 0;
+		gne_ft_gpu_total = 0;
+		gne_ft_cpu_first = 0;
+		gne_ft_wall_first = 0;
+		gne_ft_gpu_first = 0;
+	}
+	return gne_ft_frames;
+}
+
+void GototRenderServer::gpu_frame_mark(int p_pass) {
+	if (p_pass < 0 || p_pass >= GNE_FT_PASSES) {
+		print_error("[GOTOT-NEXT] gpu_frame_mark: pass " + itos(p_pass) + " out of range (0.." + itos(GNE_FT_PASSES - 1) + ").");
+		return;
+	}
+	const uint64_t now_us = OS::get_singleton()->get_ticks_usec();
+	gne_ft_cpu[p_pass] += (now_us - gne_ft_last_mark_us);
+	gne_ft_last_mark_us = now_us;
+	rendering_device->capture_timestamp("gne_p" + itos(p_pass));
+}
+
+void GototRenderServer::gpu_frame_end() {
+	if (gne_ft_frames > 0 && gne_ft_frames <= gne_ft_warm) {
+		const uint64_t now_us = OS::get_singleton()->get_ticks_usec();
+		const uint64_t wall = now_us - gne_ft_prev_wall_us;
+		if (wall > gne_ft_warmup_wall_max) {
+			gne_ft_warmup_wall_max = wall;
+		}
+	}
+}
+
+void GototRenderServer::gpu_frame_set_warmup(int p_warm) {
+	// Declares how many leading frames are warm-up. Per-pass accumulators are
+	// CLEARED at the warm-up boundary so the reported per-pass averages cover
+	// the measured window only - otherwise warm-up cost is folded into the mean.
+	if (p_warm < 0) {
+		print_error("[GOTOT-NEXT] gpu_frame_set_warmup: warmup must be >= 0, got " + itos(p_warm) + ".");
+		return;
+	}
+	gne_ft_warm = p_warm;
+}
+
+Dictionary GototRenderServer::gpu_frame_stats() const {
+	Dictionary d;
+	d["frames"] = gne_ft_frames;
+	d["warmup"] = gne_ft_warm;
+	// EVERY key below is present from frame 1 onward. An early `return d` used
+	// to leave the dictionary half-built, which made GDScript fail with
+	// "Invalid access to property or key 'wall_last_us'" and silently abort the
+	// measurement scene (no PASS, no FAIL, just a truncated run).
+	const int64_t measured = gne_ft_frames > gne_ft_warm ? gne_ft_frames - gne_ft_warm : 0;
+	d["measured_frames"] = measured;
+	// The interval closed by the most recent gpu_frame_begin(): this is what a
+	// per-frame series is built from, so the scene never calls begin twice.
+	d["wall_last_us"] = gne_ft_wall_last;
+	d["gpu_last_ns"] = gne_ft_gpu_last;
+	d["wall_avg_us"] = gne_ft_frames > 0 ? gne_ft_wall_total / gne_ft_frames : 0;
+	d["wall_peak_us"] = gne_ft_wall_peak;
+	d["wall_first_us"] = gne_ft_wall_first;
+	d["warmup_wall_peak_us"] = gne_ft_warmup_wall_max;
+	d["frame_total_wall_us"] = gne_ft_cpu_total;
+	// GPU nanoseconds -> microseconds, averaged over MEASURED frames only, and
+	// only once the GPU has actually reported a non-zero time.
+	d["gpu_avg_ns"] = (measured > 0 && gne_ft_gpu_total > 0) ? gne_ft_gpu_total / measured : 0;
+	d["gpu_avg_us"] = (measured > 0 && gne_ft_gpu_total > 0) ? gne_ft_gpu_total / measured / 1000 : 0;
+	d["gpu_first_ns"] = gne_ft_gpu_first;
+	// Whether the engine's GPU timestamp query pool is actually reporting. When
+	// this is false the GPU columns are UNAVAILABLE (not zero-cost): it means
+	// "not measured", and it must never be read as "free".
+	d["gpu_timestamps_available"] = gne_ft_gpu_total > 0;
+
+	PackedFloat64Array per_pass;
+	PackedStringArray pass_names;
+	static const char *kNames[GNE_FT_PASSES] = { "scene_update", "cull", "cluster_cull", "batch_assembly", "raster", "output" };
+	int64_t sum = 0;
+	for (int i = 0; i < GNE_FT_PASSES; i++) {
+		per_pass.push_back(gne_ft_cpu[i]);
+		pass_names.push_back(kNames[i]);
+		sum += gne_ft_cpu[i];
+	}
+	d["pass_cpu_us"] = per_pass;
+	d["pass_names"] = pass_names;
+	d["pass_sum_us"] = sum;
+	d["pass_count"] = GNE_FT_PASSES;
+	// CPU-side share of the measured interval: where the wall time goes.
+	d["pass_share_pct"] = gne_ft_cpu_total > 0 ? (double)gne_ft_cpu_total * 100.0 / (double)gne_ft_cpu_total : 0.0;
+	d["note"] = "gpu ns->us; per-pass are CPU-side us deltas; see contract_015_5_tests C6";
 	return d;
 }
 
