@@ -3040,36 +3040,47 @@ bool GototRenderServer::gpu_hzb_build() {
 		return false;
 	}
 
-	bool same_vp = hzb_pyramid_fresh && (memcmp(hzb_build_vp, last_vp, sizeof(last_vp)) == 0);
-	hzb_coherent = (hzb_stable_frames >= 2) && hzb_temporal_enabled;
+	// GOTOT-012-revised (root A). The previous code treated `same_vp` as an
+	// ACTIVATION gate: when the camera had moved it wrote hzb_valid = 0 and
+	// returned WITHOUT building (and without patching the production grid into
+	// the view UBO). With hzb_valid = 0 the phase-2 occlusion test is skipped
+	// entirely, so p2 == p1 by construction - which is exactly the 012 symptom.
+	//
+	// What the measurement in main_012_rev actually shows (SPEC section 11):
+	// the depth source samples raster_viewz_texture, which holds the PREVIOUS
+	// frame's depth - i.e. the build is already temporal-1. Therefore the
+	// pyramid is always built from the last settled frame and is valid for the
+	// CURRENT frame's culling; same_vp is only a COHERENCE signal.
+	const bool same_vp = hzb_pyramid_fresh && (memcmp(hzb_build_vp, last_vp, sizeof(last_vp)) == 0);
+	hzb_coherent = (hzb_stable_frames >= 2) && hzb_temporal_enabled && same_vp;
 	memcpy(hzb_build_vp, last_vp, sizeof(last_vp));
-	hzb_pyramid_fresh = true;
 
-	if (!same_vp) {
-		// Camera moved since the last build (or first frame before any depth).
-		// The previous depth buffer lives in a different view space -> do NOT
-		// build a pyramid from it. Conservative: frustum-only this frame.
-		hzb_stable_frames = 1;
-		hzb_coherent = false;
-		uint32_t zero = 0;
-		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &zero);
-		return true;
-	}
-	hzb_stable_frames++;
-
-	// Patch the shared view UBO for the production square grid.
+	// Patch the shared view UBO for the production square grid on EVERY build
+	// (previously this was skipped entirely whenever !same_vp, so the reader
+	// never even saw the production texel count).
 	int32_t texel_count = HZB_PROD_TEXEL_COUNT;
 	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
 	int32_t occ_count = occluder_count;
 	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &occ_count);
+
+	// Frame 1 only: no pyramid has been produced yet, so stay conservative
+	// (frustum-only). This is the single frame that is allowed to skip phase 2.
+	if (!hzb_pyramid_fresh) {
+		hzb_stable_frames = 1;
+		uint32_t zero = 0;
+		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &zero);
+		return true;
+	}
+	hzb_pyramid_fresh = true;
+	hzb_stable_frames++;
 	uint32_t hzb_one = 1;
 	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &hzb_one);
 
 	// Queue the pyramid passes to run INSIDE the next gpu_mesh_batch_draw
 	// submission (clear, R32 depth-source sample, box occluders, downsample
-	// chain). The depth source samples the R32 color attachment written by the
-	// draw of the very same command stream - cross-submission attachment
-	// sampling returns the pre-draw (cleared) version in this RDG fork.
+	// chain). The depth source writes the flat mirror the phases read
+	// (gpu_hzb_depth_source_glsl:1042) and samples the view-z attachment, which
+	// holds the previous frame - i.e. a temporal-1 build by construction.
 	hzb_rebuild_requested = true;
 	return true;
 }
