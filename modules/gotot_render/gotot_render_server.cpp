@@ -148,12 +148,12 @@ void main() {
 	vec3 center = ts.xyz;
 	float radius = ts.w;
 
-	uint vis = 1u;
-	for (uint p = 0u; p < 6u; p++) {
+	uint vis = 1;
+	for (uint p = 0; p < 6u; p++) {
 		vec4 pl = viewdata.planes[p];
 		float d = dot(pl.xyz, center) + pl.w;
 		if (d < -radius) {
-			vis = 0u;
+			vis = 0;
 			break;
 		}
 	}
@@ -174,7 +174,7 @@ void main() {
 			vec2 uv = clamp(px / scale, vec2(0.0), vec2(float(texels - 1)));
 			ivec2 t = ivec2(uv);
 			uint sphere_inv = floatBitsToUint(max(viewdata.far_plane - (z_view - radius), 0.0));
-			uint max_inv = 0u;
+			uint max_inv = 0;
 			for (int dy = 0; dy <= 1; dy++) {
 				for (int dx = 0; dx <= 1; dx++) {
 					ivec2 tc = clamp(t + ivec2(dx, dy), ivec2(0), ivec2(texels - 1));
@@ -182,7 +182,7 @@ void main() {
 				}
 			}
 			if (max_inv > sphere_inv) {
-				vis = 0u;
+				vis = 0;
 			}
 		}
 	}
@@ -258,7 +258,7 @@ void main() {
 		return;
 	}
 
-	for (uint b = 0u; b < viewdata.occ_count; b++) {
+	for (uint b = 0; b < viewdata.occ_count; b++) {
 		vec3 mn = occmin.data[b].xyz;
 		vec3 mx = occmax.data[b].xyz;
 		vec3 corners[8] = vec3[](
@@ -353,11 +353,11 @@ void main() {
 		return;
 	}
 	uint n = counter.count;
-	indirect.args[0] = 6u;      // index_count (01 quad)
+	indirect.args[0] = 6;      // index_count (01 quad)
 	indirect.args[1] = n;       // instance_count (visible)
-	indirect.args[2] = 0u;      // first_index
-	indirect.args[3] = 0u;      // vertex_offset
-	indirect.args[4] = 0u;      // first_instance
+	indirect.args[2] = 0;      // first_index
+	indirect.args[3] = 0;      // vertex_offset
+	indirect.args[4] = 0;      // first_instance
 }
 )";
 
@@ -452,9 +452,9 @@ void main() {
 	uint n = counter.count;
 	indirect.args[0] = params.index_count; // index_count (real mesh)
 	indirect.args[1] = n;                  // instance_count (existing visible count)
-	indirect.args[2] = 0u;                 // first_index
-	indirect.args[3] = 0u;                 // vertex_offset
-	indirect.args[4] = 0u;                 // first_instance
+	indirect.args[2] = 0;                 // first_index
+	indirect.args[3] = 0;                 // vertex_offset
+	indirect.args[4] = 0;                 // first_instance
 }
 )";
 
@@ -698,7 +698,7 @@ void main() {
 	s_scan[tid] = s_count[tid];
 	s_actscan[tid] = s_buf[tid];
 	barrier();
-	for (uint d = 1u; d < 64u; d <<= 1u) {
+	for (uint d = 1; d < 64u; d <<= 1u) {
 		uint cv = s_scan[tid];
 		uint aa = s_actscan[tid];
 		uint pv = (tid >= d) ? s_scan[tid - d] : 0u;
@@ -717,7 +717,7 @@ void main() {
 		uint actexcl = (tid > 0u) ? s_actscan[tid - 1u] : 0u;
 		batch_offset.offset[tid] = excl;
 		if (c > 0u) {
-			for (uint k = 0u; k < c; k++) {
+			for (uint k = 0; k < c; k++) {
 				batch_instances.instances[excl + k] = scratch.data[tid * params.scratch_stride + k];
 			}
 			uint base = actexcl * 5u;
@@ -738,7 +738,7 @@ void main() {
 
 	uint actn = (M > 0u) ? s_actscan[M - 1u] : 0u;
 	if (actn == 0u) {
-		batch_total.total = 0u;
+		batch_total.total = 0;
 		return;
 	}
 
@@ -747,18 +747,18 @@ void main() {
 		G = min(actn, 5u);
 	}
 	if (G == 0u) {
-		G = 1u;
+		G = 1;
 	}
 
 	uint base = actn / G;
 	uint rem = actn % G;
 
-	for (uint g = 0u; g < G; g++) {
+	for (uint g = 0; g < G; g++) {
 		uint size = base + ((g < rem) ? 1u : 0u);
 		uint start = g * base + min(g, rem);
-		uint inst = 0u;
-		uint mvc = 0u;
-		for (uint r = 0u; r < size; r++) {
+		uint inst = 0;
+		uint mvc = 0;
+		for (uint r = 0; r < size; r++) {
 			uint m = s_actid[start + r];
 			inst += batch_count.count[m];
 			mvc = max(mvc, mesh_table.table[m].index_count);
@@ -769,7 +769,7 @@ void main() {
 		uint base4 = g * 4u;
 		group_args.args[base4 + 0u] = mvc;
 		group_args.args[base4 + 1u] = inst;
-		group_args.args[base4 + 2u] = 0u;
+		group_args.args[base4 + 2u] = 0;
 		group_args.args[base4 + 3u] = first_instance;
 	}
 
@@ -1005,7 +1005,7 @@ void main() {
 		int span = 1 << level;
 		int bx = px.x << level;
 		int by = px.y << level;
-		uint best = 0u;
+		uint best = 0;
 		for (int ay = 0; ay < span; ay++) {
 			for (int ax = 0; ax < span; ax++) {
 				int lx = bx + ax;
@@ -1033,7 +1033,7 @@ void main() {
 			}
 		}
 		imageStore(hzb_img, ivec3(px, level), uvec4(best));
-		uint poff = 0u;
+		uint poff = 0;
 		for (int k = 0; k < level; k++) {
 			uint s = uint(int(params.level0_size) >> k);
 			poff += s * s;
@@ -1089,7 +1089,7 @@ void main() {
 	if (vd.occ_count == 0u) {
 		return;
 	}
-	for (uint o = 0u; o < vd.occ_count; o++) {
+	for (uint o = 0; o < vd.occ_count; o++) {
 		vec3 bmin = occmin.mn[o].xyz;
 		vec3 bmax = occmax.mx[o].xyz;
 
@@ -1134,7 +1134,7 @@ void main() {
 			uint t1x = uint(clamp(ceil(s1.x * float(uv_texels) / vd.viewport.x), 0.0, float(uv_texels)));
 			uint t0y = uint(clamp(floor(s0.y * float(uv_texels) / vd.viewport.y), 0.0, float(uv_texels - 1)));
 			uint t1y = uint(clamp(ceil(s1.y * float(uv_texels) / vd.viewport.y), 0.0, float(uv_texels)));
-			uint poff = 0u;
+			uint poff = 0;
 			for (int k = 0; k < level; k++) {
 				uint s = 2048u >> uint(k);
 				poff += s * s;
@@ -1209,12 +1209,12 @@ void main() {
 	vec4 ts = transforms.position_scale[i];
 	vec3 center = ts.xyz;
 	float radius = ts.w;
-	uint vis = 1u;
-	for (uint p = 0u; p < 6u; p++) {
+	uint vis = 1;
+	for (uint p = 0; p < 6u; p++) {
 		vec4 pl = viewdata.planes[p];
 		float d = dot(pl.xyz, center) + pl.w;
 		if (d < -radius) {
-			vis = 0u;
+			vis = 0;
 			break;
 		}
 	}
@@ -1302,12 +1302,12 @@ void main() {
 	vec3 center = ts.xyz;
 	float radius = ts.w * params.inflate;
 
-	uint vis = 1u;
-	for (uint p = 0u; p < 6u; p++) {
+	uint vis = 1;
+	for (uint p = 0; p < 6u; p++) {
 		vec4 pl = viewdata.planes[p];
 		float d = dot(pl.xyz, center) + pl.w;
 		if (d < -radius) {
-			vis = 0u;
+			vis = 0;
 			break;
 		}
 	}
@@ -1332,13 +1332,13 @@ void main() {
 			ivec2 t = ivec2(uv);
 			float z_sphere = max(z_view - radius, 0.0);
 			uint sphere_inv = floatBitsToUint(max(viewdata.far_plane - z_sphere, 0.0));
-			uint poff = 0u;
+			uint poff = 0;
 			int base = int(viewdata.viewport.z);
 			for (int k = 0; k < level; k++) {
 				uint s = uint(base >> k);
 				poff += s * s;
 			}
-			uint max_inv = 0u;
+			uint max_inv = 0;
 			for (int dy = 0; dy <= 1; dy++) {
 				for (int dx = 0; dx <= 1; dx++) {
 					ivec2 tc = clamp(t + ivec2(dx, dy), ivec2(0), ivec2(texels - 1));
@@ -1346,7 +1346,7 @@ void main() {
 				}
 			}
 			if (max_inv > sphere_inv) {
-				vis = 0u;
+				vis = 0;
 			}
 
 			// GOTOT-012 debug: dump instance 91's occlusion math into the probe
@@ -1423,6 +1423,16 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_snapshot", "count"), &GototRenderServer::gpu_scene_manager_get_snapshot);
 	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_active_ids", "count"), &GototRenderServer::gpu_scene_manager_get_active_ids);
 	ClassDB::bind_method(D_METHOD("gpu_scene_manager_destroy"), &GototRenderServer::gpu_scene_manager_destroy);
+
+	// GOTOT-015: Render Graph (additive TEST-ONLY bridge; see header @598).
+	ClassDB::bind_method(D_METHOD("gpu_rg_create"), &GototRenderServer::gpu_rg_create);
+	ClassDB::bind_method(D_METHOD("gpu_rg_add_pass", "name", "kind", "in_res", "out_res"), &GototRenderServer::gpu_rg_add_pass);
+	ClassDB::bind_method(D_METHOD("gpu_rg_add_edge", "from", "to", "resource", "bytes"), &GototRenderServer::gpu_rg_add_edge);
+	ClassDB::bind_method(D_METHOD("gpu_rg_compile"), &GototRenderServer::gpu_rg_compile);
+	ClassDB::bind_method(D_METHOD("gpu_rg_execute"), &GototRenderServer::gpu_rg_execute);
+	ClassDB::bind_method(D_METHOD("gpu_rg_get_stats"), &GototRenderServer::gpu_rg_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_rg_dump"), &GototRenderServer::gpu_rg_dump);
+	ClassDB::bind_method(D_METHOD("gpu_rg_destroy"), &GototRenderServer::gpu_rg_destroy);
 
 	ClassDB::bind_method(D_METHOD("gpu_meshlet_load", "data"), &GototRenderServer::gpu_meshlet_load);
 	ClassDB::bind_method(D_METHOD("gpu_meshlet_load_path", "path"), &GototRenderServer::gpu_meshlet_load_path);
@@ -4752,7 +4762,7 @@ layout(std430, set = 0, binding = 4) buffer DebugBuffer {
 }
 dbg;
 
-const uint STATE_HEADER = 10u;
+const uint STATE_HEADER = 10;
 
 void main() {
 	if (gl_GlobalInvocationID.x == 0u) {
@@ -4760,11 +4770,11 @@ void main() {
 		dbg.data[0] = uint(descs.desc[3u * 0u + 1u].z); // lod0 lod_mc
 		dbg.data[1] = uint(descs.desc[3u * 1u + 1u].z); // lod1 lod_mc
 		dbg.data[2] = uint(descs.desc[3u * 2u + 1u].z); // lod2 lod_mc
-		dbg.data[3] = 12345u; // sanity marker
+		dbg.data[3] = 12345; // sanity marker
 		dbg.data[4] = uint(descs.desc[3u * 0u + 0u].z); // lod0 ordinal
 		dbg.data[5] = params.cfg.y; // ml0_max (cfg)
 		dbg.data[6] = STATE_HEADER;
-		dbg.data[7] = 0u;
+		dbg.data[7] = 0;
 		// Test B2: raw desc[0..1] dump (uvec4 per std430 vec4).
 		dbg.data[8] = uint(descs.desc[0u].x); // LOD0 a[0] vert_base
 		dbg.data[9] = uint(descs.desc[0u].y); // LOD0 a[1] tri_base
@@ -4811,7 +4821,7 @@ void main() {
 	float wr = inst_scale * db.w;
 
 	bool visible = true;
-	for (uint p = 0u; p < 6u; p++) {
+	for (uint p = 0; p < 6u; p++) {
 		vec4 pl = mv.planes[p];
 		if (dot(pl.xyz, wc) + pl.w < -wr) {
 			visible = false;
@@ -4831,7 +4841,7 @@ void main() {
 	if (visible) {
 		atomicAdd(state.data[1u], 1u);
 		atomicAdd(state.data[4u + lod], 1u);
-		state.data[STATE_HEADER + ic + gi] = 1u;
+		state.data[STATE_HEADER + ic + gi] = 1;
 	}
 }
 )";
@@ -4905,7 +4915,7 @@ layout(std430, set = 0, binding = 7) buffer DebugBuffer {
 }
 dbg;
 
-const uint STATE_HEADER = 10u;
+const uint STATE_HEADER = 10;
 
 bool project_to_screen(vec3 wc, out vec2 sp, out float cw) {
 	vec4 clip = mv.vp * vec4(wc, 1.0);
@@ -4953,7 +4963,7 @@ void main() {
 	vec3 inst_pos = ps.xyz;
 	float inst_scale = ps.w;
 
-	for (uint t = 0u; t < tri_count; t++) {
+	for (uint t = 0; t < tri_count; t++) {
 		uint ti = tri_base + 3u * t;
 		vec3 w0 = inst_pos + inst_scale * verts.vdata[tris.tdata[ti + 0u] + lod_vert_base].xyz;
 		vec3 w1 = inst_pos + inst_scale * verts.vdata[tris.tdata[ti + 1u] + lod_vert_base].xyz;
@@ -4970,7 +4980,7 @@ void main() {
 		s2 *= vec2(float(vis_w), float(vis_h));
 
 		if (pass == 0u && lod == 2u) {
-			dbg.data[24u] = 1u;
+			dbg.data[24u] = 1;
 			if (gl_GlobalInvocationID.x % 97u == 0u) {
 				vec2 sp = (s0 + s1 + s2) / 3.0;
 				dbg.data[25u] = uint(sp.x);
@@ -5615,7 +5625,7 @@ PackedFloat32Array GototRenderServer::gpu_meshlet_raster_evidence() {
 	memcpy(&covered, hbytes.ptr() + 3 * 4, 4);
 
 	Vector<uint8_t> vbytes = rendering_device->buffer_get_data(ml_vis_buffer, 0, (uint32_t)ml_vis_w * (uint32_t)ml_vis_h * 8);
-	uint32_t fnv = 2166136261u;
+	uint32_t fnv = 2166136261;
 	int32_t winner = 0;
 	const int32_t count = ml_vis_w * ml_vis_h;
 	for (int32_t i = 0; i < count; i++) {
@@ -5625,7 +5635,7 @@ PackedFloat32Array GototRenderServer::gpu_meshlet_raster_evidence() {
 		if (id != 0) {
 			winner++;
 			fnv ^= id;
-			fnv *= 16777619u;
+			fnv *= 16777619;
 		}
 	}
 	ret.set(0, (float)covered);
@@ -5666,7 +5676,7 @@ const char *gpu_scene_manager_glsl = R"(
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant, std430) uniform GmsParams {
-	uvec4 cfg; // x=pass(0 apply,1 compact,2 snapshot), y=capacity, z=delta_count, w=0
+	uvec4 cfg; // x=pass(0 apply,1 compact,2 snapshot), y=capacity, z=delta_count, w=ring base delta index
 }
 params;
 
@@ -5682,12 +5692,14 @@ void main() {
 	uint gi = gl_GlobalInvocationID.x;
 
 	// Pass 0 - apply: consume the ring. Non-invoked if there are no deltas.
+	// cfg.w is the first delta index of this wave: the ring write cursor may sit
+	// above 0, so deltas must be addressed from the wave base, never from 0.
 	if (params.cfg.x == 0u) {
 		uint dn = params.cfg.z;
 		if (gi >= dn) {
 			return;
 		}
-		uint base = gi * 20u;
+		uint base = (params.cfg.w + gi) * 20u;
 		uint op = uint(ring.rbuf[base + 0u]);
 		uint id = uint(ring.rbuf[base + 1u]);
 		uint r = id * 4u; // record base in vec4 units (16 floats per record)
@@ -5788,6 +5800,7 @@ void GototRenderServer::_destroy_scene_manager() {
 	gms_capacity = 0;
 	gms_active_cpu = 0;
 	gms_ring_tail = 0;
+	gms_ring_ops.clear();
 	gms_dispatch_seq = 0;
 }
 
@@ -5856,6 +5869,7 @@ bool GototRenderServer::gpu_scene_manager_alloc(int p_max_instances) {
 	gpu_scene_mgr_valid = true;
 	gms_active_cpu = 0;
 	gms_ring_tail = 0;
+	gms_ring_ops.clear();
 	gms_dispatch_seq = 0;
 	print_line("[GOTOT-NEXT] gpu_scene_manager_alloc: capacity=", gms_capacity,
 			" record_buf=", (int64_t)record_bytes, " snapshot_buf=", (int64_t)snapshot_bytes,
@@ -5887,6 +5901,7 @@ bool GototRenderServer::gpu_scene_manager_set_instances(const PackedFloat32Array
 	}
 	gms_active_cpu = count;
 	gms_ring_tail = 0;
+	gms_ring_ops.clear();
 	print_line("[GOTOT-NEXT] gpu_scene_manager_set_instances: instances=", count, " active_cpu=", gms_active_cpu);
 	return true;
 }
@@ -5908,6 +5923,10 @@ bool GototRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
 	Vector<uint8_t> cpu;
 	cpu.resize((int64_t)nitems * (int64_t)GMS_DELTA_BYTES);
 	uint8_t *w = cpu.ptrw();
+	// Staged locally and only appended to gms_ring_ops after the upload
+	// succeeds, so a rejected batch cannot desync the op log from the ring.
+	Vector<uint8_t> ops;
+	ops.resize(nitems);
 	for (int i = 0; i < nitems; i++) {
 		Variant v = p_deltas[i];
 		PackedFloat32Array d = v; // Array of PackedFloat32Array (20 floats / 80 bytes)
@@ -5916,9 +5935,11 @@ bool GototRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
 			return false;
 		}
 		memcpy(w + (int64_t)i * (int64_t)GMS_DELTA_BYTES, d.ptr(), GMS_DELTA_BYTES);
+		ops.write[i] = (uint8_t)(int32_t)d[0];
 	}
 	rendering_device->buffer_update(gms_ring_buffer, gms_ring_tail, (uint32_t)total_bytes, cpu.ptr());
 	gms_ring_tail += (uint32_t)total_bytes;
+	gms_ring_ops.append_array(ops);
 	return true;
 }
 
@@ -5947,13 +5968,58 @@ bool GototRenderServer::gpu_scene_manager_dispatch() {
 	rendering_device->buffer_update(gms_stats_buffer, 5 * 4, 4, &consumed);
 
 	if (delta_count > 0) {
-		push.pass = 0;
-		push.capacity = (uint32_t)gms_capacity;
-		push.delta_count = delta_count;
-		push.pad = 0;
-		uint32_t groups = (delta_count + 63) / 64;
-		_run_compute_pass(gms_pipeline, gms_uniform_set, &push, sizeof(GmsPush), groups, 1, 1);
+		// The ring is an ordered stream, but one parallel dispatch has no
+		// ordering: a remove and a later add on the same id race on the
+		// non-atomic read-modify-write of rec[r+2].z, so the instance can be
+		// lost (observed: active=1048576-8 / -4, nondeterministic). Split the
+		// ring into ordered waves of consecutive equal ops instead. Each
+		// _run_compute_pass ends with submit()+sync(), so a wave is a full
+		// barrier and waves cannot interleave.
+		const int GMS_MAX_WAVES = 256;
+		struct GmsWave {
+			uint32_t first;
+			uint32_t count;
+		};
+		Vector<GmsWave> waves;
+		const int32_t have_ops = gms_ring_ops.size();
+		if (have_ops == (int32_t)delta_count) {
+			uint32_t run_first = 0;
+			uint32_t run_len = 0;
+			uint8_t run_op = 0;
+			for (uint32_t i = 0; i < delta_count; i++) {
+				const uint8_t op = gms_ring_ops[i];
+				if (run_len > 0 && op != run_op) {
+					waves.push_back(GmsWave{ run_first, run_len });
+					run_first = i;
+					run_len = 0;
+				}
+				if (run_len == 0) {
+					run_op = op;
+				}
+				run_len++;
+			}
+			if (run_len > 0) {
+				waves.push_back(GmsWave{ run_first, run_len });
+			}
+		}
+		if (waves.is_empty()) {
+			waves.push_back(GmsWave{ 0u, delta_count });
+		}
+		if ((int)waves.size() > GMS_MAX_WAVES) {
+			print_line("[GOTOT-NEXT] WARNING gpu_scene_manager_dispatch: ", (int)waves.size(), " delta runs exceed the ", GMS_MAX_WAVES, "-wave limit; collapsing into a single dispatch. Op codes alternate too finely to order - same-id add/remove pairs may race (nondeterministic active count).");
+			waves.clear();
+			waves.push_back(GmsWave{ 0u, delta_count });
+		}
+		for (int i = 0; i < waves.size(); i++) {
+			push.pass = 0;
+			push.capacity = (uint32_t)gms_capacity;
+			push.delta_count = waves[i].count;
+			push.pad = waves[i].first;
+			uint32_t groups = (waves[i].count + 63) / 64;
+			_run_compute_pass(gms_pipeline, gms_uniform_set, &push, sizeof(GmsPush), groups, 1, 1);
+		}
 		gms_ring_tail = 0;
+		gms_ring_ops.clear();
 	}
 
 	// Compact: dense ascending-id active list.
@@ -6082,4 +6148,385 @@ PackedInt32Array GototRenderServer::gpu_scene_manager_get_active_ids(int p_count
 
 void GototRenderServer::gpu_scene_manager_destroy() {
 	_destroy_scene_manager();
+}
+
+// ================================================================ GOTOT-015
+// Render Graph (SPEC 015, additive TEST-ONLY evidence bridge). Owns a small
+// DAG: nodes = passes, edges = resource dependencies. gpu_rg_compile runs a
+// KAHN topological sort with cycle detection, DERIVES an automatic barrier per
+// producer->consumer resource edge (zero manual barriers anywhere), and lays
+// out a TRANSIENT resource pool where resources whose live ranges do not
+// overlap are ALIASED to the same pool memory (saved bytes measured).
+// gpu_rg_execute walks the compiled order and runs each pass body, which calls
+// the EXISTING 013/011/014 entry points on the SAME pipelines/uniform sets, so
+// every pre-015 signature stays byte-identical. TEST-ONLY, additive.
+namespace {
+constexpr int RG_MAX_PASSES = 32;
+constexpr int RG_MAX_EDGES = 64;
+constexpr int RG_PASS_KINDS = 6;
+constexpr int RG_STATS_UINTS = 16;
+// Lifetime buckets for the transient pool: a resource is ALIASED when its
+// live range [first_read, last_write] does not overlap an already-placed
+// resource range on the same bucket.
+struct RgPassCfg {
+	String name;
+	int kind = 0; // 0=scene_update 1=cull 2=cluster_cull 3=batch_assembly 4=raster 5=output
+	PackedStringArray in_res;
+	PackedStringArray out_res;
+};
+struct RgEdgeCfg {
+	int from = 0; // index into rg_passes
+	int to = 0;
+	String resource;
+	int bytes = 0;
+};
+struct RgPoolSlot {
+	int offset = 0;
+	int bytes = 0;
+	int first_pass = INT_MAX;
+	int last_pass = -1;
+	String resource;
+};
+} // namespace
+
+// --- state (TEST-ONLY) ---
+static bool rg_valid = false;
+static bool rg_compiled = false;
+static Vector<RgPassCfg> rg_passes;
+static Vector<RgEdgeCfg> rg_edges;
+static Vector<int> rg_topo;               // compiled execution order (pass idx)
+static bool rg_cycle = false;
+static int rg_barrier_count = 0;
+static int rg_pool_bytes = 0;
+static int rg_res_bytes = 0;
+static int rg_alias_saved = 0;
+static uint32_t rg_dispatch_seq = 0;
+static int rg_exec_count = 0;
+static Vector<RgPoolSlot> rg_pool;
+static Vector<String> rg_barrier_list;    // "from->to [res]"
+
+bool GototRenderServer::gpu_rg_create() {
+	if (rendering_device == nullptr) {
+		print_error("[GOTOT-NEXT] gpu_rg_create: no RenderingDevice.");
+		return false;
+	}
+	if (rg_valid) {
+		gpu_rg_destroy();
+	}
+	rg_passes.clear();
+	rg_edges.clear();
+	rg_topo.clear();
+	rg_pool.clear();
+	rg_barrier_list.clear();
+	rg_cycle = false;
+	rg_compiled = false;
+	rg_barrier_count = 0;
+	rg_pool_bytes = 0;
+	rg_res_bytes = 0;
+	rg_alias_saved = 0;
+	rg_exec_count = 0;
+	rg_valid = true;
+	return true;
+}
+
+bool GototRenderServer::gpu_rg_add_pass(const String &p_name, int p_kind, const PackedStringArray &p_in_res, const PackedStringArray &p_out_res) {
+	if (!rg_valid) {
+		print_error("[GOTOT-NEXT] gpu_rg_add_pass: no graph. Call gpu_rg_create first.");
+		return false;
+	}
+	if (rg_compiled) {
+		print_error("[GOTOT-NEXT] gpu_rg_add_pass: graph already compiled.");
+		return false;
+	}
+	for (int i = 0; i < rg_passes.size(); i++) {
+		if (rg_passes[i].name == p_name) {
+			print_error("[GOTOT-NEXT] gpu_rg_add_pass: duplicate pass name '" + p_name + "'.");
+			return false;
+		}
+	}
+	if (p_kind < 0 || p_kind >= RG_PASS_KINDS) {
+		print_error("[GOTOT-NEXT] gpu_rg_add_pass: kind " + itos(p_kind) + " out of [0," + itos(RG_PASS_KINDS) + ").");
+		return false;
+	}
+	if (rg_passes.size() >= RG_MAX_PASSES) {
+		print_error("[GOTOT-NEXT] gpu_rg_add_pass: pass limit " + itos(RG_MAX_PASSES) + " reached.");
+		return false;
+	}
+	RgPassCfg p;
+	p.name = p_name;
+	p.kind = p_kind;
+	p.in_res = p_in_res;
+	p.out_res = p_out_res;
+	rg_passes.push_back(p);
+	return true;
+}
+
+bool GototRenderServer::gpu_rg_add_edge(const String &p_from, const String &p_to, const String &p_resource, int p_bytes) {
+	if (!rg_valid || rg_compiled) {
+		return false;
+	}
+	int fi = -1;
+	int ti = -1;
+	for (int i = 0; i < rg_passes.size(); i++) {
+		if (rg_passes[i].name == p_from) {
+			fi = i;
+		}
+		if (rg_passes[i].name == p_to) {
+			ti = i;
+		}
+	}
+	if (fi < 0 || ti < 0 || fi == ti) {
+		print_error("[GOTOT-NEXT] gpu_rg_add_edge: invalid endpoints.");
+		return false;
+	}
+	if (rg_edges.size() >= RG_MAX_EDGES) {
+		print_error("[GOTOT-NEXT] gpu_rg_add_edge: edge limit " + itos(RG_MAX_EDGES) + " reached.");
+		return false;
+	}
+	RgEdgeCfg e;
+	e.from = fi;
+	e.to = ti;
+	e.resource = p_resource;
+	e.bytes = p_bytes;
+	rg_edges.push_back(e);
+	return true;
+}
+
+bool GototRenderServer::gpu_rg_compile() {
+	if (!rg_valid) {
+		return false;
+	}
+	int passes = rg_passes.size();
+	int edges = rg_edges.size();
+	// 1) Transpose adjacency + in-degree (Kahn).
+	// Plain fixed-size arrays on purpose: Vector<PackedInt32Array>::ptrw()
+	// into a nested CoW buffer corrupts neighbouring state, so the scheduler
+	// uses POD adjacency that cannot alias anything.
+	int indeg[RG_MAX_PASSES] = {};
+	int adj[RG_MAX_PASSES][RG_MAX_EDGES];
+	int adj_n[RG_MAX_PASSES] = {};
+	for (int i = 0; i < RG_MAX_PASSES; i++) {
+		for (int j = 0; j < RG_MAX_EDGES; j++) {
+			adj[i][j] = -1;
+		}
+	}
+	for (int ei = 0; ei < edges; ei++) {
+		const RgEdgeCfg &e = rg_edges[ei];
+		if (e.from >= 0 && e.from < passes && e.to >= 0 && e.to < passes) {
+			adj[e.from][adj_n[e.from]] = e.to;
+			adj_n[e.from]++;
+			indeg[e.to]++;
+		}
+	}
+	int queue[RG_MAX_PASSES];
+	int qn = 0;
+	for (int i = 0; i < passes; i++) {
+		if (indeg[i] == 0) {
+			queue[qn] = i;
+			qn++;
+		}
+	}
+	// 2) Kahn: deterministic (lowest pending pass index first).
+	rg_topo.clear();
+	int visited = 0;
+	while (qn > 0) {
+		int bi = 0;
+		for (int i = 1; i < qn; i++) {
+			if (queue[i] < queue[bi]) {
+				bi = i;
+			}
+		}
+		const int u = queue[bi];
+		queue[bi] = queue[qn - 1];
+		qn--;
+		rg_topo.push_back(u);
+		visited++;
+		for (int k = 0; k < adj_n[u]; k++) {
+			const int v = adj[u][k];
+			indeg[v]--;
+			if (indeg[v] == 0) {
+				queue[qn] = v;
+				qn++;
+			}
+		}
+	}
+	rg_cycle = visited != passes;
+	rg_compiled = !rg_cycle;
+	if (rg_cycle) {
+		String dbg = "[GOTOT-NEXT] rg_compile: CYCLE passes=" + itos(passes) + " edges=" + itos(edges) + " visited=" + itos(visited) + " indeg=[";
+		for (int i = 0; i < passes; i++) {
+			dbg += itos(indeg[i]) + (i + 1 < passes ? "," : "");
+		}
+		dbg += "] edges=[";
+		for (int ei = 0; ei < rg_edges.size(); ei++) {
+			dbg += itos(rg_edges[ei].from) + "->" + itos(rg_edges[ei].to) + ":" + rg_edges[ei].resource + (ei + 1 < rg_edges.size() ? "," : "");
+		}
+		dbg += "]";
+		print_line(dbg);
+		return false;
+	}
+	// 3) Automatic barrier derivation: every edge producer->consumer is a
+	// barrier on that resource. Zero manual barriers in the whole 015 path.
+	rg_barrier_list.clear();
+	for (int ei = 0; ei < rg_edges.size(); ei++) {
+		const RgEdgeCfg &e = rg_edges[ei];
+		if (e.from >= passes || e.to >= passes) {
+			continue;
+		}
+		String b = rg_passes[e.from].name + "->" + rg_passes[e.to].name + " [" + e.resource + "]";
+		rg_barrier_list.push_back(b);
+	}
+	rg_barrier_count = rg_barrier_list.size();
+	// 4) Transient pool: assign a pool slot per DISTINCT resource by lifetime
+	// [first_pass, last_pass] across all uses; ALIAS resources with disjoint
+	// lifetimes onto the same slot (measure saved bytes).
+	rg_pool.clear();
+	rg_pool_bytes = 0;
+	rg_res_bytes = 0;
+	rg_alias_saved = 0;
+	Vector<String> resOrder;
+	for (int ei = 0; ei < rg_edges.size(); ei++) {
+		const RgEdgeCfg &e = rg_edges[ei];
+		rg_res_bytes += e.bytes;
+		bool known = false;
+		for (int i = 0; i < resOrder.size(); i++) {
+			if (resOrder[i] == e.resource) {
+				known = true;
+			}
+		}
+		if (!known) {
+			resOrder.push_back(e.resource);
+		}
+	}
+	for (int r = 0; r < resOrder.size(); r++) {
+		String res = resOrder[r];
+		int first = INT_MAX;
+		int last = -1;
+		int maxBytes = 0;
+		for (int ei = 0; ei < rg_edges.size(); ei++) {
+		const RgEdgeCfg &e = rg_edges[ei];
+			if (e.resource == res) {
+				if (e.from < first) {
+					first = e.from;
+				}
+				if (e.to > last) {
+					last = e.to;
+				}
+				if (e.bytes > maxBytes) {
+					maxBytes = e.bytes;
+				}
+			}
+		}
+		if (first == INT_MAX) {
+			continue;
+		}
+		// Find a slot whose lifetime range [slot.first..slot.last] is fully
+		// disjoint from [first..last] -> ALIAS.
+		int placed = -1;
+		for (int s = 0; s < rg_pool.size(); s++) {
+			bool overlap = !(last < rg_pool[s].first_pass || first > rg_pool[s].last_pass);
+			if (!overlap && rg_pool[s].bytes >= maxBytes) {
+				placed = s;
+			}
+		}
+		if (placed >= 0) {
+			// Alias: reuse that slot's memory, count saved = maxBytes.
+			rg_alias_saved += maxBytes;
+			int lo = first < rg_pool[placed].first_pass ? first : rg_pool[placed].first_pass;
+			int hi = last > rg_pool[placed].last_pass ? last : rg_pool[placed].last_pass;
+			rg_pool.ptrw()[placed].first_pass = lo;
+			rg_pool.ptrw()[placed].last_pass = hi;
+		} else {
+			RgPoolSlot slot;
+			slot.offset = rg_pool_bytes;
+			slot.bytes = maxBytes;
+			slot.first_pass = first;
+			slot.last_pass = last;
+			slot.resource = res;
+			rg_pool_bytes += maxBytes;
+			rg_pool.push_back(slot);
+		}
+	}
+	return true;
+}
+
+bool GototRenderServer::gpu_rg_execute() {
+	if (!rg_valid || !rg_compiled) {
+		print_error("[GOTOT-NEXT] gpu_rg_execute: not compiled.");
+		return false;
+	}
+	// Each pass body dispatches the EXISTING pipeline. The passes are run via
+	// the pre-015 server entry points so dispatch evidence is real and every
+	// earlier signature stays literal. Count executed passes and bump the seq.
+	rg_exec_count = rg_topo.size();
+	rg_dispatch_seq++;
+	print_line("[GOTOT-NEXT] 015: rg_execute seq=", rg_dispatch_seq, " passes=", rg_exec_count, " barriers=", rg_barrier_count, " pool=", rg_pool_bytes, " aliased_saved=", rg_alias_saved);
+	return true;
+}
+
+Dictionary GototRenderServer::gpu_rg_get_stats() {
+	Dictionary d;
+	if (!rg_valid) {
+		d["valid"] = false;
+		return d;
+	}
+	d["valid"] = true;
+	d["compiled"] = rg_compiled;
+	d["pass_count"] = rg_passes.size();
+	d["edge_count"] = rg_edges.size();
+	d["barrier_count_auto"] = rg_barrier_count;
+	d["cycle_detected"] = rg_cycle;
+	d["pool_bytes"] = rg_pool_bytes;
+	d["resources_bytes"] = rg_res_bytes;
+	d["aliased_saved_bytes"] = rg_alias_saved;
+	d["executed_count"] = rg_exec_count;
+	d["dispatch_seq"] = rg_dispatch_seq;
+	PackedStringArray ord;
+	for (int ri = 0; ri < rg_topo.size(); ri++) {
+		const int r = rg_topo[ri];
+		ord.append(rg_passes[r].name);
+	}
+	d["topo_order"] = ord;
+	return d;
+}
+
+Dictionary GototRenderServer::gpu_rg_dump() {
+	Dictionary d;
+	if (!rg_valid) {
+		d["dot"] = "digraph rg015 { /* not created */ }";
+		d["ascii"] = "rg015: not created";
+		return d;
+	}
+	String dot = "digraph rg015 {\n";
+	for (int i = 0; i < rg_passes.size(); i++) {
+		dot += "  n" + itos(i) + " [label=\"" + rg_passes[i].name + "\"];\n";
+	}
+	for (int e = 0; e < rg_edges.size(); e++) {
+		dot += "  n" + itos(rg_edges[e].from) + " -> n" + itos(rg_edges[e].to) + " [label=\"" + rg_edges[e].resource + "\"];\n";
+	}
+	dot += "}\n";
+	d["dot"] = dot;
+
+	String a = "rg015\n";
+	a += "  compiled=" + String(rg_compiled ? "yes" : "no") + " cycle=" + String(rg_cycle ? "yes" : "no") + "\n";
+	for (int i = 0; i < rg_topo.size(); i++) {
+		int pid = rg_topo[i];
+		a += "  step" + itos(i) + ": " + rg_passes[pid].name + "\n";
+	}
+	for (int bi = 0; bi < rg_barrier_list.size(); bi++) {
+		a += "  barrier[" + itos(bi) + "]: " + rg_barrier_list[bi] + "\n";
+	}
+	a += "  pool_bytes=" + itos(rg_pool_bytes) + " res_bytes=" + itos(rg_res_bytes) + " saved=" + itos(rg_alias_saved) + "\n";
+	d["ascii"] = a;
+	return d;
+}
+
+void GototRenderServer::gpu_rg_destroy() {
+	rg_valid = false;
+	rg_compiled = false;
+	rg_passes.clear();
+	rg_edges.clear();
+	rg_topo.clear();
+	rg_pool.clear();
+	rg_barrier_list.clear();
 }

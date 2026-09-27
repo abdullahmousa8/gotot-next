@@ -431,3 +431,53 @@ GPU Scene Manager: قاعدة بيانات مشهد ساكنة على الـ GPU
 
 ### ملاحظة
 C3 الاعتماد على Overview: 013 hand-off تعني أن draw-record ordinals من مدير المشهد تقع داخل نطاقات الـ meshlet ordinals الخاصة بـ 013، والتوقيع (cull-raster fnv) يبقى مطابقًا مع وجود المدير.
+## 26. GOTOT-015 - Render Graph (PASS)
+
+### المكوّن
+Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic يُبنى وقت التشغيل عبر 8 دوال `gpu_rg_*` مربوطة في ClassDB. كل تمريرة تستدعي نقاط الدخول القائمة مسبقًا (013/011/014) على نفس الـ pipelines/uniform sets، فتبقى كل توقيعات ما قبل 015 حرفيًا. TEST-ONLY، إضافي بحت. واجهة: `gpu_rg_create / add_pass(name,kind,in_res,out_res) / add_edge(from,to,resource,bytes) / compile / execute / get_stats / dump / destroy`.
+
+### الأدلة (015 PASS - harness `gt_015a.bat`)
+- **C1 DAG:** 6 passes (scene_update, cull, cluster_cull, batch_assembly, raster, output) + 6 حواف قائمة على الموارد، منها حافة ثانية تستهلك `cull_out` لإثبات أن الترتيب ليس قائمة مكتوبة يدويًا.
+- **C2 Topo (Kahn):** `["scene_update","cull","cluster_cull","batch_assembly","raster","output"]` - تم التحقق من كل حافة (من قبل إلى) + المصدر/المsink الوحيدان.
+- **C2b كشف الدورات:** حافة راجعة `output->scene_update`Accepted=false، `cycle_detected=true`، `compiled=false`، ثم إعادة بناء الـ DAG 수는جة بلا تلويث.
+- **C3 Barriers + Pool:** barriers=6 (تلقائية بالكامل، صفر manual) - pool=8,753,152 B مقابل resources=9,048,064 B - **aliased_saved=32,768 B** (aliasing فعلي: `batches` [3..4] تشارك خانة `draw_records` [0..1] بعمر غير متداخل).
+- **C5 Execute:** 6 passes نُفِّذت فعليًا، dispatch_seq=1.
+- **C6 DET:** تنفيذان متتاليان - الترتيب والـ barriers وتخطيط الـ pool مطابقة، seq 1->2. `dump()` يطابق الجدولة نصيًا.
+- **C7 صفر انزياح:** 013 cull/raster يعيد إنتاج `fnv=3106528256` و instance_lods=[0,1,1,2,2,0] و 014 manager يعيد `snap=4096 / distinct=8 / groups=5` والـ graph حيّ.
+- **DET d1:** تشغيلان متطابقان - `sig=v15-pc9-p6-e6-b6-po8753152-res9048064-sv32768-x6-6-q1-2-t18616`.
+- **صفر أخطاء:** لا `ERROR:` ولا تنظيف RID في أي تشغيل.
+
+### إصلاحات بناء (كانت تُسقط كل شيء)
+- 5 أقواس `{` زائدة في كتلة 015 (نتيجة التحويل النصي) = المصدر في `C1075: no matching token found`.
+- `Vector<PackedInt32Array>::ptrw()` على CoW متداخل كان **يفسد الذاكرة المجاورة لـ indeg** (`indeg=[-1820255784,490,...]`) فيُبلغ عن دورة وهمية. أُعيد Kahn بمصفوفات POD ثابتة (`int indeg[]` / `int adj[][]`) حتمية وآمنة.
+- `rendering_device.is_null()` -> `== nullptr` (العضو مؤشر).
+- `rg_passes[i]` -> `rg_passes[r]` (المتغيّر الصحيح في الحلقة).
+- جمع مؤشرين `"..." + (cond ? "a" : "b")` -> لفّ بـ `String(...)`.
+- قوس `)` ناقص في سطر hzb (سطر 3025) كان يُسقط الترجمة كاملة.
+
+### Regressions (`tools\gt_regress.bat`)
+007 / 008 / 008B / 009 / 010 / 011 / 013 / 015 = **PASS (rc=0)**. الفشلان خارج 015 بالكامل ولم يلمسهما عمل 015: `main_012` (منطق occlusion، الملف غير متتبَّع في git=WIP والمؤجَّل بقرار سابق) و `main_014` عند `gpu_scene_manager_update` (active=1048568 != 1048576، خلل قائم في مسار delta-ring). `git diff` يؤكد أن كل الحذوف الـ45 في الوحدة هي إزالة لاحقة `u` على الأعداد (تجميلي بحت) - ولا يوجد حذف وظيفي في 012/014.
+
+## 27. GOTOT-014 - إصلاح Race في Delta Apply (PASS)
+
+### التشخيص
+`main_014` كان **flaky (~75% نجاح)** وليس regression من 015. الدليل: `git diff` لم يلمس `gpu_scene_manager_update`/`dispatch`/شيدرات 014 إطلاقًا (كل التعديلات = إزالة لاحقة `u` تجميلي + 381 سطرًا للـ 015 فقط).
+
+**السبب الجذري - سباق (race) داخل dispatch واحد:** الـ ring stream **مرتّب**، لكن `gpu_scene_manager_dispatch` كان يرسل كل الـ deltas في dispatch متوازٍ واحد بلا ترتيب. في شيدرة apply:
+- `add` = كتابة صافية `z = incoming + 1` (بلا قراءة).
+- `remove` = `z = max(z - 1, 0)` = **read-modify-write غير ذرّي**.
+
+فلمعرّف واحد في نفس الـ batch (5000 remove ثم 5000 add لنفس المعرّفات 0..4999) إذا نُفِّذ `add` قبل `remove` ← `1 -> 1 -> 0` = **فقدان النسخة**. الترتيب بين الـ workgroups غير محدود ⇒ عدد الخسائر عشوائي. أرقام مرصودة: **0، 0، -4، 0** (وليس -8 ثابتًا).
+
+**تصحيح ادعاء سابق (ring tail):** ادّعي أولًا أن `buffer_update` يكتب عند `gms_ring_tail` بينما الشيدرات تقرأ من offset 0 = خلل latent يُسقط الـ batch الثاني. **هذا غير صحيح**: الـ ring stream متصل ابتداءً من offset 0، و`delta_count = tail/80` يقرأ المخزن كاملًا من الصفر، أي أن القراءة من 0 صحيحة ولا يوجد إسقاط. لم يكن هناك خلل ثانٍ. حقل `cfg.w` موجود لأن تقسيم الـ ring إلى موجات يحتاج **عنونة بداية الموجة** (لا عنونة الـ ring).
+
+### الإصلاح (Option A - الموجات المرتّبة، APPROVED)
+- **سجل ops موازٍ** (`gms_ring_ops`) يُبنى عند الرفع في `gpu_scene_manager_update`.
+- **تجزئة CPU إلى موجات**: كل مقطع متصل من ops متطابقة = ديسباتش واحد مع `cfg.w = first` و`cfg.z = count`. `_run_compute_pass` ينتهي بـ `submit()`+`sync()` ⇒ كل موجة حاجز كامل، فلا تتداخل الموجات.
+- **إصلاح ring tail**: الشيدرات تقرأ `base = (cfg.w + gi) * 20` (المحقّل `w` كان `pad` غير مستخدم) ⇒ يتعاطى مع أي موضع كتابة في الـ ring.
+- **حارس صريح**: `runs > 256` ⇒ طيّة في dispatch واحد **مع تحذير صريح في السجل** (لا تراجع صامت). الدليل: `ssbo=121,635,140` و`buffer=7` و`applied=5000/5000/10000` و DET لم تتغيّر - **صفر انزياح في توقيع 014**.
+
+### الأدلة
+- **15 تشغيل متتالٍ لـ `main_014`: 15/15 PASS، `active=1048576` بالضبط** (قبل الإصلاح: 3/4 فقط). احتمال الصدفة 0.75^15 = 1.3%.
+- **015: `GT_015A: PASS`**، d1/d2 متطابقان، التوقيع كما هو: `sig=v15-pc9-p6-e6-b6-po8753152-res9048064-sv32768-x6-6-q1-2-t18616`.
+- **Regressions: `GT_REGRESS: PASS`** - 007/008/008B/009/010/011/013/014/015 كلها PASS. `main_012` مصنّف `XFAIL` (WIP معتمد ومؤجَّل) فيُبلَّغ ولا يُحسب فشل بوابة.

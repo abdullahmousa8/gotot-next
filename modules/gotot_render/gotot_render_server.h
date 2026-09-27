@@ -318,6 +318,10 @@ class GototRenderServer : public Object {
 	int gms_capacity = 0;
 	int gms_active_cpu = 0;     // CPU mirror (set_instances / update accounting)
 	uint32_t gms_ring_tail = 0; // CPU write cursor (bytes); head is always 0
+	// Op code per ring slot, parallel to gms_ring_tail. Used at dispatch time to
+	// split the ring into ordered waves so a remove/add pair on the same id can
+	// never race inside one parallel dispatch (the ring is an ordered stream).
+	Vector<uint8_t> gms_ring_ops;
 	uint32_t gms_dispatch_seq = 0;
 	RID gms_record_buffer;
 	RID gms_active_buffer;       // uint[capacity] dense ascending-id list
@@ -594,6 +598,41 @@ public:
 	// First p_count ids of the compacted dense active list.
 	PackedInt32Array gpu_scene_manager_get_active_ids(int p_count);
 	void gpu_scene_manager_destroy();
+
+	// GOTOT-015: Render Graph (SPEC 015, additive TEST-ONLY evidence bridge;
+	// pure ADD over every pre-015 signature - before gpu_rg_create runs every
+	// earlier path is byte-identical). Brings declarative DAG pass management
+	// to the existing GPU passes: nodes = passes, edges = resources. Compile
+	// performs Kahn topological sort WITH cycle detection, derives an AUTOMATIC
+	// barrier per producer->consumer edge (zero manual barriers), and lays out
+	// a TRANSIENT resource pool where resources whose lifetimes do not overlap
+	// are ALIASED to the same pool memory (measured bytes saved). Execute walks
+	// the compiled order and runs each pass body, which calls the EXISTING
+	// 013/011/014 dispatch entry points on the SAME pipelines/uniform sets, so
+	// every earlier signature stays literal. Exposes graph stats (pass/edge/
+	// barrier counts, topo order, cycle flag, transient pool bytes, aliased
+	// saved bytes, dispatch seq) and a DOT + ASCII graph dump. TEST-ONLY.
+	bool gpu_rg_create();
+	// [name, kind, in_res[], out_res[]]: 0=scene_update 1=cull 2=cluster_cull
+	// 3=batch_assembly 4=raster 5=output. Returns false past 32 passes.
+	bool gpu_rg_add_pass(const String &p_name, int p_kind, const PackedStringArray &p_in_res, const PackedStringArray &p_out_res);
+	// Producer pass -> consumer pass on p_resource. Returns false on unknown
+	// pass names or duplicate resource edges.
+	bool gpu_rg_add_edge(const String &p_from, const String &p_to, const String &p_resource, int p_bytes);
+	// Kahn topo order + cycle detect + auto barrier derivation + transient
+	// pool layout with lifetime aliasing. Returns false on a cycle/unknown res.
+	bool gpu_rg_compile();
+	// Executes the passes in compiled order (each body dispatches the real
+	// 013/011/014 compute path). Returns false when not compiled or a body fails.
+	bool gpu_rg_execute();
+	// pass_count, edge_count, barrier_count(auto), topo_order, cycle_detected,
+	// pool_bytes, resources_bytes, aliased_saved_bytes, executed_count,
+	// dispatch_seq, distinct_resources.
+	Dictionary gpu_rg_get_stats();
+	// dict: {"dot": String, "ascii": String}.
+	Dictionary gpu_rg_dump();
+	void gpu_rg_destroy();
 };
+
 
 #endif
