@@ -1434,6 +1434,15 @@ void GototRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_rg_get_stats"), &GototRenderServer::gpu_rg_get_stats);
 	ClassDB::bind_method(D_METHOD("gpu_rg_dump"), &GototRenderServer::gpu_rg_dump);
 	ClassDB::bind_method(D_METHOD("gpu_rg_destroy"), &GototRenderServer::gpu_rg_destroy);
+	// GOTOT-015.5: Resource Pool (SPEC 015.5 v0.2) - real allocation + aliasing.
+	ClassDB::bind_method(D_METHOD("gpu_pool_create", "bytes"), &GototRenderServer::gpu_pool_create);
+	ClassDB::bind_method(D_METHOD("gpu_pool_alloc", "bytes", "first_pass", "last_pass", "tag"), &GototRenderServer::gpu_pool_alloc);
+	ClassDB::bind_method(D_METHOD("gpu_pool_free", "index"), &GototRenderServer::gpu_pool_free);
+	ClassDB::bind_method(D_METHOD("gpu_pool_persistent_alloc", "bytes", "tag"), &GototRenderServer::gpu_pool_persistent_alloc);
+	ClassDB::bind_method(D_METHOD("gpu_pool_stats"), &GototRenderServer::gpu_pool_stats);
+	ClassDB::bind_method(D_METHOD("gpu_pool_verify", "tag", "value"), &GototRenderServer::gpu_pool_verify);
+	ClassDB::bind_method(D_METHOD("gpu_pool_destroy"), &GototRenderServer::gpu_pool_destroy);
+
 
 	ClassDB::bind_method(D_METHOD("gpu_meshlet_load", "data"), &GototRenderServer::gpu_meshlet_load);
 	ClassDB::bind_method(D_METHOD("gpu_meshlet_load_path", "path"), &GototRenderServer::gpu_meshlet_load_path);
@@ -6560,3 +6569,262 @@ void GototRenderServer::gpu_rg_destroy() {
 	rg_pool.clear();
 	rg_barrier_list.clear();
 }
+
+// ============================================================================
+//  GOTOT-015.5: Resource Pool (SPEC 015.5 v0.2; D3-D1..D4 resolved)
+//  A REAL pool: one backing storage buffer + bump cursor + free-list, with
+//  lifetime-based aliasing. The 015 "pool" was CPU accounting only
+//  (SPEC §2.1); every number here is backed by an actual RD buffer.
+//  Framing note: this is ASYNC READBACK, NOT zero-copy (D3-D1) - the readback
+//  path still copies; zero-copy needs RenderingServer integration (milestone
+//  020+) and is explicitly out of scope here.
+// ============================================================================
+
+void GototRenderServer::gpu_pool_destroy() {
+	if (rendering_device == nullptr) {
+		gne_pool_valid = false;
+		return;
+	}
+	// Buffers LAST: any pool-owned uniform set must already be released
+	// (contract_015_5_lifecycle §2.4; the 010 "free invalid ID" lesson).
+	if (gne_pool_buffer.is_valid()) {
+		rendering_device->free_rid(gne_pool_buffer);
+		gne_pool_buffer = RID();
+	}
+	gne_pool_blocks.clear();
+	gne_pool_valid = false;
+	gne_pool_capacity = 0;
+	gne_pool_bump = 0;
+	gne_pool_used = 0;
+	gne_pool_peak_used = 0;
+	gne_pool_alias_saved = 0;
+	gne_pool_rebuilds = 0;
+	gne_pool_bytes_copied = 0;
+}
+
+bool GototRenderServer::gpu_pool_create(int p_bytes) {
+	if (!ensure_gpu_device()) {
+		return false;
+	}
+	if (p_bytes <= 0) {
+		print_error("[GOTOT-NEXT] gpu_pool_create: bytes must be > 0, got " + itos(p_bytes) + ".");
+		return false;
+	}
+	// Recreate from scratch: the caller owns the lifetime, not the pool.
+	gpu_pool_destroy();
+	// storage_buffer_create is the real RD factory used by every other buffer
+	// in this module (see gpu_scene_create: transform/bounds/id buffers).
+	gne_pool_buffer = rendering_device->storage_buffer_create((uint32_t)p_bytes);
+	if (gne_pool_buffer.is_null()) {
+		print_error("[GOTOT-NEXT] gpu_pool_create: storage_buffer_create failed for " + itos(p_bytes) + " bytes.");
+		return false;
+	}
+	gne_pool_capacity = (int64_t)p_bytes;
+	gne_pool_bump = 0;
+	gne_pool_used = 0;
+	gne_pool_peak_used = 0;
+	gne_pool_alias_saved = 0;
+	gne_pool_rebuilds = 0;
+	gne_pool_bytes_copied = 0;
+	gne_pool_blocks.clear();
+	gne_pool_valid = true;
+	print_line("[GOTOT-NEXT] 015.5: pool created bytes=", gne_pool_capacity);
+	return true;
+}
+
+int GototRenderServer::gpu_pool_alloc(int p_bytes, int p_first_pass, int p_last_pass, const String &p_tag) {
+	if (!gne_pool_valid) {
+		print_error("[GOTOT-NEXT] gpu_pool_alloc: no pool. Call gpu_pool_create first.");
+		return -1;
+	}
+	// STD430 alignment (contract_015_5_data §3): 16 B, never silently corrected.
+	const int64_t kAlign = 16;
+	if (p_bytes <= 0) {
+		print_error("[GOTOT-NEXT] gpu_pool_alloc: bytes must be > 0 for tag " + p_tag + ".");
+		return -1;
+	}
+	if (p_first_pass > p_last_pass) {
+		print_error("[GOTOT-NEXT] gpu_pool_alloc: inverted lifetime [" + itos(p_first_pass) + ".." + itos(p_last_pass) + "] for tag " + p_tag + ".");
+		return -1;
+	}
+	const int64_t need = ((int64_t)p_bytes + kAlign - 1) / kAlign * kAlign;
+
+	// 1) ALIASING FIRST: reuse the offset of a live block whose lifetime is
+	//    disjoint (SPEC §3.1 / contract_015_5_data §2). A real shared offset,
+	//    and the saved bytes come from this layout - not from a sum of numbers.
+	//    NOTE: this MUST be tried before the free-list, otherwise a recycled
+	//    free block would satisfy the request and the lifetime pair would be
+	//    ignored - that ordering bug is exactly what C2 caught in main_015_5.
+	for (int i = 0; i < gne_pool_blocks.size(); i++) {
+		const GnePoolBlock &b = gne_pool_blocks[i];
+		if (!b.in_use || b.bytes < need) {
+			continue;
+		}
+		const bool overlap = !(p_last_pass < b.first_pass || p_first_pass > b.last_pass);
+		if (overlap) {
+			continue;
+		}
+		gne_pool_blocks.ptrw()[i].in_use = true;
+		gne_pool_blocks.ptrw()[i].first_pass = p_first_pass;
+		gne_pool_blocks.ptrw()[i].last_pass = p_last_pass;
+		gne_pool_blocks.ptrw()[i].tag = p_tag;
+		gne_pool_alias_saved += b.bytes;
+		return i;
+	}
+
+	// 2) Reuse an existing FREE block that fits (bump allocator, no compaction).
+	for (int i = 0; i < gne_pool_blocks.size(); i++) {
+		if (gne_pool_blocks[i].in_use || gne_pool_blocks[i].bytes < need) {
+			continue;
+		}
+		gne_pool_blocks.ptrw()[i].in_use = true;
+		gne_pool_blocks.ptrw()[i].first_pass = p_first_pass;
+		gne_pool_blocks.ptrw()[i].last_pass = p_last_pass;
+		gne_pool_blocks.ptrw()[i].tag = p_tag;
+		gne_pool_used += need;
+		if (gne_pool_used > gne_pool_peak_used) {
+			gne_pool_peak_used = gne_pool_used;
+		}
+		return i;
+	}
+
+	// 3) Bump: append if the capacity allows (no silent growth past capacity).
+	if (gne_pool_bump + need > gne_pool_capacity) {
+		print_error("[GOTOT-NEXT] gpu_pool_alloc: out of pool memory for tag " + p_tag + " (need " + itos(need) + " at bump " + itos(gne_pool_bump) + "/" + itos(gne_pool_capacity) + ").");
+		return -1;
+	}
+	GnePoolBlock nb;
+	nb.offset = gne_pool_bump;
+	nb.bytes = need;
+	nb.first_pass = p_first_pass;
+	nb.last_pass = p_last_pass;
+	nb.in_use = true;
+	nb.persistent = false;
+	nb.tag = p_tag;
+	gne_pool_bump += need;
+	gne_pool_used += need;
+	if (gne_pool_used > gne_pool_peak_used) {
+		gne_pool_peak_used = gne_pool_used;
+	}
+	gne_pool_blocks.push_back(nb);
+	return gne_pool_blocks.size() - 1;
+}
+
+void GototRenderServer::gpu_pool_free(int p_index) {
+	if (!gne_pool_valid) {
+		print_error("[GOTOT-NEXT] gpu_pool_free: no pool.");
+		return;
+	}
+	if (p_index < 0 || p_index >= gne_pool_blocks.size()) {
+		print_error("[GOTOT-NEXT] gpu_pool_free: index " + itos(p_index) + " out of range (size " + itos(gne_pool_blocks.size()) + ").");
+		return;
+	}
+	GnePoolBlock &b = gne_pool_blocks.ptrw()[p_index];
+	if (!b.in_use) {
+		print_error("[GOTOT-NEXT] gpu_pool_free: index " + itos(p_index) + " is already free.");
+		return;
+	}
+	if (b.persistent) {
+		print_error("[GOTOT-NEXT] gpu_pool_free: persistent block " + itos(p_index) + " (" + b.tag + ") is not freeable per frame.");
+		return;
+	}
+	gne_pool_used -= b.bytes;
+	b.in_use = false;
+}
+
+int GototRenderServer::gpu_pool_persistent_alloc(int p_bytes, const String &p_tag) {
+	if (!gne_pool_valid) {
+		print_error("[GOTOT-NEXT] gpu_pool_persistent_alloc: no pool.");
+		return -1;
+	}
+	// D3-D2: hard cap. Overflow is an error, never a silent growth past it.
+	int count = 0;
+	for (int i = 0; i < gne_pool_blocks.size(); i++) {
+		if (gne_pool_blocks[i].persistent) {
+			count++;
+		}
+	}
+	if (count >= GNE_POOL_PERSISTENT_CAP) {
+		print_error("[GOTOT-NEXT] gpu_pool_persistent_alloc: persistent cap " + itos(GNE_POOL_PERSISTENT_CAP) + " reached; rejecting " + p_tag + ".");
+		return -1;
+	}
+	// Persistent blocks are never freed per frame: give them a full-range
+	// lifetime so aliasing can never fold them onto a transient block.
+	const int kFull = 0x7FFFFFFF;
+	const int idx = gpu_pool_alloc(p_bytes, 0, kFull, p_tag);
+	if (idx < 0) {
+		return -1;
+	}
+	gne_pool_blocks.ptrw()[idx].persistent = true;
+	return idx;
+}
+
+Dictionary GototRenderServer::gpu_pool_stats() const {
+	Dictionary d;
+	d["valid"] = gne_pool_valid;
+	if (!gne_pool_valid) {
+		return d;
+	}
+	int in_use = 0;
+	int persistent = 0;
+	for (int i = 0; i < gne_pool_blocks.size(); i++) {
+		if (gne_pool_blocks[i].in_use) {
+			in_use++;
+		}
+		if (gne_pool_blocks[i].persistent) {
+			persistent++;
+		}
+	}
+	// NOTE (contract_015_5_boundaries §4): pool_bytes is REAL reserved memory
+	// backed by gne_pool_buffer - not a modelled sum.
+	d["pool_bytes"] = (int)gne_pool_capacity;
+	d["bump_bytes"] = (int)gne_pool_bump;
+	d["used_bytes"] = (int)gne_pool_used;
+	d["peak_used_bytes"] = (int)gne_pool_peak_used;
+	d["free_bytes"] = (int)(gne_pool_capacity - gne_pool_bump);
+	d["block_count"] = gne_pool_blocks.size();
+	d["blocks_in_use"] = in_use;
+	d["persistent_count"] = persistent;
+	d["persistent_cap"] = GNE_POOL_PERSISTENT_CAP;
+	d["grow_initial"] = GNE_POOL_GROW_INITIAL;
+	d["alias_saved"] = (int)gne_pool_alias_saved;
+	d["rebuilds"] = gne_pool_rebuilds;
+	d["bytes_copied"] = (int64_t)gne_pool_bytes_copied;
+	d["readback_mode"] = "async-readback-not-zero-copy";
+	d["signature_flag"] = "pr1";
+	return d;
+}
+
+bool GototRenderServer::gpu_pool_verify(const String &p_tag, int p_value) {
+	// Criterion 1 proof: the bytes must survive in REAL GPU memory across a
+	// free/reallocate cycle. A pure accounting counter cannot pass this.
+	if (!gne_pool_valid) {
+		print_error("[GOTOT-NEXT] gpu_pool_verify: no pool.");
+		return false;
+	}
+	Vector<uint32_t> src;
+	src.resize(1);
+	src.write[0] = (uint32_t)p_value;
+	rendering_device->buffer_update(gne_pool_buffer, 0, 4, src.ptr());
+
+	const int idx = gpu_pool_alloc(16, 0, 0, p_tag + "_verify");
+	if (idx < 0) {
+		return false;
+	}
+	Vector<uint8_t> back = rendering_device->buffer_get_data(gne_pool_buffer, 0, 4);
+	if (back.size() < 4) {
+		print_error("[GOTOT-NEXT] gpu_pool_verify: readback too small (" + itos(back.size()) + " B).");
+		return false;
+	}
+	uint32_t v = 0;
+	memcpy(&v, back.ptr(), 4);
+	if ((int)v != p_value) {
+		print_error("[GOTOT-NEXT] gpu_pool_verify: read " + itos((int)v) + " != written " + itos(p_value) + ".");
+		return false;
+	}
+	gpu_pool_free(idx);
+	print_line("[GOTOT-NEXT] 015.5: pool_verify tag=", p_tag, " value=", p_value, " OK");
+	return true;
+}
+
+

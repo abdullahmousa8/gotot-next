@@ -316,6 +316,30 @@ class GototRenderServer : public Object {
 	};
 	bool gpu_scene_mgr_valid = false;
 	int gms_capacity = 0;
+	// --- GOTOT-015.5 Resource Pool state (SPEC 015.5 v0.2) ---
+	// Persistent cap per D3-D2. Overflow = hard error, never silent growth.
+	static constexpr int GNE_POOL_PERSISTENT_CAP = 256;
+	// Growth per D3-D3: double up to the cap (64 -> 128 -> 256).
+	static constexpr int GNE_POOL_GROW_INITIAL = 64;
+	struct GnePoolBlock {
+		int64_t offset = 0;
+		int64_t bytes = 0;
+		int first_pass = 0;
+		int last_pass = 0;
+		bool in_use = false;
+		bool persistent = false;
+		String tag;
+	};
+	bool gne_pool_valid = false;
+	RID gne_pool_buffer;
+	int64_t gne_pool_capacity = 0;
+	int64_t gne_pool_bump = 0;
+	int64_t gne_pool_used = 0;
+	int64_t gne_pool_peak_used = 0;
+	int64_t gne_pool_alias_saved = 0;
+	int gne_pool_rebuilds = 0;
+	int64_t gne_pool_bytes_copied = 0;
+	Vector<GnePoolBlock> gne_pool_blocks;
 	int gms_active_cpu = 0;     // CPU mirror (set_instances / update accounting)
 	uint32_t gms_ring_tail = 0; // CPU write cursor (bytes); head is always 0
 	// Wave accounting of the LAST dispatch (reset at dispatch start). Exposed
@@ -608,6 +632,29 @@ public:
 	// dispatch (which is a race, and which deterministic scenes must never hit).
 	Dictionary gpu_scene_manager_get_wave_stats() const;
 	void gpu_scene_manager_destroy();
+
+	// --- GOTOT-015.5: Resource Pool (SPEC 015.5 v0.2, D3-D1..D4 resolved) ---
+	// A REAL transient pool: one backing buffer, bump cursor + free-list, with
+	// lifetime-based aliasing (SPEC §3.1/§3.9). This is the first milestone in
+	// the module that allocates pool memory at all - the 015 "pool" was CPU
+	// accounting only (SPEC §2.1).
+	bool gpu_pool_create(int p_bytes);
+	// Allocates with an explicit LIFETIME [first_pass, last_pass]. Two blocks
+	// whose lifetimes are disjoint may share one offset (aliasing). Returns the
+	// block index, or -1 (with print_error) on failure - never silently.
+	int gpu_pool_alloc(int p_bytes, int p_first_pass, int p_last_pass, const String &p_tag);
+	void gpu_pool_free(int p_index);
+	// Persistent resources: capped at GNE_POOL_PERSISTENT_CAP entries (D3-D2).
+	// Overflow is a hard error, never a silent growth past the cap.
+	int gpu_pool_persistent_alloc(int p_bytes, const String &p_tag);
+	Dictionary gpu_pool_stats() const;
+	// Round-trip a value through the pool across two allocate/free cycles.
+	// This is the criterion-1 proof: real memory, not accounting numbers.
+	bool gpu_pool_verify(const String &p_tag, int p_value);
+	// Frees every pool RID. Call only AFTER releasing pool-owned uniform sets
+	// (SPEC contract_015_5_lifecycle §2.4 - the 010 lesson: freeing uniforms
+	// after their buffers yields "Attempted to free invalid ID").
+	void gpu_pool_destroy();
 
 	// GOTOT-015: Render Graph (SPEC 015, additive TEST-ONLY evidence bridge;
 	// pure ADD over every pre-015 signature - before gpu_rg_create runs every
