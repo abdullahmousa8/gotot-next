@@ -187,7 +187,7 @@ Next milestone:
 - **نقطة frustum reading**: كشف Fix 1 أن `set_camera` لا تُحدّث الـ frustum تلقائيًا عند تغيّر أبعاد النافذة — هل هذا سلوك مقصود أم ثغرة تصميم؟ تُعالج في milestone قادم (مثل 009/رفع لاحق).
 - **نقطة الترتيب الذري**: ترتيب الإصدار (atomic compaction) عشوائي بين التشغيلات — هل يؤثر على الأداء الفعلي أم فقط على التحقق؟ تُقيَّم لاحقًا (التحقق الحالي مستقر عبر الفرز).
 
-## 18. GOTOT-009 — Real Depth Buffer (D32_SFLOAT)
+## 18a. GOTOT-009 — Real Depth Buffer (D32_SFLOAT)
 
 ### الهدف والنطاق
 إرفاق **عمق حقيقي** لمسار mesh: نسيج `D32_SFLOAT` في framebuffer الراستر الخاص، مع depth test + write بواقعية (الأقرب يمنع الأبعد) على مسار **Real Mesh** (008A) بينما يبقى مسار billboard depth-disabled تمامًا. إثبات ذاتي عبر مشهدين: `main_009` مع `--front-only` (مرجع A+D) وبدونها (كامل A+B+C+D)، دون لمس أي regression سابق (001A–008B).
@@ -240,7 +240,7 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 - reversed-Z (أعلاه).
 - 007A frame-time drift.
 
-## 18. GOTOT-010 — الرسم الدفعي متعدد الأشكال (Batch Instance Rendering)
+## 18b. GOTOT-010 — الرسم الدفعي متعدد الأشكال (Batch Instance Rendering)
 
 ### الهدف
 رسم **عدة meshes مختلفة في دفعة (batch) واحدة** عبر multi-draw غير مباشر، بلا حلقة CPU على المثيلات: يشير كل مثيل إلى `mesh_id` من جدول meshes على الـ GPU، ويُجمَّع `batch_args` على الـ GPU (prefix-sum) ثم `draw_list_draw_indirect(draw_count=batch_count)`. عمق 009 (D32_SFLOAT + LESS_OR_EQUAL) باقٍ كما هو.
@@ -476,6 +476,20 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 - **تجزئة CPU إلى موجات**: كل مقطع متصل من ops متطابقة = ديسباتش واحد مع `cfg.w = first` و`cfg.z = count`. `_run_compute_pass` ينتهي بـ `submit()`+`sync()` ⇒ كل موجة حاجز كامل، فلا تتداخل الموجات.
 - **إصلاح ring tail**: الشيدرات تقرأ `base = (cfg.w + gi) * 20` (المحقّل `w` كان `pad` غير مستخدم) ⇒ يتعاطى مع أي موضع كتابة في الـ ring.
 - **حارس صريح**: `runs > 256` ⇒ طيّة في dispatch واحد **مع تحذير صريح في السجل** (لا تراجع صامت). الدليل: `ssbo=121,635,140` و`buffer=7` و`applied=5000/5000/10000` و DET لم تتغيّر - **صفر انزياح في توقيع 014**.
+
+### إعادة-baseline لـ 011 (DET غير زمني)
+- سطر الـsig في `main_011` (`GOTOT-NEXT 011-DET`) كان يحتوي آخر حقلين `dispatch_us/draw_us` (زمن تنفيذ) ⇒ المقارنة بين تشغيلين كانت تفشل حتى على بناء سليم (توقيتات مختلفة حرفياً).
+- الإصلاح (Commit 2): `dispatch_us/draw_us` يُطبعان الآن في سطر منفصل (`GOTOT-NEXT 011: timing dispatch_us=... draw_us=...`)، بينما `sig` خالٍ من أي حقل زمني (ينتهي عند `cb%d|dt%d`).
+- Baseline غير زمني (Commit 2، ميدان 3 استراتيجيات، الكل PASS):
+  - `0: v=128 st=0 m=64 gc=64 dc=64 ic=64 cc=64 dF0.92076 dB0.95204 cb=1 dt=1`
+  - `1: v=128 st=1 m=64 gc=5 dc=5 ic=5 cc=5 dF0.92076 dB0.95204 cb=1 dt=1`
+  - `2: v=128 st=2 m=64 gc=5 dc=5 ic=5 cc=5 dF0.92076 dB0.95204 cb=1 dt=1`
+- قياس التحسين (`decode_u32` + تمرير واحد، ميدان 3 تشغيلات): `before_ms = 264923` -> `after_ms = 30723` (وسيط، RTX3070/Windows) — تحسين ~8.6x مع حفظ تحقق CPU المستقل عن GPU.
+- القاعدة: أي مقارنة DET لـ 011 من الآن فصاعدًا تُجرى على سطر `011-DET` فقط (بدون سطر timing).
+
+### ملاحظة Guard >256 (غير مُجرَّب)
+- الحارس الحالي (`runs > 256` ⇒ طيّة + WARNING) **ليست له تغطية اختبارية**: `main_014` يستخدم 3 موجات فقط، فلا يمرّر أبداً بالطيّة. أي لا يوجد دليل تشغيل يُثبت أن الطيّة تعمل أو أنها لا تعمل.
+- بعد Commit 6 يُرفَع هذا إلى FAIL صريح في المشهد (كاشف `collapsed_single_dispatch`)، لكنه يبقى **untested path** ما لم تُبنَ مرحلة اختبار بعينات متبادلة متعمَّدة (غير متوافقة مع توقيع 014 الحتمي الحالي — قرار لاحق).
 
 ### الأدلة
 - **15 تشغيل متتالٍ لـ `main_014`: 15/15 PASS، `active=1048576` بالضبط** (قبل الإصلاح: 3/4 فقط). احتمال الصدفة 0.75^15 = 1.3%.

@@ -106,6 +106,8 @@ The **billboard path** (GOTOT-005 / 007A) and the **real mesh path** (GOTOT-008A
 | 011 | Multi-Draw / Multi-Batch | ✅ PASS | 64 meshes / 128 instances; PER_MESH→64 draws, GROUPED/REORDERED→**5** groups/draw_calls/indirect; `batch_order==[0..63]`; dynamic GPU-written draw count; DET stable; sigs `st0/1/2` all pixel-identical |
 | 013 | Meshlets / LOD / Cluster Culling | ✅ PASS | 1M-tri LOD0 (1,048,576), 18,613 meshlets; instance LODs `[0,1,1,2,2,0]`; 3-pass software rasterizer with **coherent 64-bit winner** `covered==winner==76,685`; per-LOD px `[5853,1265,559566]`; DET stable (`d1`) |
 | 014 | GPU Scene Manager | ✅ PASS | SSBO SoA scene DB, 64-B records, unified ID space; **1,048,576 instances** (`active=1048576`, ssbo=121.6 MB); 16-MB ring + compute apply (20,000 deltas, zero critical-path readback); 013 ordinal hand-off (fnv=3106528256 preserved); 4096 instances/8 meshes → **5 draw calls**; DET stable (`sig=v14`, `d1`) |
+| 015 | Render Graph prototype (scheduler-only) | ✅ PASS | DAG + Kahn topo + auto-barriers + pool aliasing (TEST-ONLY); reuses 013/011/014 entry points, zero signature drift; `sig=v15-pc9-p6-e6-b6-po8753152-res9048064-sv32768-x6-6-q1-2-t18616` |
+| 012 | Production HZB | ⚠️ WIP (XFAIL) | Deferred; `main_012` tracked as WIP, excluded from gates via XFAIL |
 
 See [`docs/progress_report.md`](docs/progress_report.md) for the full technical report (Arabic).
 
@@ -324,9 +326,11 @@ Dependency/third-party licensing (permissive-only runtime policy, legal review p
 | 009 | مخزن العمق الحقيقي (`D32_SFLOAT`) | ✅ |
 | 010 | رسم الدفعات (batch instance، 3 أشكال) | ✅ |
 | 011 | Multi-Draw / Multi-Batch (≤5 دفعات مجمّعة + reorder) | ✅ |
-| 011 | Demo تفاعلي (main_demo + كاميرا FPS + HUD) | ✅ |
+| 011d | Demo تفاعلي (main_demo + كاميرا FPS + HUD) | ✅ |
 | 013 | Meshlets + LOD + Cluster Culling | ✅ |
 | 014 | GPU Scene Manager (SSBO Scene DB) | ✅ |
+| 015 | Render Graph prototype (نموذج أولي، scheduler-only) | ✅ |
+| 012 | Production HZB | ⚠️ WIP (مؤجَّل، XFAIL) |
 
 **008A تحديدًا** يثبت أن المشروع يستطيع رسم **هندسة 3D حقيقية** (vertex buffer + index buffer + vertex format + indexed indirect draw) لمكعب 8 رؤوس/36 فهرسًا، معتمِدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة، وبقي مسار الـ billboard القديم كما هو دون أي استبدال.
 ثم **008B** يمدّ ذلك إلى **10,000 instance** بنفس mesh، و**009** يضيف **مخزن العمق الحقيقي `D32_SFLOAT`** (عمق كتابةً واختبارًا) ويُثبت ترتيب العمق بين المكعبات (fg==green، rim ضمن الحدود، DET ثابت).
