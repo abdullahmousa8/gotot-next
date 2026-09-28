@@ -424,3 +424,34 @@ criteria (interval per 9.3; negative byte-zero per 9.3).
   costs ~0.7 ms on the RTX 3070 - approx. 4% of a 16.6 ms frame. **Not a frame-budget
   threat: no scope reduction (fewer probed contributors / occlusion caching) is
   required.** Measured, not assumed.
+### 9.3.5 Official paired gate run (single process, 2026-09-28) - RESULT
+
+Phase order: NEG (barrier) then POS (no barrier); same scenario otherwise; 240
+accumulation frames each; criteria frozen per 9.3.
+
+| phase | raw A | raw M | raw B | B(f240) | M(f240) |
+|---|---|---|---|---|---|
+| NEG | 1.4529 | 0.0 | 0.0 | 0.0 | 0.0 |
+| POS | 0.8057 | 0.00251 | 0.0 | 0.0 | 0.00394 |
+
+- **NEG: PASS** - byte-literal 0.0 across all probes and frames (barrier holds under
+  M3; no leak).
+- **POS: FAIL** - deep-B stayed byte-literal 0.0 (out of the interval [0.0094,
+  0.0846]). The M probe (1 cell behind the boundary) again shows elevation over its
+  own direct (0.00394 vs rawM 0.00251, +57%) - the same elevation CLASS as the earlier
+  +53% observation, now reproduced under M3; the cascade still does not build beyond
+  ~1 cell within 240 frames.
+- **Verdict: paired FAIL - the "GI" label stays CLOSED.** The response continues per
+  9.3.2/9.3.4 discipline (touch mechanism, never criteria).
+- Open diagnostic items for the next round (recorded, NOT yet investigated):
+  (a) POS geometry premise: the M probe's shallow rays reach near-light ground within
+      range (rawM = 0.0025) - the strict "every hit point outside range" isolation is
+      geometrically unachievable for near probes in an open corridor; the deep-B probe
+      isolation (rawB = 0.0) DOES hold. A recorded clarification will be needed for the
+      POS premise (deep-probe strict isolation) before the next official run - criteria
+      themselves untouched.
+  (b) transport cascade: instrument -700-row probes and growth curves to locate where
+      the cascade dies.
+  (c) candidate mechanism suspect: M3's grazing-margin behavior for segments lying
+      along the ground face (tn>0.5 margin vs grazing) - verify whether legitimate
+      contributions are being gated by the ground plane itself.
