@@ -98,3 +98,20 @@ No concurrent runs. Clean test windows only.
 - Any run with driver crash = rejected measurement.
 
 **Related:** KI-008 (potential).
+
+## Lesson 6: Never Trust cwd For Git Operations (Tooling, Build Host)
+
+**Date:** 2026-09-28
+**Context:** A long build+test script did `Set-Location` into the build host
+(godot-master) for scons; a later stray `git add/commit` in the same script ran
+there by mistake.
+
+**Observed:**
+- The stray commit became the build host repo's FIRST commit (28,656 engine files
+  staged); the repo has no remote, so nothing left the machine.
+- Caught immediately; restored exactly with `git update-ref -d` (unborn branch).
+
+**Rule:**
+- Every git command uses `git -C <absolute repo path>`; never rely on cwd.
+- Assert the target with `git rev-parse --show-toplevel` before add/commit/push.
+- Build host = build only; its repo state must stay untouched.
