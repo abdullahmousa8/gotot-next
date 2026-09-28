@@ -239,3 +239,11 @@ func _run() -> void:
 		_fail(120, "D material_draw")
 		return
 	_report_pair("D-mat_batch", _probe_px())
+
+	# E: cone buffer smoke (GNE-018-rev unit 2a) - zero records until the pass lands
+	var lid := server.gpu_light_create({"type": 0, "pos": Vector3(0, 0, -600), "range": 500.0, "color": Color(1, 1, 1), "intensity": 1.0})
+	print("R0CHK|E|light_id=", lid)
+	var c0 := server.gpu_light_cone_read(0)
+	var c3455 := server.gpu_light_cone_read(3455)
+	var cbad := server.gpu_light_cone_read(3456)
+	print("R0CHK|E|cone0=", c0, "|cone3455=", c3455, "|cone3456_size=", cbad.size())

@@ -2310,6 +2310,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_light_update", "id", "params"), &GneRenderServer::gpu_light_update);
 	ClassDB::bind_method(D_METHOD("gpu_light_destroy", "id"), &GneRenderServer::gpu_light_destroy);
 	ClassDB::bind_method(D_METHOD("gpu_light_get_stats"), &GneRenderServer::gpu_light_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_light_cone_read", "cluster"), &GneRenderServer::gpu_light_cone_read);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_light_bind", "light_id", "shadow_id"), &GneRenderServer::gpu_shadow_light_bind);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_cull_dispatch"), &GneRenderServer::gpu_shadow_cull_dispatch);
@@ -2550,6 +2551,10 @@ void GneRenderServer::_destroy_mesh() {
 		if (light_overflow_buffer.is_valid()) {
 			rendering_device->free_rid(light_overflow_buffer);
 			light_overflow_buffer = RID();
+		}
+		if (cluster_cone_buffer.is_valid()) {
+			rendering_device->free_rid(cluster_cone_buffer);
+			cluster_cone_buffer = RID();
 		}
 	}
 	for (int i = 0; i < GNE_LIGHT_MAX; i++) {
@@ -6110,9 +6115,13 @@ int GneRenderServer::gpu_light_create(const Dictionary &p_params) {
 		cluster_index_buffer = rendering_device->storage_buffer_create(
 				(uint32_t)(GNE_CLUSTER_COUNT * GNE_CLUSTER_LIGHT_CAP * 4));
 		light_overflow_buffer = rendering_device->storage_buffer_create(4);
+
+			// GNE-018-rev: cluster normal-cone records (3456 x vec4). Zero-filled =
+			// the "never cull" sentinel default; the cone pass will rewrite per frame.
+			cluster_cone_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 16));
 		if (light_buffer.is_null() || cluster_offset_buffer.is_null()
 				|| cluster_count_buffer.is_null() || cluster_index_buffer.is_null()
-				|| light_overflow_buffer.is_null()) {
+				|| light_overflow_buffer.is_null() || cluster_cone_buffer.is_null()) {
 			print_error("[GNE] gpu_light_create: buffer_create failed.");
 			return -1;
 		}
@@ -6122,6 +6131,7 @@ int GneRenderServer::gpu_light_create(const Dictionary &p_params) {
 		rendering_device->buffer_clear(cluster_offset_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
 		rendering_device->buffer_clear(cluster_count_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
 		rendering_device->buffer_clear(light_overflow_buffer, 0, 4);
+			rendering_device->buffer_clear(cluster_cone_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 16));
 		// Static layout: cluster tid owns slots [tid*16, tid*16+16). Filled
 		// once (never changes) so no prefix-sum pass is needed for DET.
 		{
@@ -7964,6 +7974,27 @@ bool GneRenderServer::gpu_material_draw_lights() {
 
 	mat_dispatches++;
 	return true;
+}
+
+// GNE-018-rev: read one cluster's cone record {axis.xyz, mindp} (tooling path
+// only; an all-zero record is the designed "never cull" sentinel).
+PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
+	PackedFloat32Array out;
+	if (!gpu_light_valid || cluster_cone_buffer.is_null()) {
+		return out;
+	}
+	if (p_cluster < 0 || p_cluster >= GNE_CLUSTER_COUNT) {
+		return out;
+	}
+	Vector<uint8_t> data = rendering_device->buffer_get_data(cluster_cone_buffer, (uint32_t)(p_cluster * 16), 16);
+	if (data.size() != 16) {
+		return out;
+	}
+	const float *f = (const float *)data.ptr();
+	for (int i = 0; i < 4; i++) {
+		out.append(f[i]);
+	}
+	return out;
 }
 
 PackedInt32Array GneRenderServer::gpu_light_debug_cluster(int p_tx, int p_ty, int p_tz) {

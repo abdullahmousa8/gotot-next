@@ -225,6 +225,7 @@ class GneRenderServer : public Object {
 	RID light_cull_pipeline;
 	RID light_cull_uniform_set;
 	RID light_overflow_buffer; // uint[1] per-cluster-cap overflow counter
+	RID cluster_cone_buffer;   // GNE-018-rev vec4[3456] cluster normal cones (0 = never cull)
 	int light_count = 0;
 	// GNE-018 cluster math inputs (captured in set_camera for cull + frag).
 	float cam_near_v = 300.0f;
@@ -720,6 +721,7 @@ public:
 	bool gpu_light_update(int p_id, const Dictionary &p_params);
 	bool gpu_light_destroy(int p_id);
 	Dictionary gpu_light_get_stats();
+	PackedFloat32Array gpu_light_cone_read(int p_cluster); // GNE-018-rev tooling
 
 	// GNE-019: shadow maps + real-depth HZB flag (TEST-ONLY). p_type: 0 = CSM
 	// (res must be 2048), 1 = cube (1024), 2 = spot (2048). Returns a handle
