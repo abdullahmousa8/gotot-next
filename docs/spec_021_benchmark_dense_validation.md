@@ -78,4 +78,12 @@ met). No threshold was changed after results; no re-tuning.
 
 Note: no contracts x5 were added for this milestone - it is a measurement milestone;
 the binding artifacts are the frozen pre-registration (section 1) and this results
-section. [Flagged for the Architect if contracts are still wanted.]
+**Stronger framing (Architect-directed, recorded):** the result is not merely "target
+not met": off->on = -6.47% means enabling the feature on THIS CLASS of scenes (dense
+urban; mixed surface directions) actively LOSES performance, not just fails to help.
+The structural cause (cone validity 5.4% - ground/walls/background mixing inside most
+clusters) is a TOPOLOGICAL property of that scene class, not a defect that finer tuning
+could repair. Practical consequence: cone culling is NOT a candidate for re-enabling on
+dense urban / interior mixed-direction scenes; its theoretical benefit stays confined to
+directionally-coherent scenes (e.g., open outdoors). This file must not be reopened
+unless a use-case of that specific class appears.

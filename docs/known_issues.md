@@ -4,6 +4,8 @@
 
 ---
 
+> **Open-items consolidation (2026-09-28):** the single current view of everything
+> still open lives in `docs/open_items_register.md`.
 ## KI-001: GPU Timestamps غير متاحة على Vulkan
 
 **التاريخ:** 2026-09-27 · **الحالة:**Unavailable — قيد في محرّك Godot (خارج نطاق GNE)
