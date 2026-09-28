@@ -349,6 +349,7 @@ int gi_gz = 16;
 	RID shadow_view_ubo; // dedicated ViewBlock (light VP), never aliases view_ubo
 	RID shadow_depth_set; // set 0 for depth draws (batch/transform/shadowview/meshid)
 	RID shadow_sampler; // nearest sampler for texelFetch sampling
+	bool gne_shadow_esm = false; // GNE-019.5 slice-0
 	RID shadow_dummy_tex; // 1x1 R32F (set-2 placeholder)
 	RID shadow_dummy_arr; // 1-layer R32F array (set-2 placeholder)
 	RID shadow_dummy_buf; // 4 B storage (set-2 placeholder)
@@ -814,6 +815,7 @@ bool _gi_dispatch(float p_mode);
 	bool gpu_shadow_light_bind(int p_light_id, int p_shadow_id);
 	bool gpu_shadow_cull_dispatch();
 	bool gpu_shadow_render_maps();
+	void gpu_shadow_esm_set(bool p_enabled); // GNE-019.5 slice-0
 	Dictionary gpu_shadow_get_stats();
 	PackedInt32Array gpu_shadow_dbg_map(int p_type, int p_slot, int p_face); // [non_far, minx, miny, maxx, maxy, center*1000]
 	PackedFloat32Array gpu_shadow_dbg_vp(int p_bind, int p_cas); // 16 floats VP + 4 splits

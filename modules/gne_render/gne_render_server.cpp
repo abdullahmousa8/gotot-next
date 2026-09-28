@@ -1612,6 +1612,15 @@ layout(location = 0) out vec4 out_color;
 layout(location = 1) out float out_view_z;
 layout(location = 2) out vec4 out_normal;
 
+// GNE-019.5 slice-0: ESM read for the dir CSM (encode c = 40; see the fill
+// fragment). Hardware-linear filtering gives the soft penumbra; artifacts are
+// reported, not tuned silently.
+float gne_esm_arr(sampler2DArray arr, vec2 uv, int layer, float ref) {
+	float e = texture(arr, vec3(clamp(uv, vec2(0.0), vec2(1.0)), float(layer))).r;
+	float s = e * exp(-87.0 * ref); // lit iff map_e >= exp(c*ref): factor = clamp(E/exp(c*ref),0,1)
+	return clamp(s, 0.0, 1.0);
+}
+
 // GNE-019 shadow sampling implementation. Depth convention: the R32 maps hold
 // the rasterizer's gl_FragCoord.z (Vulkan viewport 0..1 over Godot
 // Vulkan-style 0..1 NDC), so ref = clamp(ndc_z) - bias with the SAME VP that
@@ -1661,6 +1670,9 @@ float gne_sample_cas(ShadowRec019 r, int cas, vec3 wp, float bias, bool is_spot,
 			return gne_pcf_2d(shadow_spot0, uv, 2048.0, ref);
 		}
 		return gne_pcf_2d(shadow_spot1, uv, 2048.0, ref);
+	}
+	if (params.shadow_cam.w > 0.5) {
+		return gne_esm_arr(shadow_csm, uv, cas, ref);
 	}
 	return gne_pcf_arr(shadow_csm, uv, cas, 2048.0, ref);
 }
@@ -1940,7 +1952,12 @@ params;
 layout(location = 0) out vec4 out_dist;
 
 void main() {
-	out_dist = vec4(v_ndc_z, 0.0, 0.0, 1.0); // raw ndc.z; sampler recomputes the identical value
+	// GNE-019.5 slice-0: dir CSM fills may ESM-encode (mode in light_pos.w).
+	float v = v_ndc_z;
+	if (params.light_pos.w > 0.5) {
+		v = exp(87.0 * v_ndc_z); // c near the float32 exp ceiling (e^88)
+	}
+	out_dist = vec4(v, 0.0, 0.0, 1.0);
 }
 )";
 
@@ -2741,6 +2758,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_shadow_cull_dispatch"), &GneRenderServer::gpu_shadow_cull_dispatch);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_render_maps"), &GneRenderServer::gpu_shadow_render_maps);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_get_stats"), &GneRenderServer::gpu_shadow_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_esm_set", "enabled"), &GneRenderServer::gpu_shadow_esm_set);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_dbg_map", "type", "slot", "face"), &GneRenderServer::gpu_shadow_dbg_map);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_dbg_dump", "layer", "path"), &GneRenderServer::gpu_shadow_dbg_dump);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_dbg_vp", "bind", "cas"), &GneRenderServer::gpu_shadow_dbg_vp);
@@ -7205,7 +7223,10 @@ bool GneRenderServer::_shadow_ensure_set2() {
 	// Lazy dummies: set 2 must exist (018-safe) even when no shadow map was
 	// ever created. Guarded sampling never reads them (enable = 0).
 	if (shadow_sampler.is_null()) {
-		RD::SamplerState ss;
+		RD::SamplerState ss; // GNE-019.5 slice-0: LINEAR for the ESM path (texelFetch ignores filtering)
+		ss.mag_filter = RD::SAMPLER_FILTER_LINEAR;
+		ss.min_filter = RD::SAMPLER_FILTER_LINEAR;
+		ss.mip_filter = RD::SAMPLER_FILTER_LINEAR;
 		shadow_sampler = rendering_device->sampler_create(ss);
 		shadow_dummy_tex = _shadow_make_r32(1, 1, false, 1, false);
 		shadow_dummy_arr = _shadow_make_r32(1, 1, true, 1, false);
@@ -7492,7 +7513,10 @@ int GneRenderServer::gpu_shadow_map_create(int p_type, int p_resolution) {
 		// KI-009: reuse-only. _shadow_ensure_set2 (the 018-safe lazy path) may
 		// have created these already; recreating orphaned them (1 Sampler + 2
 		// Textures + 1 StorageBuffer leaked per run).
-		RD::SamplerState ss; // nearest; texelFetch ignores filtering
+		RD::SamplerState ss; // GNE-019.5 slice-0: LINEAR for the ESM path (texelFetch ignores filtering)
+		ss.mag_filter = RD::SAMPLER_FILTER_LINEAR;
+		ss.min_filter = RD::SAMPLER_FILTER_LINEAR;
+		ss.mip_filter = RD::SAMPLER_FILTER_LINEAR;
 		if (shadow_sampler.is_null()) {
 			shadow_sampler = rendering_device->sampler_create(ss);
 		}
@@ -8009,6 +8033,11 @@ bool GneRenderServer::gpu_shadow_cull_dispatch() {
 	return true;
 }
 
+void GneRenderServer::gpu_shadow_esm_set(bool p_enabled) {
+	// GNE-019.5 slice-0: dir-CSM ESM prototype flag (default off).
+	gne_shadow_esm = p_enabled;
+}
+
 bool GneRenderServer::gpu_shadow_render_maps() {
 	if (!gpu_shadow_valid) {
 		print_error("[GNE] gpu_shadow_render_maps: no shadow store.");
@@ -8094,9 +8123,10 @@ bool GneRenderServer::gpu_shadow_render_maps() {
 			dp.light_pos[0] = b.splits[0];
 			dp.light_pos[1] = b.splits[1];
 			dp.light_pos[2] = b.splits[2];
-			dp.light_pos[3] = 0.0f;
+			dp.light_pos[3] = (b.type == 0 && gne_shadow_esm) ? 1.0f : 0.0f; // 019.5 slice-0 mode
 			Vector<Color> cc;
-			cc.push_back(Color(1.0f, 0.0f, 0.0f, 0.0f)); // R32 far = 1.0 dev
+			float far_val = (b.type == 0 && gne_shadow_esm) ? (float)exp(87.0) : 1.0f; // ESM far = e^87
+			cc.push_back(Color(far_val, 0.0f, 0.0f, 0.0f));
 			RD::DrawListID dl = rendering_device->draw_list_begin(fb, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH, cc, 1.0f, 0, Rect2(), 0);
 			if (dl == RD::INVALID_ID) {
 				print_error("[GNE] gpu_shadow_render_maps: draw_list_begin failed.");
@@ -8500,7 +8530,7 @@ draw_frame_seq++;
 	push.shadow_cam[0] = shadow_cam_basis[6];
 	push.shadow_cam[1] = shadow_cam_basis[7];
 	push.shadow_cam[2] = shadow_cam_basis[8];
-	push.shadow_cam[3] = 0.0f;
+	push.shadow_cam[3] = gne_shadow_esm ? 1.0f : 0.0f; // 019.5 slice-0 ESM mode
 	push.gi_min[0] = gi_min.x; push.gi_min[1] = gi_min.y; push.gi_min[2] = gi_min.z; push.gi_min[3] = 0.0f;
 	push.gi_max[0] = gi_max.x; push.gi_max[1] = gi_max.y; push.gi_max[2] = gi_max.z; push.gi_max[3] = 0.0f;
 	push.gi_dims[0] = (float)gi_gx; push.gi_dims[1] = (float)gi_gy; push.gi_dims[2] = (float)gi_gz; push.gi_dims[3] = 0.0f;

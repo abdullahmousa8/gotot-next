@@ -21,7 +21,7 @@ Update this file whenever a status changes.
 | Zero-copy presentation (RHI-level) | NOT solved by 020 (mitigation only: 4x fewer bytes, faster frames) | a milestone with RHI scope | spec_020 section 13 |
 | Cone culling default-ON | DISABLED by decision (dc = 0.48% < 10%; net -6.47%) | only if a directionally-coherent scene use-case appears (open-outdoors class) | spec_021 section 4 + spec_018_rev section 12 |
 | GI S3 RT-backend (hardware ray tracing) | R0-RT PARTIAL: scaffold works up to pipeline creation; vkCreateRayTracingPipelinesKHR fails (-3), root cause open | engine-level diagnosis, then re-decide S3 | spec_022 section 7 |
-| VSM / RT / volumetric shadows | IN PROGRESS: 019.5 opened - RFC committed (docs/rfc_019_5_shadow_filters.md); slice-0 = ESM prototype on directional CSM (flag default OFF) | volumetric + RT parts remain deferred | spec_019 section 7 + RFC 019.5 |
+| VSM / RT / volumetric shadows | 019.5 slice-0 DONE: ESM prototype measured - softness hypothesis refuted (band ratio 0.994); PCF-4 stays; ESM flag stays inert (default OFF). Next soft-shadow step (when a requirement exists): VSM/EVSM per RFC | volumetric + RT parts remain deferred | rfc_019_5_shadow_filters.md |
 | KI-016 / 11-M1 | Float-field convergence instrumentation (measurement infrastructure ONLY; NOT a section-11 criterion change) | BACKLOG - Priority: Medium | when a GI/temporal measurement need arises; build as shared instrumentation | spec_022 section 11-M1 |
 | 015.5 partial checklist gaps | Recorded partial (5/8 + 3 documented items) | per item, as scheduled | progress section 30 |
 

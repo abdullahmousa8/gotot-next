@@ -973,3 +973,16 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - FIRST FULL RUN: PASS 12/12 (build; gt_regress; v16/v17/v18/v18-rev/v19/v20/v21
   all byte-exact vs baseline; gi_gate2; gi_shade; 0 error lines). History row
   recorded.
+## §46. GNE-019.5 slice-0 — ESM prototype measured: softness hypothesis refuted (2026-09-29)
+
+- RFC (40d9f00) + recon (4ffc125) + implementation: flag `gne_shadow_esm`
+  (default OFF), dir-CSM fill encode (exp(c*ndc), mode in the fill push), ESM read
+  (texture + `e * exp(-c*ref)`; c=87 near the float32 ceiling), CSM sampler ->
+  LINEAR (PCF texelFetch unaffected), scene main_019_5 with band/edge instruments.
+- Measured: E1 FAIL (band ratio 0.994; scan 2 vs 3 px - bilinear ESM adds no
+  width), E2 PASS, E3 measured (~1.35 vs ~1.78 ms reps p50), E4 byte-equal,
+  E5 CVS 12/12 PASS (all literals byte-exact, zero errors).
+- Decision (owner): PCF-4 stays; ESM stays as an inert prototype flag; future
+  soft-shadow work goes to VSM/EVSM (moments + blur). Clean negative result with
+  reusable instruments; RFC updated with full evidence.
+- Commits: 40d9f00, 4ffc125, + implementation/results commit.

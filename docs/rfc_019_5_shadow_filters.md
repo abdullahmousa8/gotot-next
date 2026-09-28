@@ -49,3 +49,31 @@ temporal trick.
 - c chosen structurally (c=40 documented; artifacts reported, not silently tuned).
 - Flag `gne_shadow_esm` default OFF; scene `main_019_5` for the OFF/ON comparison;
   CVS baseline untouched (flag off default).
+## Slice-0 RESULTS (2026-09-29) - measured; softness hypothesis REFUTED
+
+Scene `main_019_5` (4 boxes, dir light, CSM-only; flag `gne_shadow_esm` default OFF).
+- E1 (penumbra width >= 2x): FAIL - quantitative: transition-band counts (band from
+  the measured plateaus: umbra 0.631 / lit 0.958, band 0.68-0.92): PCF 3542 vs ESM
+  3522 pixels (ratio 0.994); scanline median widths 3 (PCF) vs 2 (ESM). Bilinear
+  filtering of the exp-encoded map - the only filter stage ESM gets without extra
+  passes - does NOT widen the penumbra at this scene/screen scale; the hardware
+  filter acts over ~1 texel, the same class as the PCF-4 staircase.
+- E2 (lit-plateau tolerance): PASS - mean |diff| 8.6e-5 over lit plateaus.
+- E3 (cost): measured; render_maps+draw reps p50 ~1.35ms (PCF) vs ~1.78ms (ESM) -
+  within run noise (sync-heavy route); evidence-only.
+- E4 (determinism): PASS - ON-state redraws byte-equal.
+- E5 (CVS): full run PASS 12/12 with the flag default OFF - all historical
+  literals byte-exact; zero error lines.
+- Calibration captured at real scene depths: the umbra NDC depth gap ~0.086;
+  c=40 gives factor ~0.03 (partial), c=87 (near the float32 exp ceiling e^88)
+  gives ~0 - ESM in raw NDC space occludes correctly; the softness limit is the
+  filter width, not the encoding.
+- Evidence artifacts: s195_pcf.png / s195_esm.png (operator temp area; visual
+  audit), logs s195_run1..4, sig file s195_sig4.
+
+DECISION (owner, recorded): keep PCF-4 as the shipping shadow filter; the ESM
+path remains as a default-OFF prototype flag (zero cost when off; CVS green).
+A future soft-shadow requirement goes to the VSM/EVSM direction (moments + real
+multi-texel blur), per this RFC's decision path - not to hardware-filter-only ESM.
+Slice-0 closes as a clean negative on its own hypothesis; the scene, edge/band
+instruments and the evidence pipeline are reusable for the VSM/EVSM slice.
