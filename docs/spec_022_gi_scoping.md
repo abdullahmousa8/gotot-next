@@ -276,18 +276,28 @@ front, same pattern as S1:
   recorded values (byte-equal printed sequences). No S2 regression gate ships before
   this verification exists.
 
-### 9.3 "GI" naming gate (official acceptance criterion, built FIRST)
+### 9.3 "GI" naming gate (official acceptance criterion; RAISED bar - Architect, 2026-09-28)
 
-- Scene: light in region A; a wall separates region B; every hit point inside B lies
-  outside the light's range and the gate run uses miss-ambient = 0, so direct radiance
-  in B is identically zero.
-- Gate: after N accumulation frames a deep-B probe shows avg radiance > 0 (beyond a
-  documented float-noise floor, e.g. > 1e-3) WHILE its single-shot direct-only reading
-  (mode RAW, bounce disabled, same scene) is exactly 0.0.
-- Only after this gate passes may the milestone use the word "GI" in any claim. The
-  gate is built before any performance tuning or shading integration.
-- Honesty note: the current direct model has no per-light shadowing/NdotL (occlusion
-  comes from first-hit only); the gate is designed to be strict under that model.
+"A non-zero value alone" is rejected as insufficient evidence (same discipline as F6 /
+KI-013 / the S1 closed-form). Two companion tests are required:
+
+- **(a) POSITIVE - plausible range, not merely non-zero:** region A is lit (surfaces in
+  range); region B has every hit point outside the light's range and the gate run uses
+  miss-ambient = 0 (direct in B identically zero); a barrier row separates A and B.
+  After N accumulation frames the deep-B probe average must fall INSIDE a pre-computed
+  plausible interval - an independent in-scene calculation of the expected bounced
+  level from light intensity, albedo and the A<->B geometry (tolerance x2-3) - not
+  merely > 0.
+- **(b) NEGATIVE - connection cut:** the same scene with the optical connection between
+  A and B cut by the barrier (light present, zero ambient): the deep-B probe must read
+  EXACTLY 0.0 (byte-zero, not "small"). If the positive passes but the negative shows
+  non-zero, that is a LEAK indicator - transport reached B by an unintended path - and
+  must be diagnosed before any naming.
+  Pre-registered possible finding: this implementation's field sampling has no
+  per-sample occlusion, so the negative test specifically probes that property; a leak
+  result is a legitimate outcome to report, not a reason to soften the test.
+- Only BOTH passing opens the "GI" label - after gates 9.1 and 9.2, and before any
+  performance tuning or shading integration.
 
 ### 9.4 Order (binding)
 
