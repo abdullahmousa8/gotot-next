@@ -189,7 +189,7 @@
 ## KI-013: gt_regress FAILED Flag Reset By The XFAIL Scene (Harness, Pre-Existing)
 
 **Date:** 2026-09-28
-**Status:** Open - masking defect FIXED 2026-09-28 (see Update); main_008b own-failure disposition pending
+**Status:** Open - masking defect FIXED; main_008b failure CONFIRMED ISOLATED (scene criterion threshold, not a critical path); disposition choice pending (see Updates)
 **Severity:** Medium (masked failures - any scene failing BEFORE the main_012 XFAIL call is forgiven)
 **Owner:** GNE Architecture
 
@@ -209,6 +209,15 @@
 - temp\opencode\r0_dbg_regress.bat / r0_dbg_mask.bat runs (repro), r0_baseline\r0_verdict_summary.txt.
 
 **Update 2026-09-28 (directive task A completed):** the masking defect is fixed in `tools/gt_regress.bat`: `set FAILED=0` initialization added; the XFAIL branch no longer resets the accumulated flag (`if not "%XFAIL%"=="XFAIL" set FAILED=1`); REM note added. Validated by scenario runs: [008b + 012-XFAIL] -> FAIL (exit 1, no masking), [012-XFAIL only] -> PASS (exit 0), [007 only] -> PASS (exit 0). Post-fix battery re-run shows the true per-scene state; main_008b now surfaces its own rc=75 openly - its disposition is tracked under directive task B.
+
+**Update 2026-09-28 (directive task B completed - 008b severity: ISOLATED):** rc=75 is the scene's own acceptance-criterion threshold, not a shared/critical-path defect.
+- Miss set = the entire sampled small-radius band: every miss has projected radius r in [0.41, 0.67] px (positions scattered, no index pattern); the center pixel is background; nearest other green >= 10 px away.
+- Counterfactual (diagnostic copy, threshold 0.35 -> 0.75 only): misses 32 -> 1, with 130 low-radius cubes reclassified as subpixel-skips (790 -> 663 checked). Mechanism confirmed: at 1x rasterization a cube below ~1 px can cover zero samples however correct the pipeline is; SUBPIXEL_R_PX=0.35 sits below that limit (true can-vanish radius ~0.9-1.0 px).
+- The shared stages pass their own rigor checks concurrently: GPU-vs-CPU cull delta=0, compact set_ok=true, no dropped clearly-visible cubes, drawargs repeat + full-frame repeat deterministic.
+- Count variation 20..32 across contexts = the KI-012 window-state class: 1152x648 contexts -> visible 3680 / miss 20; ~1920x1009 contexts -> visible 3778 / miss 32 (windows currently auto-maximize right after open; probe: main_008 with --resolution 1152x648 printed 1152 then 1920x1009). The FAIL outcome is invariant - only the sampled band size moves.
+- Onset (rc=0 at the rename sweep, pre-017/018/019 engine): candidates only, not proven - (i) pre-019 AABB-occluder HZB may have (falsely) occluded part of the small far cubes; (ii) run-environment state. Recorded as open.
+- Implication for 018-rev: none found - the rev path rides the fixed 1920x1080 cluster grid and the mat_light flow; 008b's criterion does not gate it.
+- Disposition (Owner): fix the scene criterion (~1.0 threshold / coverage-aware) or mark 008b deliberately as XFAIL (visible, by design). No engine change proposed.
 
 ## 015.5 C6 status (closed in 015.6)
 
