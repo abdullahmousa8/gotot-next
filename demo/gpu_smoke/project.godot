@@ -4,6 +4,11 @@ config_version=5
 
 config/name="GneGpuSmoke"
 run/main_scene="res://main.tscn"
+boot_splash/bg_color=Color(0.07058823529411765, 0.10196078431372549, 0.14901960784313725, 1)
+boot_splash/image="res://boot_splash.png"
+boot_splash/show_image=true
+boot_splash/stretch_mode=1
+boot_splash/use_filter=true
 
 [rendering]
 
