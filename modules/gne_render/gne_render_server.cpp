@@ -1041,6 +1041,19 @@ float gne_backface_dot_view(vec3 axis_cull, vec3 light_pos_cull, vec3 anchor_cul
 	}
 	return dot(to_l / dl, axis_cull);
 }
+
+// Box variant (unit 2c): direction from the AABB point CLOSEST to the light -
+// the most light-favorable anchor, so a cull can only get MORE conservative.
+// Light inside the box -> 1.0 (no cull).
+float gne_backface_dot_box(vec3 axis_cull, vec3 light_pos_cull, vec3 bmin, vec3 bmax) {
+	vec3 q = clamp(light_pos_cull, bmin, bmax);
+	vec3 to_l = light_pos_cull - q;
+	float dl = length(to_l);
+	if (dl < 1e-5) {
+		return 1.0;
+	}
+	return dot(to_l / dl, axis_cull);
+}
 float gne_backface_dot(mat4 view, vec3 n_world, vec3 l_world, vec3 anchor_world) {
 	vec3 axis = gne_normal_to_cull(view, n_world);
 	vec3 lc = gne_cull_frame((view * vec4(l_world, 1.0)).xyz);
@@ -1447,7 +1460,7 @@ void main() {
 		if (rev_cullable) {
 			// Skip lights the whole cluster faces away from (conservative: only when
 			// even the best-aligned normal direction is behind the light).
-			if (gne_backface_dot_view(rev_cone.xyz, vc, bmin) < -rev_sin) {
+			if (gne_backface_dot_box(rev_cone.xyz, vc, bmin, bmax) < -rev_sin) {
 				continue;
 			}
 		}
@@ -2626,6 +2639,8 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_depth"), &GneRenderServer::gpu_raster_read_depth);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz", "x", "y"), &GneRenderServer::gpu_raster_read_viewz);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_normal", "x", "y"), &GneRenderServer::gpu_raster_read_normal);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz_all"), &GneRenderServer::gpu_raster_read_viewz_all);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_normal_all"), &GneRenderServer::gpu_raster_read_normal_all);
 	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_format"), &GneRenderServer::gpu_raster_get_depth_format);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_depth_enabled"), &GneRenderServer::gpu_mesh_get_depth_enabled);
 	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_enabled"), &GneRenderServer::gpu_raster_get_depth_enabled);
@@ -2887,6 +2902,42 @@ void GneRenderServer::_destroy_mesh() {
 		if (light_cull_shader.is_valid()) {
 			rendering_device->free_rid(light_cull_shader);
 			light_cull_shader = RID();
+		}
+		if (light_cone_uniform_set.is_valid()) {
+			rendering_device->free_rid(light_cone_uniform_set);
+			light_cone_uniform_set = RID();
+		}
+		if (light_cone_pipeline.is_valid()) {
+			rendering_device->free_rid(light_cone_pipeline);
+			light_cone_pipeline = RID();
+		}
+		if (light_cone_shader.is_valid()) {
+			rendering_device->free_rid(light_cone_shader);
+			light_cone_shader = RID();
+		}
+		if (light_cone_sampler.is_valid()) {
+			rendering_device->free_rid(light_cone_sampler);
+			light_cone_sampler = RID();
+		}
+		if (cones_selftest_set.is_valid()) {
+			rendering_device->free_rid(cones_selftest_set);
+			cones_selftest_set = RID();
+		}
+		if (cones_selftest_pipeline.is_valid()) {
+			rendering_device->free_rid(cones_selftest_pipeline);
+			cones_selftest_pipeline = RID();
+		}
+		if (cones_selftest_shader.is_valid()) {
+			rendering_device->free_rid(cones_selftest_shader);
+			cones_selftest_shader = RID();
+		}
+		if (cones_selftest_in_buffer.is_valid()) {
+			rendering_device->free_rid(cones_selftest_in_buffer);
+			cones_selftest_in_buffer = RID();
+		}
+		if (cones_selftest_out_buffer.is_valid()) {
+			rendering_device->free_rid(cones_selftest_out_buffer);
+			cones_selftest_out_buffer = RID();
 		}
 		if (mat_light_pipeline.is_valid()) {
 			rendering_device->free_rid(mat_light_pipeline);
@@ -8684,6 +8735,7 @@ PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
 void GneRenderServer::gpu_light_cones_clear() {
 	if (gpu_light_valid && !cluster_cone_buffer.is_null()) {
 		rendering_device->buffer_clear(cluster_cone_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 16));
+		cone_src_frame = draw_frame_seq; // cleared cones count as a fresh source
 	}
 }
 
@@ -8704,7 +8756,7 @@ PackedInt32Array GneRenderServer::gpu_light_debug_cluster(int p_tx, int p_ty, in
 	uint32_t n = 0;
 	memcpy(&n, cb.ptr(), 4);
 	ret.push_back((int32_t)n);
-	uint32_t want = n < 4 ? n : 4;
+	uint32_t want = n < (uint32_t)GNE_CLUSTER_LIGHT_CAP ? n : (uint32_t)GNE_CLUSTER_LIGHT_CAP; // full list (was capped at 4)
 	if (want > 0) {
 		Vector<uint8_t> ib = rendering_device->buffer_get_data(cluster_index_buffer,
 				(uint32_t)(tid * GNE_CLUSTER_LIGHT_CAP * 4), want * 4);
@@ -8900,6 +8952,21 @@ float GneRenderServer::gpu_raster_read_viewz(int p_x, int p_y) {
 	return v;
 }
 
+// GNE-018-rev: full-frame viewz read (R1 tooling; one download instead of W*H calls).
+PackedFloat32Array GneRenderServer::gpu_raster_read_viewz_all() {
+	PackedFloat32Array out;
+	if (!gpu_scene_valid || !gpu_raster_valid) {
+		return out;
+	}
+	Vector<uint8_t> data = rendering_device->texture_get_data(raster_viewz_texture, 0);
+	if (data.size() != RASTER_TARGET_W * RASTER_TARGET_H * 4) {
+		return out;
+	}
+	out.resize(RASTER_TARGET_W * RASTER_TARGET_H);
+	memcpy(out.ptrw(), data.ptr(), (size_t)data.size());
+	return out;
+}
+
 
 // GNE-018-rev: half-float decode for the normal-attachment spot checks.
 static float gne_half_to_float(uint16_t h) {
@@ -8951,6 +9018,27 @@ PackedFloat32Array GneRenderServer::gpu_raster_read_normal(int p_x, int p_y) {
 		uint16_t hbits;
 		memcpy(&hbits, p + i * 2, 2);
 		out.append(gne_half_to_float(hbits));
+	}
+	return out;
+}
+
+// GNE-018-rev: full-frame normal read (R1 tooling; RGBA16F decoded to 4 floats/px).
+PackedFloat32Array GneRenderServer::gpu_raster_read_normal_all() {
+	PackedFloat32Array out;
+	if (!gpu_scene_valid || !gpu_raster_valid) {
+		return out;
+	}
+	Vector<uint8_t> data = rendering_device->texture_get_data(raster_normal_texture, 0);
+	if (data.size() != RASTER_TARGET_W * RASTER_TARGET_H * 8) {
+		return out;
+	}
+	out.resize(RASTER_TARGET_W * RASTER_TARGET_H * 4);
+	const uint8_t *p = data.ptr();
+	float *w = out.ptrw();
+	for (int i = 0; i < RASTER_TARGET_W * RASTER_TARGET_H * 4; i++) {
+		uint16_t hb;
+		memcpy(&hb, p + i * 2, 2);
+		w[i] = gne_half_to_float(hb);
 	}
 	return out;
 }

@@ -640,6 +640,8 @@ public:
 	PackedFloat32Array gpu_raster_read_depth();
 	float gpu_raster_read_viewz(int p_x, int p_y);
 	PackedFloat32Array gpu_raster_read_normal(int p_x, int p_y);
+	PackedFloat32Array gpu_raster_read_viewz_all(); // GNE-018-rev R1 tooling
+	PackedFloat32Array gpu_raster_read_normal_all(); // GNE-018-rev R1 tooling
 	//
 	// --- TEST-ONLY GETTERS --- (probe the 009 wiring from GDScript).
 	// Returns the depth attachment format enum value (125 == D32_SFLOAT) or -1
