@@ -2948,6 +2948,18 @@ void GneRenderServer::_destroy_mesh() {
 			rendering_device->free_rid(gi_trace_shader);
 			gi_trace_shader = RID();
 		}
+		// GNE-022 section 10: light set-1 (+ per-front GI sets) reference
+		// gi_sampler/atlases: free them BEFORE those dependencies die below.
+		if (mat_light_tex_set.is_valid()) {
+			rendering_device->free_rid(mat_light_tex_set);
+			mat_light_tex_set = RID();
+		}
+		for (int gds = 0; gds < 2; gds++) {
+			if (gi_draw_sets[gds].is_valid()) {
+				rendering_device->free_rid(gi_draw_sets[gds]);
+				gi_draw_sets[gds] = RID();
+			}
+		}
 		if (gi_sampler.is_valid()) {
 			rendering_device->free_rid(gi_sampler);
 			gi_sampler = RID();
@@ -2963,10 +2975,6 @@ void GneRenderServer::_destroy_mesh() {
 		if (light_cull_uniform_set.is_valid()) {
 			rendering_device->free_rid(light_cull_uniform_set);
 			light_cull_uniform_set = RID();
-		}
-		if (mat_light_tex_set.is_valid()) {
-			rendering_device->free_rid(mat_light_tex_set);
-			mat_light_tex_set = RID();
 		}
 		if (mat_light_uniform_set.is_valid()) {
 			rendering_device->free_rid(mat_light_uniform_set);
@@ -6902,7 +6910,7 @@ bool GneRenderServer::_light_ensure_geo() {
 	u4.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
 	u4.binding = 4;
 	u4.append_id(gi_sampler.is_valid() ? gi_sampler : tex_sampler);
-	u4.append_id(gi_atlas.is_valid() ? gi_atlas : tex_dummy);
+	u4.append_id(gi_atlas.is_valid() ? _gi_front_atlas() : tex_dummy);
 	lu.push_back(u4);
 	mat_light_tex_set = rendering_device->uniform_set_create(lu, mat_light_shader, 1);
 	if (mat_light_tex_set.is_null()) {
@@ -8498,6 +8506,42 @@ draw_frame_seq++;
 	push.gi_dims[0] = (float)gi_gx; push.gi_dims[1] = (float)gi_gy; push.gi_dims[2] = (float)gi_gz; push.gi_dims[3] = 0.0f;
 	push.gi_params[0] = (gi_atlas.is_valid() && gne_gi_enabled) ? 1.0f : 0.0f;
 	push.gi_params[1] = 1.0f; push.gi_params[2] = 0.0f; push.gi_params[3] = 0.0f;
+	// GNE-022 section 10: the fragment must sample the CURRENT front atlas
+	// (the trace ping-pongs gi_atlas/gi_atlas2). One cached set per front,
+	// built lazily; freed with the light sets in _destroy_mesh.
+	RID light_set1_use = mat_light_tex_set;
+	if (gne_gi_enabled && gi_sampler.is_valid()) {
+		int gfront = gi_front;
+		if (gi_draw_sets[gfront].is_null()) {
+			RID fa = (gfront == 0) ? gi_atlas : gi_atlas2;
+			if (fa.is_valid()) {
+				Vector<RD::Uniform> lu2;
+				const RID lbufs2[4] = {
+					light_buffer, cluster_offset_buffer, cluster_count_buffer, cluster_index_buffer
+				};
+				for (uint32_t b2 = 0; b2 < 4; b2++) {
+					RD::Uniform u2;
+					u2.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+					u2.binding = b2;
+					u2.append_id(lbufs2[b2]);
+					lu2.push_back(u2);
+				}
+				RD::Uniform u4b;
+				u4b.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+				u4b.binding = 4;
+				u4b.append_id(gi_sampler);
+				u4b.append_id(fa);
+				lu2.push_back(u4b);
+				RID ns = rendering_device->uniform_set_create(lu2, mat_light_shader, 1);
+				if (ns.is_valid()) {
+					gi_draw_sets[gfront] = ns;
+				}
+			}
+		}
+		if (gi_draw_sets[gfront].is_valid()) {
+			light_set1_use = gi_draw_sets[gfront];
+		}
+	}
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
 	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
@@ -8508,7 +8552,7 @@ draw_frame_seq++;
 	}
 	rendering_device->draw_list_bind_render_pipeline(dl, mat_light_pipeline);
 	rendering_device->draw_list_bind_uniform_set(dl, mat_light_uniform_set, 0);
-	rendering_device->draw_list_bind_uniform_set(dl, mat_light_tex_set, 1);
+	rendering_device->draw_list_bind_uniform_set(dl, light_set1_use, 1);
 	if (shadow_set2.is_null() && !_shadow_ensure_set2()) {
 		print_error("[GNE] gpu_material_draw_lights: shadow set-2 unavailable.");
 		return false;

@@ -253,6 +253,7 @@ bool gne_present_lowres = false;
 RID gi_atlas;
 RID gi_atlas2;
 RID gi_sampler;
+RID gi_draw_sets[2];
 RID gi_trace_set_a;
 RID gi_trace_set_b;
 int gi_front = 0;
@@ -951,9 +952,9 @@ bool _gi_dispatch(float p_mode);
 
 	// --- GNE-015.5: Resource Pool (SPEC 015.5 v0.2, D3-D1..D4 resolved) ---
 	// A REAL transient pool: one backing buffer, bump cursor + free-list, with
-	// lifetime-based aliasing (SPEC §3.1/§3.9). This is the first milestone in
+	// lifetime-based aliasing (SPEC ?3.1/?3.9). This is the first milestone in
 	// the module that allocates pool memory at all - the 015 "pool" was CPU
-	// accounting only (SPEC §2.1).
+	// accounting only (SPEC ?2.1).
 	bool gpu_pool_create(int p_bytes);
 	// Allocates with an explicit LIFETIME [first_pass, last_pass]. Two blocks
 	// whose lifetimes are disjoint may share one offset (aliasing). Returns the
@@ -968,7 +969,7 @@ bool _gi_dispatch(float p_mode);
 	// This is the criterion-1 proof: real memory, not accounting numbers.
 	bool gpu_pool_verify(const String &p_tag, int p_value);
 	// Frees every pool RID. Call only AFTER releasing pool-owned uniform sets
-	// (SPEC contract_015_5_lifecycle §2.4 - the 010 lesson: freeing uniforms
+	// (SPEC contract_015_5_lifecycle ?2.4 - the 010 lesson: freeing uniforms
 	// after their buffers yields "Attempted to free invalid ID").
 	void gpu_pool_destroy();
 
