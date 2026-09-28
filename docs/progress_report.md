@@ -701,5 +701,34 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 4. عتبة C4 المطلقة (5000) خاطئة لمشهد متفرق ⇒ عتبة نسبية (changed > colored/4).
 5. مرساة C5 على بقعة specular متحركة ⇒ القياس على وجه diffuse ثابت بنفس البكسلات.
 
+### 32.1 — 016 Bugs Fixed (Detailed)
+
+**Bug 1: Push constant forgotten.**
+- Impact: material params (light/camera) never reached the shader — pipeline error + black frame.
+- Fix: added `draw_list_set_push_constant` in `gpu_material_draw`.
+- Detection: engine error line + empty frame, C1 already green.
+
+**Bug 2: Teardown order (mat set freed too late).**
+- Impact: `mat_batch_uniform_set` freed AFTER `_destroy_mesh_batch` released shared buffers it references ⇒ `free invalid ID` on exit.
+- Fix: moved material teardown FIRST in `_destroy_mesh` (sets before buffers — the documented order rule).
+- Detection: `Attempted to free invalid ID` at shutdown.
+
+**Bug 3: static_assert on private struct from global scope.**
+- Impact: build failed (MSVC C2248 — cannot access private struct).
+- Fix: moved the assert INSIDE `gpu_material_create` (kept, not removed — the 64B contract still enforced).
+- Detection: MSVC compile error.
+
+**Bug 4: C4 absolute threshold wrong for a sparse scene.**
+- Impact: 966 changed pixels failed a hardcoded 5000 gate although the light response was correct (probe 0.34→0.065).
+- Fix: relative gate (changed > colored/4).
+- Detection: gate FAIL code=826.
+
+**Bug 5: C5 anchor on a moving specular highlight.**
+- Impact: brightest-pixel anchor moved when roughness changed ⇒ both reads ~ambient ⇒ false "no effect".
+- Fix: anchor on a static diffuse face, measure the SAME pixels twice.
+- Detection: FAIL code=828 (means 0.098 vs 0.099) within one run.
+
+**Lesson:** Each bug = documented lesson (see docs/lessons.md).
+
 ### التالي
 017 (Textures): SPEC ثم Contracts ثم تنفيذ.

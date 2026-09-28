@@ -64,6 +64,39 @@
 - **offline فقط**: لا ربط basisu/libktx في الوحدة؛ الـruntime يقرأ حاوية KTX2 ويرفع الـmips خامًا.
 - magic خاص `GNETEX11`؟ — يُحسم في D5-1 (مع درس GOTOML11: الـmagic قرار دائم).
 
+### 3.5 Why .gtex (GNE-owned format)?
+
+**Reasons:**
+
+1. **Runtime format independence:**
+   GNE runtime does not parse KTX2.
+   KTX2 is used only by offline `tex_import`.
+
+2. **Custom mip-chain metadata:**
+   GNE-specific fields: LOD bias, streaming hints, residency flags.
+   KTX2 does not support arbitrary metadata.
+
+3. **Direct GPU upload:**
+   .gtex is designed for GNE's `gpu_texture_*` upload path.
+   No KTX2 re-parse at runtime.
+
+4. **Baked data:**
+   Material slots pre-resolved (5 slots per material).
+   KTX2 has no notion of "material slot".
+
+**Alternative considered:** Use KTX2 directly at runtime.
+
+**Why rejected:**
+- Would require runtime KTX2 parser (larger dep).
+- No GNE-specific metadata support.
+- Cleaner offline → runtime boundary.
+- Audit v1.0: KTX2 = INTEGRATE, but at asset level not runtime.
+
+**Trade-off accepted:**
+- Maintenance cost (parser/writer).
+- Mitigated: small, stable, versioned format.
+- Documented in `contract_017_formats.md`.
+
 ## 4. معايير القبول (PASS — 8 مقترحة)
 1. ملف KTX2 يُقرأ (magic + mips سليمة، أحجام مطابقة للرأس).
 2. حمولة Basis تظهر مفكوكة صحيحة (أول texel = القيمة المخبوزة — دليل الـoffline tool).
