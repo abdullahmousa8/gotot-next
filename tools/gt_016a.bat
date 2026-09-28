@@ -66,7 +66,7 @@ if not errorlevel 1 (
   echo [FAIL] ERROR: line present in output
   set FAILED=1
 )
-findstr /c:"RID allocations of type" "%OUT%" >nul 2>&1
+findstr /r /c:"RID.*of type" "%OUT%" >nul 2>&1
 if not errorlevel 1 (
   echo [FAIL] RID cleanup lines present
   set FAILED=1

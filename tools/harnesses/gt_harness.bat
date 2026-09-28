@@ -13,7 +13,7 @@ REM  Per scene it does TWO full runs and requires, for both runs:
 REM    rc == 0                         both runs
 REM    a "PASS" marker                 present
 REM    no "ERROR:" line                absent
-REM    no "RID allocations of type"    absent
+REM    no RID leak lines (RID.*of type)    absent
 REM    the "sig=" line identical       DET (when the scene prints one)
 REM  main_007 / main_008 print no sig= line, so they are gated on
 REM  rc/marker/ERROR only and reported as det=N/A.
@@ -105,9 +105,9 @@ findstr /c:"ERROR:" "%LOGA%" >nul 2>&1
 if not errorlevel 1 set "BAD=1"
 findstr /c:"ERROR:" "%LOGB%" >nul 2>&1
 if not errorlevel 1 set "BAD=1"
-findstr /c:"RID allocations of type" "%LOGA%" >nul 2>&1
+findstr /r /c:"RID.*of type" "%LOGA%" >nul 2>&1
 if not errorlevel 1 set "BAD=1"
-findstr /c:"RID allocations of type" "%LOGB%" >nul 2>&1
+findstr /r /c:"RID.*of type" "%LOGB%" >nul 2>&1
 if not errorlevel 1 set "BAD=1"
 
 REM --- DET: first sig= line must be byte-for-byte identical across runs ---
