@@ -1,6 +1,7 @@
 # GNE-018-rev: Cluster Slab Coverage Gap (measured; decision pending)
 
-**Date:** 2026-09-28. **Status:** MEASURED - awaiting Architect scope decision before unit 2c.
+**Date:** 2026-09-28. **Status:** FIXED behind the 018-rev flag (option (a), Architect-approved).
+F6 analytic proof and the dc-impact measurement are recorded in KI-014 (known_issues.md).
 
 ## What was measured
 

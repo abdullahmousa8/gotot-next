@@ -237,6 +237,8 @@ class GneRenderServer : public Object {
 	RID cones_selftest_out_buffer;
 	int raster_epoch = 0; // GNE-018-rev: completed material raster count
 	int cone_src_epoch = 0; // raster_epoch sampled at the last cones build
+	bool light_cone_enabled = false; // GNE-018-rev flag (KI-014 slab + 2c filter)
+	bool light_cone_env_checked = false; // env override read once (measurement)
 	int light_count = 0;
 	// GNE-018 cluster math inputs (captured in set_camera for cull + frag).
 	float cam_near_v = 300.0f;
@@ -736,6 +738,7 @@ public:
 	bool gpu_light_cones_build(); // GNE-018-rev unit 2b
 	PackedInt32Array gpu_light_cone_epochs(); // {raster_epoch, cone_src_epoch}
 	PackedFloat32Array gpu_light_cones_selftest(int p_mode); // unit 2b isolation
+	void gpu_light_set_normal_cone(bool p_enabled); // GNE-018-rev
 
 	// GNE-019: shadow maps + real-depth HZB flag (TEST-ONLY). p_type: 0 = CSM
 	// (res must be 2048), 1 = cube (1024), 2 = spot (2048). Returns a handle

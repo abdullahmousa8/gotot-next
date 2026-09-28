@@ -11,6 +11,7 @@
 | KI-011 | Specular not gated by NdotL (pre-existing) | Unassigned | Owner decision | Open |
 | KI-012 | Demo window size externally mutable (pre-existing) | Unassigned | Owner decision | Open |
 | KI-013 | gt_regress FAILED reset by XFAIL scene (harness) | Unassigned | Owner decision | Open |
+| KI-014 | Cluster lists under-cover corner pixels (linear vs euclidean slice) | 018-rev (fixed behind rev flag) | Before R1 | FIXED (gated) |
 
 ## Closure Schedule
 

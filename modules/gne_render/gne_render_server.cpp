@@ -1252,7 +1252,7 @@ void main() {
 		vec3 aw = vec3(tin.inp[base + 24u], tin.inp[base + 25u], tin.inp[base + 26u]);
 		tout.outp[i * 2u + 0u] = gne_backface_dot(view, nw, lw, aw);
 		tout.outp[i * 2u + 1u] = length(gne_normal_to_cull(view, nw));
-	} else {
+	} else if (params.mode == 3u) {
 		uint base = i * 12u;
 		float fx = tin.inp[base + 0u];
 		float fy = tin.inp[base + 1u];
@@ -1286,6 +1286,39 @@ void main() {
 		tout.outp[i * 5u + 2u] = z1;
 		tout.outp[i * 5u + 3u] = inb ? 1.0 : 0.0;
 		tout.outp[i * 5u + 4u] = z0 - zl;
+	} else {
+		// mode 4 (F6): slab-bound analytic verification over dense pixel samples.
+		uint base = i * 6u;
+		float tanv = tin.inp[base + 0u];
+		float aspect = tin.inp[base + 1u];
+		float nr = tin.inp[base + 2u];
+		float fr = tin.inp[base + 3u];
+		float tzf = tin.inp[base + 4u];
+		float lratio = fr / nr;
+		float z0 = nr * pow(lratio, tzf / 24.0);
+		float z1 = nr * pow(lratio, (tzf + 1.0) / 24.0);
+		float cosmax = 1.0 / sqrt(1.0 + tanv * tanv * (1.0 + aspect * aspect));
+		float bound = z0 * cosmax;
+		float min_slack = 1e9;
+		float viol_old = 0.0;
+		for (int ky = -16; ky <= 16; ky++) {
+			for (int kx = -16; kx <= 16; kx++) {
+				float nx = float(kx) / 16.0;
+				float ny = float(ky) / 16.0;
+				float L = sqrt(nx * nx * tanv * tanv * aspect * aspect + ny * ny * tanv * tanv + 1.0);
+				for (int ei = 0; ei < 3; ei++) {
+					float e = (ei == 0) ? z0 : ((ei == 1) ? (0.5 * (z0 + z1)) : (z1 * 0.999));
+					float zl = e / L;
+					min_slack = min(min_slack, zl - bound);
+					if (zl < z0) {
+						viol_old += 1.0;
+					}
+				}
+			}
+		}
+		tout.outp[i * 3u + 0u] = bound;
+		tout.outp[i * 3u + 1u] = min_slack;
+		tout.outp[i * 3u + 2u] = viol_old;
 	}
 }
 )";
@@ -1310,6 +1343,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(push_constant, std430) uniform CullParams {
 	vec4 dims;   // x = light_count, y = tan_half_fov_v, z = aspect, w = unused
 	vec4 range;  // x = near, y = far, z = raster_w, w = raster_h
+	vec4 rev;    // GNE-018-rev: x = flag (1 = extended slab; cone filter later)
 }
 params;
 
@@ -1372,12 +1406,17 @@ void main() {
 	float lratio = zfar / znear;
 	float z0 = znear * pow(lratio, float(tz) / 24.0);
 	float z1 = znear * pow(lratio, float(tz + 1u) / 24.0);
+	// GNE-018-rev (KI-014): the fragment assigns slices by EUCLIDEAN distance while
+	// this slab is LINEAR-depth; extend the lower bound by cos(theta_max) of the
+	// screen diagonal so the box covers every pixel the fragment can assign here.
+	float cosmax = 1.0 / sqrt(1.0 + tanv * tanv * (1.0 + aspect * aspect));
+	float bz0 = (params.rev.x > 0.5) ? (z0 * cosmax) : z0;
 	// NDC tile rect -> view-space AABB (conservative: far-z extents).
 	float nx0 = float(tx) / 16.0 * 2.0 - 1.0;
 	float nx1 = float(tx + 1u) / 16.0 * 2.0 - 1.0;
 	float ny0 = float(ty) / 9.0 * 2.0 - 1.0;
 	float ny1 = float(ty + 1u) / 9.0 * 2.0 - 1.0;
-	vec3 bmin = vec3(nx0 * z1 * tanv * aspect, ny0 * z1 * tanv, z0);
+	vec3 bmin = vec3(nx0 * z1 * tanv * aspect, ny0 * z1 * tanv, bz0);
 	vec3 bmax = vec3(nx1 * z1 * tanv * aspect, ny1 * z1 * tanv, z1);
 	// View-space depth convention here: +z forward (matches -vc.z usage).
 	// The box above uses +z view depth; lights convert identically below.
@@ -2611,6 +2650,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_build"), &GneRenderServer::gpu_light_cones_build);
 	ClassDB::bind_method(D_METHOD("gpu_light_cone_epochs"), &GneRenderServer::gpu_light_cone_epochs);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_selftest", "mode"), &GneRenderServer::gpu_light_cones_selftest);
+	ClassDB::bind_method(D_METHOD("gpu_light_set_normal_cone", "enabled"), &GneRenderServer::gpu_light_set_normal_cone);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_light_bind", "light_id", "shadow_id"), &GneRenderServer::gpu_shadow_light_bind);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_cull_dispatch"), &GneRenderServer::gpu_shadow_cull_dispatch);
@@ -6405,6 +6445,15 @@ bool GneRenderServer::_light_read_params(const Dictionary &p_params, GneLight &r
 }
 
 int GneRenderServer::gpu_light_create(const Dictionary &p_params) {
+// GNE-018-rev: measurement-only override (unset in every gate) - lets the
+// gated scenes run with the rev flag for A/B candidate-count measurements.
+if (!light_cone_env_checked) {
+	light_cone_env_checked = true;
+	String env = OS::get_singleton()->get_environment("GNE_REV_CONE");
+	if (env == "1") {
+		light_cone_enabled = true;
+	}
+}
 	if (rendering_device == nullptr) {
 		print_error("[GNE] gpu_light_create: no RenderingDevice.");
 		return -1;
@@ -6505,6 +6554,7 @@ Dictionary GneRenderServer::gpu_light_get_stats() {
 	d["clusters_touched"] = light_clusters_touched;
 	d["assignments"] = light_assignments;
 	d["overflows"] = light_overflows;
+	d["normal_cone"] = light_cone_enabled;
 	return d;
 }
 
@@ -8165,6 +8215,7 @@ bool GneRenderServer::gpu_material_draw_lights() {
 	struct CullPush {
 		float dims[4];  // light_count, tan_half_fov_v, aspect, unused
 		float range[4]; // near, far, raster_w, raster_h
+		float rev[4];   // GNE-018-rev: x = normal-cone flag (KI-014 slab + 2c filter)
 	};
 	CullPush cp;
 	cp.dims[0] = (float)light_count;
@@ -8175,6 +8226,10 @@ bool GneRenderServer::gpu_material_draw_lights() {
 	cp.range[1] = far_plane;
 	cp.range[2] = 1920.0f;
 	cp.range[3] = 1080.0f;
+	cp.rev[0] = light_cone_enabled ? 1.0f : 0.0f;
+	cp.rev[1] = 0.0f;
+	cp.rev[2] = 0.0f;
+	cp.rev[3] = 0.0f;
 	_run_compute_pass(light_cull_pipeline, light_cull_uniform_set, &cp, sizeof(cp), 54, 1, 1);
 	// 2. Evidence mirrors (exact integer reads, no float involved).
 	{
@@ -8266,6 +8321,7 @@ bool GneRenderServer::gpu_material_draw_lights() {
 	rendering_device->draw_list_bind_uniform_set(dl, shadow_set2, 2);
 	rendering_device->draw_list_bind_vertex_array(dl, mesh_010_vertex_array);
 	rendering_device->draw_list_bind_index_array(dl, mesh_010_index_array);
+
 	rendering_device->draw_list_set_push_constant(dl, &push, sizeof(push));
 	rendering_device->draw_list_draw_indirect(dl, true, batch_args_buffer, 0, (uint32_t)last_batch_count, 20);
 	rendering_device->draw_list_end();
@@ -8299,6 +8355,11 @@ PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
 	return out;
 }
 
+	// GNE-018-rev: rev-path flag (default OFF; 018 stays byte-identical). Unit 2c
+	// will extend this flag to gate the cone prefilter; KI-014 slab fix rides it.
+	void GneRenderServer::gpu_light_set_normal_cone(bool p_enabled) {
+		light_cone_enabled = p_enabled;
+	}
 	// GNE-018-rev: build the per-cluster normal cones from the last completed
 	// raster (normal + viewz attachments; one fixed-order thread per cluster;
 	// no atomics -> bit-stable). Structural 1-frame lag: built after a raster,
@@ -8498,7 +8559,7 @@ PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
 				cases.push_back(kCases[i].a[0]); cases.push_back(kCases[i].a[1]); cases.push_back(kCases[i].a[2]); cases.push_back(0.0f);
 			}
 			count = 8; in_stride = 28; out_stride = 2;
-		} else {
+		} else if (p_mode == 3) {
 			static const float kTiles[3][2] = { { 5.5f, 1075.5f }, { 60.5f, 1020.5f }, { 1914.5f, 60.5f } };
 			static const float kPix[3][2] = { { 5.5f, 1075.5f }, { 960.5f, 540.5f }, { 1860.5f, 60.5f } };
 			static const float kE[2] = { 750.0f, 2500.0f };
@@ -8531,6 +8592,21 @@ PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
 			in_stride = 12; out_stride = 5;
 			// (tile table kept for source parity with the analytic plan; the per-case
 			//  input already encodes the pixel the fragment would use.)
+		} else {
+			static const float kF6[][6] = {
+				{ 0.2679492f, 1.0f, 300.0f, 4000.0f, 12.0f, 0.0f },
+				{ 0.5773503f, 1.7777778f, 300.0f, 4000.0f, 12.0f, 0.0f },
+				{ 1.0f, 2.5f, 300.0f, 4000.0f, 23.0f, 0.0f },
+				{ 0.7673270f, 1.3333333f, 300.0f, 4000.0f, 0.0f, 0.0f },
+				{ 0.4142136f, 1.7777778f, 300.0f, 4000.0f, 6.0f, 0.0f },
+				{ 0.5773503f, 1.0f, 300.0f, 4000.0f, 18.0f, 0.0f }
+			};
+			for (int i2 = 0; i2 < 6; i2++) {
+				for (int j = 0; j < 6; j++) {
+					cases.push_back(kF6[i2][j]);
+				}
+			}
+			count = 6; in_stride = 6; out_stride = 3;
 		}
 		if (count == 0) {
 			return out;

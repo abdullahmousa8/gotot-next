@@ -252,6 +252,7 @@ func _run() -> void:
 	_f_run_mode(1)
 	_f_run_mode(2)
 	_f_run_mode(3)
+	_f_run_mode(4)
 	if not server.gpu_light_cones_build():
 		print("R0CHK|F4|cones_build FAILED")
 	else:
@@ -354,7 +355,7 @@ func _f_run_mode(md: int) -> void:
 			if err2 > 0.0005:
 				print("R0CHK|F2|ERR case=", i, " got=", got, " expected=", expected)
 		print("R0CHK|F2|backface cases=", cnt, " max_err=", maxerr)
-	else:
+	elif md == 3:
 		var not_in := 0
 		for i in cnt:
 			var ob := 3 + n_in + i * outs
@@ -363,3 +364,28 @@ func _f_run_mode(md: int) -> void:
 			if i < 6:
 				print("R0CHK|F3|case=", i, " cid=", int(res[ob]), " z0=", res[ob + 1], " z1=", res[ob + 2], " in_box=", int(res[ob + 3]), " gap=", res[ob + 4])
 		print("R0CHK|F3|cull_vs_frag cases=", cnt, " not_in_box=", not_in)
+	else:
+		var worst := 0.0
+		var min_slack_min := 1e9
+		var all_ok := true
+		for i in cnt:
+			var b := 3 + i * ins
+			var ob := 3 + n_in + i * outs
+			var tanv := res[b]
+			var aspect := res[b + 1]
+			var nr := res[b + 2]
+			var fr := res[b + 3]
+			var tzf := res[b + 4]
+			var z0 := nr * pow(fr / nr, tzf / 24.0)
+			var expected_bound := z0 / sqrt(1.0 + tanv * tanv * (1.0 + aspect * aspect))
+			var bound := res[ob]
+			var min_slack := res[ob + 1]
+			var viol_old := res[ob + 2]
+			var rel := absf(bound - expected_bound) / z0
+			var ok := rel < 0.0001 and min_slack >= -0.001 * z0 and viol_old >= 1.0
+			if not ok:
+				all_ok = false
+			worst = maxf(worst, rel)
+			min_slack_min = minf(min_slack_min, min_slack / z0)
+			print("R0CHK|F6|case=", i, " tanv=", tanv, " aspect=", aspect, " rel_err=", rel, " slack_norm=", min_slack / z0, " viol_old=", viol_old, " ok=", ok)
+		print("R0CHK|F6|slab_bound cases=", cnt, " worst_rel_err=", worst, " min_slack_norm=", min_slack_min, " all_ok=", all_ok)

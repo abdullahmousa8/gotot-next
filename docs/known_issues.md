@@ -221,6 +221,59 @@
 
 **Update 2026-09-28 (disposition executed - RESOLVED):** Owner decision: raise the criterion, not XFAIL. Applied in `main_008b.gd`: `SUBPIXEL_R_PX` 0.35 -> 1.0 with an in-body physical rationale (1x point sampling: a silhouette below the half-diagonal bound sqrt(2)/2 ~= 0.7071 can cover zero samples by phase; the analytic r_px estimate carries orientation/scale scatter - a 0.77 px cube still missed at 0.75 - so the round full-pixel bound 1.0 is used, matching main.gd's "< 1 projected px may legitimately rasterize zero pixels" note). Validation: scene rc=0 / miss=0 (checked=533, subpixel=260); full battery re-run: all EIGHT harnesses rc=0 with honest accounting (GT_REGRESS: PASS; 012 XFAIL reported, not masking); cross-run classification audit: no other scene changed (reg_main_011/013/014/015.txt and gt015/016/017/018/019 sigs byte-identical; other consoles identical after timing/handle normalization). Retained instrument: `demo/gpu_smoke/main_008b_dbg.gd|.tscn` (documented mirror + per-miss coverage diagnostics; keep in sync with main_008b.gd).
 
+## KI-014: Cluster Light Lists Under-Cover Corner Pixels (Linear-vs-Euclidean Slice Mismatch)
+
+**Date:** 2026-09-28
+**Status:** FIXED behind the 018-rev flag (2026-09-28); flag-off path byte-identical (v18 literal intact)
+**Severity:** Medium (latent lighting loss for corner-adjacent geometry; would silently undermine 018-rev gate validity if unfixed)
+**Owner:** GNE Architecture
+
+**FACT:**
+- The mat_light fragment assigns pixels to depth slices by EUCLIDEAN camera distance
+  (`z_view = length(cam - world)`; shared `gne_cluster_index`), while `gpu_light_cull_glsl`
+  builds cluster AABBs with a LINEAR-depth slab [z0, z1] (`znear * lratio^(tz/24)`).
+  For off-axis pixels linear < euclidean (factor cos(theta)); at screen corners
+  cos(theta_min) ~ 0.648 for fov 60 / 16:9.
+- Unit-2b cross-check (r0chk selftest mode 3): 10 of 14 corner/edge cases lie OUTSIDE the
+  AABB of the cluster the fragment assigns to them; gaps (z0 - z_linear) up to 707 units.
+
+**OBSERVATION / IMPACT:**
+- A light sphere touching such a corner pixel can miss the AABB and be excluded from the
+  cluster list - contradicting the cull's "may over-include, never wrongly exclude" claim.
+  Latent in 018's own gate scenes (their probes avoided the exposed corners), but it would
+  sit UNDER any future cone-culling validity gate (R1, dc): comparing two equally deficient
+  results could pass silently.
+
+**ROOT CAUSE:** slice-semantics mismatch - fragment (euclidean distance) vs cull AABB (linear depth).
+
+**FIX (flag-gated, applied):**
+- `gpu_light_cull_glsl`: `bmin.z = z0 * cosmax` with
+  `cosmax = 1 / sqrt(1 + tanv^2 * (1 + aspect^2))`, active only when the rev flag is set
+  (new push-constant field x); flag-off evaluates the exact old z0, keeping 018
+  byte-identical (gt_018a/gt_019a PASS with literal v18/v19 signatures).
+- Analytic proof (selftest mode 4 / F6): the bound matches an independent out-of-engine
+  computation across 6 FOV/aspect configurations (worst relative error 3.2e-8) and is
+  TIGHT (min over dense pixel samples of (z_linear - bound) = 0.0; the old bound is
+  violated by 1128..3146 samples per case). Not a fitted constant.
+- Flag API: `gpu_light_set_normal_cone(bool)` (default false); measurement-only env
+  override `GNE_REV_CONE=1` (unset in every gate).
+
+**dc-impact measurement (018 scene, same binary, flag off vs on):**
+- assignments 11348 -> 12363 (+8.94%); clusters_touched 2841 -> 3091 (+8.80%);
+  overflows (16-cap) 0 -> 13. On 019 the signature and checks are unchanged off/on.
+- Consequence for D8-rev-5 (dc >= 10%): cone-filter savings will be measured against the
+  CORRECTED base (base grew ~9%); the criterion itself stays as contracted.
+
+**GNE RELEVANCE / scope note (why fixed inside 018-rev):**
+- Pre-existing 018 defect (linear z-slicing), fully independent of cone-culling logic,
+  discovered by 018-rev rigor. Contrary to the usual separation policy (cf. KI-011), the
+  fix ships INSIDE 018-rev scope because it is a precondition for the validity of
+  018-rev's own gates - not because it is convenient to merge.
+
+**Evidence:**
+- temp\opencode\b008\r0chk_f6_run2.log (F6 rows); m018_off.log / m018_on.log (stats);
+  docs/rev_slab_gap_note.md (mechanism derivation).
+
 ## 015.5 C6 status (closed in 015.6)
 
 **الحالة:** مقبول + موثّق (double-buffering مؤجّل إلى 020) — "تقليل الحجم" يكسر DET.
