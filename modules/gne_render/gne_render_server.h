@@ -249,9 +249,19 @@ bool gne_present_lowres = false;
 	RID cones_selftest_out_buffer;
 // GNE-022 S1a: probe field (direct + occlusion; spec_022 section 8).
 RID gi_atlas;
+RID gi_atlas2;
+RID gi_sampler;
+RID gi_trace_set_a;
+RID gi_trace_set_b;
+int gi_front = 0;
+float gi_alpha = 0.1f;
+float gi_albedo = 0.35f;
+bool gi_bounce = true;
+float gi_ambient_r = 0.03f;
+float gi_ambient_g = 0.03f;
+float gi_ambient_b = 0.035f;
 RID gi_trace_shader;
 RID gi_trace_pipeline;
-RID gi_trace_set;
 bool gne_gi_enabled = false;
 Vector3 gi_min;
 Vector3 gi_max;
@@ -783,6 +793,11 @@ Dictionary gpu_gi_info() const;
 bool gpu_gi_trace();
 PackedFloat32Array gpu_gi_read_avg(int p_probe);
 PackedFloat32Array gpu_gi_read_texel(int p_probe, int p_texel);
+void gpu_gi_config(const Dictionary &p_cfg);
+bool gpu_gi_accum_step();
+bool gpu_gi_reset();
+RID _gi_front_atlas() const;
+bool _gi_dispatch(float p_mode);
 	void gpu_light_set_normal_cone(bool p_enabled); // GNE-018-rev
 	void gpu_light_cones_clear(); // GNE-018-rev tooling (A/B)
 

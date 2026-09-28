@@ -2716,6 +2716,9 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_gi_trace"), &GneRenderServer::gpu_gi_trace);
 	ClassDB::bind_method(D_METHOD("gpu_gi_read_avg", "probe"), &GneRenderServer::gpu_gi_read_avg);
 	ClassDB::bind_method(D_METHOD("gpu_gi_read_texel", "probe", "texel"), &GneRenderServer::gpu_gi_read_texel);
+	ClassDB::bind_method(D_METHOD("gpu_gi_config", "config"), &GneRenderServer::gpu_gi_config);
+	ClassDB::bind_method(D_METHOD("gpu_gi_accum_step"), &GneRenderServer::gpu_gi_accum_step);
+	ClassDB::bind_method(D_METHOD("gpu_gi_reset"), &GneRenderServer::gpu_gi_reset);
 	ClassDB::bind_method(D_METHOD("gpu_light_set_normal_cone", "enabled"), &GneRenderServer::gpu_light_set_normal_cone);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_clear"), &GneRenderServer::gpu_light_cones_clear);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);
@@ -2914,9 +2917,13 @@ void GneRenderServer::_destroy_mesh() {
 		// GNE-022 S1: free probe-field objects BEFORE their dependency buffers
 		// (light_buffer/transform_buffer) - the RD auto-invalidates sets whose
 		// dependencies are freed first (found by the S1a teardown probe).
-		if (gi_trace_set.is_valid()) {
-			rendering_device->free_rid(gi_trace_set);
-			gi_trace_set = RID();
+		if (gi_trace_set_a.is_valid()) {
+			rendering_device->free_rid(gi_trace_set_a);
+			gi_trace_set_a = RID();
+		}
+		if (gi_trace_set_b.is_valid()) {
+			rendering_device->free_rid(gi_trace_set_b);
+			gi_trace_set_b = RID();
 		}
 		if (gi_trace_pipeline.is_valid()) {
 			rendering_device->free_rid(gi_trace_pipeline);
@@ -2925,6 +2932,14 @@ void GneRenderServer::_destroy_mesh() {
 		if (gi_trace_shader.is_valid()) {
 			rendering_device->free_rid(gi_trace_shader);
 			gi_trace_shader = RID();
+		}
+		if (gi_sampler.is_valid()) {
+			rendering_device->free_rid(gi_sampler);
+			gi_sampler = RID();
+		}
+		if (gi_atlas2.is_valid()) {
+			rendering_device->free_rid(gi_atlas2);
+			gi_atlas2 = RID();
 		}
 		if (gi_atlas.is_valid()) {
 			rendering_device->free_rid(gi_atlas);
