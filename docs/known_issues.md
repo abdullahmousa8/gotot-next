@@ -99,3 +99,35 @@
 - **015.5 Final** (إغلاق الـmilestone عند **5/8 معايير** + ثلاث KI موثّقة).
 - milestone مستقل لاحق: تقليل `bytes_copied_per_frame` عبر مسار رسم بدقة أقل.
 
+
+## KI-007: HZB Uses AABB Occluders (Not Scene Depth)
+
+**Date:** 2026-09-28
+**Status:** By design (012-revised scope)
+**Severity:** Medium (deferred to 019)
+**Owner:** GNE Architecture
+
+**Details:**
+- 012-revised activates HZB occlusion.
+- Pyramid is built from AABB occluders via
+  `gpu_hzb_set_occluders`.
+- Real scene depth (009 `raster_viewz_texture`)
+  is NOT used.
+- `gpu_hzb_depth_source` is compiled but never dispatched.
+
+**Impact:**
+- Real geometry occlusion (walls, terrain) not covered.
+- False-occlusion risk for complex scenes.
+- Lighting (018) may need real geometry for tests.
+
+**Deferred To:**
+- 019 (Shadows + Real Depth HZB).
+- Target: before 020.
+
+**Evidence:**
+- 012-revised closure: p1=6, p2=0 with AABB occluders.
+- Pyramid non-empty (245,520 texels).
+
+**Resolution Path:**
+- 019: activate `gpu_hzb_depth_source` + scene depth feed.
+- Requires: geometry pipeline + depth source binding.
