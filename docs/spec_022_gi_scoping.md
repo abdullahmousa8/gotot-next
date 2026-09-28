@@ -178,3 +178,29 @@ rt0_run1/rt0_run2/rt0_verbose.
   vs the analytic formula), (b) city sanity (near-street probes brighter than far
   probes), (c) budget report (dispatch cost, atlas size, probe budget).
 - Flag: `gne_gi_enabled` (default false); no existing gate touches it.
+### 8.1 Scope label + multi-bounce forward-compatibility (Architect clarification, 2026-09-28)
+
+**Label (binding):** S1 computes PROBE-BASED DIRECT LIGHTING WITH OCCLUSION. It is NOT
+"GI"; the word GI must not be used for it in any claim, signature, or doc line - same
+discipline as the 020 "mitigated, not solved" framing. The label flips only when a
+measured multi-bounce result exists (see below).
+
+**Multi-bounce is a planned architectural stage, decided NOW (not a later detail):**
+- S2 (temporal accumulation) will introduce reflected transport via probe feedback: at
+  a hit point, the previous frame's probe irradiance field (sampled around the hit) is
+  used as an additional incoming-light source, so energy bounces surface -> probe ->
+  surface across frames.
+- Forward-compatibility requirements frozen into the S1 design now:
+  1. The atlas texture carries SAMPLING usage from day one and is bound to the trace
+     pipeline as an input (S1 binds it with a zero/disabled write-flag; S2 reads it).
+  2. Atlas allocation must support double-buffering (S2 ping-pongs read/write); the
+     create API provisions storage with that future in mind (single active atlas in S1
+     is fine, but the swap must be a parameter, not a redesign).
+  3. The probe-field sampling helper (octahedral decode + trilinear probe blend) is a
+     single-source GLSL snippet shared by the trace-feedback path (S2) and the material
+     shading path (later) - defined in S1 even if S1 itself does not call it.
+  4. Bounce-stage validation: a surface lit ONLY by bounce (direct light blocked) must
+     show non-zero irradiance; the "GI" label flips only then.
+
+This mirrors the F3 lesson: the transport-interface decision is made now, before the
+S1 design freezes further, instead of being discovered silently later.
