@@ -3,10 +3,12 @@
 **GNE-019 — DRAFT.** GPU-driven caster culling per light, in a compute pass.
 Mirrors the 018 cluster-cull discipline (waves, barriers, no RMW races).
 
-## Owned by 019
+## Owned by 019 (D7-5 FINAL)
 
 - `gpu_shadow_cull_dispatch()` compute pass.
 - Per-light caster lists (directional per-cascade, point per-face, spot single).
+- Caster grid with sorted ids; a bound shadow with an empty caster list = FAIL,
+  never a silent skip (D7-5).
 - `gpu_shadow_get_stats()` (counts, per-light caster totals, overflows).
 - Overflow policy: saturate + count (same as 018 clusters — never wrap, never crash).
 
