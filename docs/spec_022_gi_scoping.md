@@ -485,3 +485,25 @@ instrumentation (item #2), before any criterion change.
 acknowledged over-idealized; any future interval must be derived per-hop (compounded),
 and the calibration c must be measured, not assumed. No change is applied to the
 official criteria until the mechanism question is settled (Architect to rule).
+### 9.3.7 Direct tn measurement at the deep probe (Architect-ordered cheapest check) - RESULT
+
+Debug mode 3: per-texel segment-tn diagnostics of the coupling gather, POS scene.
+Sampled 16 texels each of the deep-B, mid-M and near-A probes:
+
+| probe | min positive tn | blocked segments (16 texels) | miss texels |
+|---|---|---|---|
+| B (deep, the failing one) | 60.0 (and 74.5 recurrent) | **0** | 0 |
+| M | 60.0 | **0** | 0 |
+| A | 60.0 | **0** | 0 |
+
+- **Verdict: the grazing-margin hypothesis (#3) is REFUTED by direct measurement** - no
+  segment to any contributing probe is being blocked, at the deep probe or anywhere
+  sampled. The gate is not cutting the coupling.
+- The recurrent tn = 74.5 values sit at/below the segment lengths (in-cell distances)
+  and therefore never satisfy the blocked predicate - near contributions ARE allowed.
+- Note (cosmetic, diagnostic only): seg_tn returns unclamped values for inside-start
+  segments (negative entries); this does not affect the blocked predicate.
+- Consequence: the remaining tension (compounded-expectation ~1e-4 vs observed 0.0)
+  continues under diagnostic item #2 (instrument the -700 row and the growth curves) -
+  and the c-calibration itself (single M datum extrapolated over 2 more hops) becomes a
+  candidate for the discrepancy rather than the gate.

@@ -66,13 +66,14 @@ vec2 octa_encode(vec3 n) {
 // M3 (spec_022 9.3.4): analytic occlusion between two points using the existing
 // instance boxes - the by-design leak barrier for the coupling gather. A blocked
 // segment contributes zero, so a hidden source's cells cannot inject.
-bool gne_gi_seg_blocked(vec3 a, vec3 b) {
+float gne_gi_seg_tn(vec3 a, vec3 b) {
 	vec3 d = b - a;
 	float len = length(d);
 	if (len < 1e-4) {
-		return false;
+		return 1e9;
 	}
 	vec3 dir = d / len;
+	float tmin = 1e9;
 	uint ninst = uint(pc.dims.w + 0.5);
 	for (uint i = 0u; i < ninst; i++) {
 		vec4 trv = trs.t[i];
@@ -87,11 +88,16 @@ bool gne_gi_seg_blocked(vec3 a, vec3 b) {
 		vec3 tbg = max(t0, t1);
 		float tn = max(max(tsm.x, tsm.y), tsm.z);
 		float tf = min(min(tbg.x, tbg.y), tbg.z);
-		if (tf >= max(tn, 0.0) && tn > 0.5 && tn < len - 0.5) {
-			return true;
+		if (tf >= max(tn, 0.0) && tn < tmin) {
+			tmin = tn;
 		}
 	}
-	return false;
+	return tmin;
+}
+bool gne_gi_seg_blocked(vec3 a, vec3 b) {
+	float t = gne_gi_seg_tn(a, b);
+	float len = length(b - a);
+	return (t > 0.5 && t < len - 0.5);
 }
 // Single-source probe-field sampler (spec_022 section 8.1 requirement 3):
 // octahedral lookup + trilinear probe blend. Used by the S2 hit-point
@@ -156,6 +162,38 @@ void main() {
 		if (tf >= tn && tn < best) {
 			best = tn;
 		}
+	}
+	if (pc.params.x > 2.5) {
+		// debug mode 3: per-texel tn diagnostics of the coupling segments
+		ivec2 dtile = ivec2(wid.x * 8 + lp.x, (wid.y + wid.z * int(pc.dims.y + 0.5)) * 8 + lp.y);
+		if (best < 1e29) {
+			vec3 hp = ppos + dir * best;
+			vec3 gsz2 = pc.dims.xyz;
+			vec3 g2 = (hp - pc.gmin.xyz) / (pc.gmax.xyz - pc.gmin.xyz) * gsz2 - 0.5;
+			g2 += vec3(0.31, 0.17, 0.0);
+			vec3 g0b = floor(g2);
+			float mn = 1e9;
+			float blk = 0.0;
+			for (int dz = 0; dz < 2; dz++) {
+				for (int dy = 0; dy < 2; dy++) {
+					for (int dx = 0; dx < 2; dx++) {
+						vec3 idx2 = clamp(g0b + vec3(dx, dy, dz), vec3(0.0), gsz2 - 1.0);
+						vec3 center2 = pc.gmin.xyz + (idx2 + 0.5) * (pc.gmax.xyz - pc.gmin.xyz) / gsz2;
+						float tnv = gne_gi_seg_tn(hp, center2);
+						if (tnv < mn) {
+							mn = tnv;
+						}
+						if (tnv > 0.5 && tnv < length(center2 - hp) - 0.5) {
+							blk += 1.0;
+						}
+					}
+				}
+			}
+			imageStore(gi_atlas, dtile, vec4(mn >= 1e8 ? -1.0 : mn, blk, best, 1.0));
+		} else {
+			imageStore(gi_atlas, dtile, vec4(-2.0, 0.0, 0.0, 1.0));
+		}
+		return;
 	}
 	vec3 rad;
 	if (best < 1e29) {
@@ -372,6 +410,7 @@ void GneRenderServer::gpu_gi_config(const Dictionary &p_cfg) {
 	gi_alpha = p_cfg.get("alpha", gi_alpha);
 	gi_albedo = p_cfg.get("albedo", gi_albedo);
 	gi_bounce = p_cfg.get("bounce", gi_bounce);
+	gi_debug = p_cfg.get("debug", gi_debug);
 	Vector3 amb = p_cfg.get("ambient", Vector3(gi_ambient_r, gi_ambient_g, gi_ambient_b));
 	gi_ambient_r = amb.x;
 	gi_ambient_g = amb.y;
@@ -399,7 +438,7 @@ Dictionary GneRenderServer::gpu_gi_info() const {
 }
 
 bool GneRenderServer::gpu_gi_trace() {
-	return _gi_dispatch(1.0f); // raw direct write (S1 semantics)
+	return _gi_dispatch(gi_debug ? 3.0f : 1.0f); // mode 3 = tn diagnostics
 }
 
 bool GneRenderServer::gpu_gi_accum_step() {

@@ -263,6 +263,7 @@ float gi_ambient_b = 0.035f;
 RID gi_trace_shader;
 RID gi_trace_pipeline;
 bool gne_gi_enabled = false;
+bool gi_debug = false;
 Vector3 gi_min;
 Vector3 gi_max;
 int gi_gx = 16;
