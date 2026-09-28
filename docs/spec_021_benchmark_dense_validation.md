@@ -47,3 +47,35 @@ restarts the unit.
 - Results note: dc off/on, occupancy achieved, frame-time medians, the flag decision
   executed per 1.1.
 - Contracts x5; progress section; closure doc.
+## 4. Results (frozen scene, official runs, 2026-09-28)
+
+Scene revision: `main_021` construction v3; gate: `tools/gt_021a.bat` (two runs).
+Signature d1 == d2 (byte-identical): `v21|lc=256|of=36097|sl=38620|on=38434|d1`;
+rc 0/0; zero ERROR / RID lines.
+
+| state | touched | assignments | overflows |
+|---|---|---|---|
+| off (baseline, known under-covering corners) | 3132 | 36097 | 9994 |
+| slab (KI-014 corrected base) | 3140 | 38620 | 12447 |
+| cone-on | 3140 | 38434 | 12311 |
+
+- dc (corrected-base cone savings) = (38620 - 38434) / 38620 = **0.48%** - 20x below the
+  pre-registered 10% threshold.
+- Net off-vs-on = **-6.47%** (the slab correctness cost outweighs the cone savings on
+  this scene).
+- Occupancy achieved: ge8 = 165/280 (59%), ge12 = 142 (51%), ge16 = 116 (41%) of the
+  sampled near/mid clusters (median approx. 12-15 = the pre-registered "typically
+  8-16" band).
+- Cone validity on the raster: 15 of 280 sampled clusters (5.4%) carry a valid cone; the
+  rest have mixed normal sets (sentinel / never-cull). This is the structural reason the
+  savings are small on a street-grid city: most clusters mix ground/walls/background.
+- Cap pressure recorded: overflows 9994 / 12447 / 12311 - the 16-cap saturates heavily
+  in the dense field; no cap changes made.
+
+**Decision (section 1.1 applied literally):** dc 0.48% < 10% => the default STAYS OFF;
+spec_018_rev section 12 updated; the carried dc >= 10% item closes as measured (not
+met). No threshold was changed after results; no re-tuning.
+
+Note: no contracts x5 were added for this milestone - it is a measurement milestone;
+the binding artifacts are the frozen pre-registration (section 1) and this results
+section. [Flagged for the Architect if contracts are still wanted.]

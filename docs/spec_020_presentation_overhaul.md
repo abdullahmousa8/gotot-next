@@ -172,8 +172,7 @@ Architect's to adjust.]
 - Staging / double-buffering work (D9-2, the C6 item) - unit 3: COMPLETE, measured (section 14): no effect; item closed; code removed.
 - True zero-copy presentation (RHI-level integration) - future milestone; explicitly not
   claimed by this one.
-- Dense-light scenario re-test for the 018-rev `dc >= 10%` scale target (recorded
-  deferral; seed: the benchmark-city work item).
+- Dense-light retest: CLOSED via GNE-021 (spec_021 section 4): dc = 0.48% < 10%; flag stays OFF; item measured and closed.
 ## 14. Unit 3 results - staging / double-buffering experiment (measured, 2026-09-28)
 
 **Experiments (flag-gated, measurement-only, unset in gates; REMOVED after measurement):**

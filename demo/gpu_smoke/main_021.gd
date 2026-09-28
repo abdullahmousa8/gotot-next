@@ -9,15 +9,19 @@ const INSTANCE_COUNT := 56
 var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
+var sig_file := ""
 
 func _mk_point(pos: Vector3, radius: float, color: Color, intensity: float) -> Dictionary:
 	return {"type": 0, "pos": pos, "range": radius, "color": color, "intensity": intensity}
 
 func _mk_spot(pos: Vector3, target: Vector3, inner: float, outer: float, color: Color, intensity: float) -> Dictionary:
 	var d: Vector3 = (target - pos).normalized()
-	return {"type": 1, "pos": pos, "range": 1200.0, "color": color, "intensity": intensity, "dir": d, "cone_inner": inner, "cone_outer": outer}
+	return {"type": 1, "pos": pos, "range": 1600.0, "color": color, "intensity": intensity, "dir": d, "cone_inner": inner, "cone_outer": outer}
 
 func _ready() -> void:
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--sigf="):
+			sig_file = a.split("=")[1]
 	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(400, "server singleton is null")
@@ -169,8 +173,16 @@ func _ready() -> void:
 	print("GNE 021: occupancy sampled=", sampled, " nonzero=", nz, " ge8=", ge8, " ge12=", ge12, " ge16=", ge16, " max=", mx)
 	print("GNE 021: cone_valid=", cone_ok, " of ", sampled)
 	print("GNE 021: cone_sample=", cone_samples)
+	var sig := "v21|lc=%d|of=%d|sl=%d|on=%d|d1" % [int(on_st["count"]), a0, a1, a2]
+	print("GNE 021: sig=" + sig)
+	if sig_file != "":
+		var f := FileAccess.open(sig_file, FileAccess.WRITE)
+		if f == null:
+			_fail(430, "sig file write failed")
+			return
+		f.store_string(sig + "\n")
 	server.gpu_scene_destroy()
-	print("GNE 021: SMOKE DONE")
+	print("GNE 021: PASS")
 	get_tree().quit(0)
 
 func _redraw() -> bool:

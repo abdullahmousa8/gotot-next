@@ -124,6 +124,7 @@
 - GNE-018-rev - Normal-Cone Back-Face Culling: PASS (R1 gate; flag OFF by default)
 - GNE-019 - Shadows + Real Depth HZB: PASS
 - GNE-020 - Presentation Overhaul: PASS (flag-gated reduced-res path; C6 closed)
+- GNE-021 - Benchmark City + Dense-Light Validation: PASS (measurement; dc 0.48% < 10%; cone flag stays OFF)
 
 Current architecture status:
 
@@ -181,7 +182,7 @@ Next milestone:
 
 ## 16. المرحلة القادمة
 
-**GNE-021 - Benchmark City + Dense-Light Validation** (proposal awaiting Architect approval; the dense-light test bed for the 018-rev dc>=10% retest and the remaining structural prototype-checklist item).
+**GNE-021 - Benchmark City + Dense-Light Validation**: CLOSED (progress section 39). **Next milestone: GI (022+) pending Architect scheduling.**
 
 ## 17. GNE-008B — برهان الرسم متعدد النسخ (Multi-Instance Mesh Rendering Proof)
 
@@ -873,3 +874,13 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 **Incidents:** a stray git commit hit the build-host repo (no remote, no effect); restored exactly; Lesson 6 recorded.
 **Commits:** 74d2790 (kickoff) -> 607b620 (unit1) -> 66ee082 (unit2) -> 9f0454e (framing) -> 0250fc7 (cone default-state) -> c742dda (unit3 + C6) -> 1583225 (Lesson 6).
 **Next:** GNE-021 proposal pending Architect approval (Benchmark City + Dense-Light Validation; seed for the 018-rev dc>=10% retest). GI remains a later milestone with its own future spec.
+
+## 39. GNE-021 - Benchmark City + Dense-Light Validation (CLOSED)
+
+**Outcome:** GT_021A PASS - d1/d2 byte-identical `v21|lc=256|of=36097|sl=38620|on=38434|d1`; rc 0/0; zero ERROR / RID lines.
+**Pre-registration (frozen before the first run):** flip criterion dc >= 10% (corrected-base cone savings; clarified vs D8-rev-5 semantics pre-measurement) + benchmark bounds 256 lights (192pt + 64spot), street grid, near-cluster occupancy target 8-16.
+**Results (frozen scene):** corrected-base cone savings 0.48% (threshold not met, 20x below); net off-vs-on -6.47%; occupancy target met (median ~12-15); cone validity 5.4% of sampled clusters (structural reason recorded); cap overflows ~10-12k (loud, documented).
+**Decision:** cone default STAYS OFF (criterion applied literally); spec_018_rev section 12 updated; the carried dc >= 10% item closes as measured.
+**Artifacts:** docs/spec_021_benchmark_dense_validation.md (pre-registered + results), demo/gpu_smoke/main_021.gd/.tscn, tools/gt_021a.bat. Commits: e1834cb (pre-registration) -> f71ba3c (dc clarification + scene v2) -> (this) freeze + gate + results.
+**Note:** no engine/module changes in 021 (scene + docs only) - existing gates unaffected by construction.
+**Next:** GI (022+) per Architect; remaining open items unchanged (KI-011, KI-012, zero-copy future item).

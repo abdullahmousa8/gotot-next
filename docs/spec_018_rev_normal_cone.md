@@ -183,3 +183,10 @@ Rationale (same spirit as the 020 "mitigated, not solved" framing):
 - Flipping the default is a one-line change to be made AFTER that evidence lands - at
   which point this section gets an update note. This is an explicit decision, not an
   implicit state.
+**Update (2026-09-28, GNE-021 results applied):** the dense-light retest has been
+executed (spec_021 section 4): corrected-base cone savings measured at 0.48% on a
+256-light street-grid city (far below the 10% threshold); net off-vs-on is negative
+(-6.5%). Per the pre-registered criterion the default remains OFF; the retest item is
+closed as measured. Flipping the default would additionally require new evidence on a
+scene that exercises the cone filter (valid uniform-normal clusters) far more strongly
+than the observed 5.4% of clusters.
