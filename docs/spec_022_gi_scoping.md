@@ -378,3 +378,40 @@ Reading (candidate conclusions, to be confirmed in the next round):
   the hit-point gather needs a legitimate directional/diffusive coupling (candidates:
   cosine/directional weighting at the gather using the hit normal; a larger effective
   gather footprint; or a proper per-cell flux formulation) - criteria untouched.
+### 9.3.4 Coupling mechanism - decision BEFORE code (Architect, 2026-09-28)
+
+**Reclassification recorded (binding):** the earlier M = +48%-over-direct observation is
+now SUSPECT - the current mechanism has no legitimate horizontal coupling (local
+self-gain only), so that number may be an artifact of the same sampling-overlap /
+advection class exposed in 9.3.3. No new mechanism may be designed on the assumption
+that M was valid evidence. Consequences:
+- The pre-computed POS interval is UNAFFECTED: it derives from direct_A x albedo x a
+  geometrically motivated k-range - NOT from the M observation - and therefore stands
+  unchanged.
+- M and the gradient probes become VERIFICATION items under the new mechanism: the old
+  number is superseded by re-measurement; if the new mechanism shows no elevation where
+  the old M did, the old number is classified an artifact (recorded, not deleted).
+
+**Trap to exclude STRUCTURALLY (lesson from the failed fix):** the biased-offset
+attempt produced an instant barrier leak - directional exposure toward a hidden source
+leaks through ANY barrier, regardless of what the barrier is. Candidates are therefore
+judged first on occlusion-respect BY DESIGN, not by "try and see".
+
+**Candidates:**
+
+| | M1: cosine/Ndot weighting | M2: wider/adaptive footprint | M3: visibility-gated gather |
+|---|---|---|---|
+| mechanism | weight the field sample by the analytic hit-normal cosine | enlarge the effective ray/texel footprint to force cross-cell reads | unbiased trilinear sample + one OCCLUSION RAY per contributing probe (hit point to probe cell centre) using the existing instance-box list; blocked contributions are zero |
+| occlusion-respect by design | NO - relies on unbiased sampling + dark in-barrier nodes (same exposure class as the failed fix) | NO - same exposure, plus smearing | YES - barrier geometry is consulted directly per contribution; a hidden source's cells cannot inject because the segment is blocked (semi-leak only through REAL openings - physical) |
+| cost | small | small | ~8 occlusion rays per traced ray (~47M box tests per dispatch at 131k rays; measured, evidence-only) |
+| risk | hidden-bias leak (demonstrated class) | leak + smearing/noise | none structural |
+| verdict | reject as primary (may compose later) | reject | RECOMMENDED |
+
+**Paired isolation test (mandatory from the start, for the chosen candidate):** POS and
+NEG run in the SAME test pair with BOTH criteria simultaneously (positive-in-interval
+AND byte-zero negative) - 9.3.3 proved the two are coupled; testing them separately can
+hide the trap.
+
+**Verification additions:** re-measure the old-M probe and the gradient probes under
+the new mechanism (old-vs-new recorded); then the official 9.3 gate with the SAME
+criteria (interval per 9.3; negative byte-zero per 9.3).
