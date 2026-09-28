@@ -8,6 +8,7 @@
 
 **التاريخ:** 2026-09-27 · **الحالة:**Unavailable — قيد في محرّك Godot (خارج نطاق GNE)
 **الأثر:** GNE لا يستطيع قراءة زمن GPU على الواجهة الخلفية Vulkan. لذلك يقيس Phase 5 على **wall-clock** حصراً.
+**الإغلاق (015.6):** مقبول NA + موثّق (c) — كل الأرقام wall-clock حصرًا، ولا يُنشر أي رقم كزمن GPU. يُعاد النظر فقط عند إصلاح upstream.
 
 ### ما يعمل (مُقاس)
 - الـpool مُفعَّل فعلياً: `ProjectSettings.set_setting("debug/settings/profiler/max_timestamp_query_elements", 512)` **قبل** إنشاء الجهاز ⇒ `capture_timestamp()` صار يقبل: `get_captured_timestamps_count()` ينتقل `0 → 1` بعد النداء.
@@ -45,6 +46,7 @@
 
 **التاريخ:** 2026-09-27 · **الحالة:** لا أسرع من المتزامن — قيد في المحرك
 **الخطورة:** منخفضة (موثّقة، لا أثر على الإنتاج) · **النطاق:** كل قياس إطار incurs the sync cost
+**الإغلاق (015.6):** مقبول + موثّق — الـstaging مملوك للمحرك ولا يُعزل من GNE؛ لا ادعاء تسريع async بلا دليل بايتات/زمن.
 
 ### ما هو متاح فعلاً
 - `RenderingDevice::texture_get_data_async` **موجودة** (`servers/rendering/rendering_device.h:475`)، وتُسلِّم `PackedByteArray` عبر `request.callback.call(packed_byte_array)` (`rendering_device.cpp:8543`).
@@ -131,3 +133,12 @@
 **Resolution Path:**
 - 019: activate `gpu_hzb_depth_source` + scene depth feed.
 - Requires: geometry pipeline + depth source binding.
+
+## 015.5 C6 status (closed in 015.6)
+
+**الحالة:** مقبول + موثّق (double-buffering مؤجّل إلى 020) — "تقليل الحجم" يكسر DET.
+**خط الأساس المقاس (2026-09-28، main_016، wall-clock عملية كاملة تشمل الإقلاع):**
+- 5 تشغيلات (ثوانٍ): 8.76، 7.58، 8.19، 7.57، 7.41 — كلها exit=0.
+- median 7.58 · p95 ≈ 8.76 · max 8.76 · min 7.41.
+- البايتات/التشغيل: 7 قراءات × 8,294,400 = **58,060,800 B** (~55.4 MiB، بكسل فقط بلا عمق).
+- مُوسم صراحةً: wall-clock عملية، **ليس** زمن GPU (قاعدة KI-001).
