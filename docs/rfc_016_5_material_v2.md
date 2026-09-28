@@ -85,3 +85,24 @@ budget); weighted |N| blending is slice-2 with a revised fetch budget.
 Status: 016.5 slice-1 COMPLETE (M1-M5 green; CVS clean). Slice-2 candidates:
 weighted triplanar, roughness-channel scene evidence, per-material channel
 defaults policy.
+## Slice-2 RESULTS (2026-09-29) - weighted |N| triplanar + roughness evidence: ALL GREEN
+
+Changes: all channel fetches switched to weighted triplanar (weights = |N| normalized;
+fetch budget revised to <= 9, i.e. 3 per map); outer gate now per-any-channel (a
+roughness-only or normal-only configuration works); scene instruments extended.
+- Continuity: on axis-aligned faces, M2/M3/M4 reproduce the slice-1 numbers exactly
+  (0.3960 / 11->23 / 0.4355) - the weighted blend degenerates to the dominant
+  projection by construction.
+- S2-octa (tilted surface evidence): window stddev 0.1956 >= 0.05 with the weighted
+  blend live; PNG evidence (s165_octa.png) saved for visual audit.
+- S2-roughness (clean probe): delta_vs_flat 0.0071 >= 0.005; the first run's 0.384
+  was an INSTRUMENT CONTAMINATION (the slot-0 bind activated the legacy texel path);
+  discovered the store rule: gpu_texture_bind is what publishes the texture into the
+  sampler array (load only stores it) - slot-1 publish keeps the probe clean.
+- Determinism: byte-equal at both probe sites. Cost: 3-channel p50 2208us vs
+  off ~1.6-2.2ms (bounded, noise-dominated).
+- CVS Complete Clean Run: 14/14 PASS (all literals byte-exact + goldens identical,
+  zero errors; perf 020:20287/58011).
+- Sig: v165|m2=0.3960|n1=11|n2=23|m4=0.4355|det=1|off=1623|on=1978|wsd=0.1956|rd=0.0071|t3=2208|d2
+Status: 016.5 slice-2 COMPLETE. Remaining candidates (unscoped): triplanar seam
+stitching, per-material channel defaults policy, texture-array >8 growth.

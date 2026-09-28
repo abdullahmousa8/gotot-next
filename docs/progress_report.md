@@ -1022,3 +1022,14 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - CVS Complete Clean Run: 14/14 PASS (all literals byte-exact, goldens identical,
   zero errors; perf 020:22052/59486).
 - 016.5 slice-1 COMPLETE. Next: slice-2 (weighted triplanar + roughness evidence).
+## §50. GNE-016.5 slice-2 — weighted triplanar + roughness evidence (2026-09-29)
+
+- Weighted |N| triplanar live for all channel fetches (budget revised <= 9);
+  per-any-channel outer gate. Axis-aligned continuity: slice-1 numbers reproduce
+  exactly. Octa evidence stddev 0.1956 (PNG). Roughness clean probe delta 0.0071
+  (>=0.005). Determinism byte-equal; 3ch cost p50 2208us (bounded).
+- Instrument discovery recorded: gpu_texture_bind publishes into the sampler
+  array (load only stores); slot-1 publish avoids the legacy texel path - the
+  first roughness probe (0.384) was legacy contamination, corrected.
+- CVS Complete Clean Run 14/14 PASS (literals + goldens byte-exact).
+- 016.5 slice-2 COMPLETE.

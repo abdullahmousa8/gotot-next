@@ -1820,36 +1820,43 @@ void main() {
 	// GNE-016.5 slice-1: texture-driven channels (per-material opt-in; when all
 	// slots are unset this branch is skipped and the legacy path is untouched).
 	vec4 m2a = mat2buf.mats2[int(v_mesh_id) * 2 + 0];
-	if (m2a.x >= -0.5) {
+	// GNE-016.5 slice-2: weighted |N| triplanar for all channel fetches
+	// (fetch budget revised to <= 9; legacy path untouched when all slots unset).
+	if (m2a.x > -0.5 || m2a.y > -0.5 || m2a.z > -0.5) {
 		vec4 m2b = mat2buf.mats2[int(v_mesh_id) * 2 + 1];
-		vec3 an2 = abs(N);
-		vec2 tuv2;
-		if (an2.x >= an2.y && an2.x >= an2.z) {
-			tuv2 = fract(vec2(v_world.z, v_world.y) * m2b.xy);
-		} else if (an2.y >= an2.x && an2.y >= an2.z) {
-			tuv2 = fract(vec2(v_world.x, v_world.z) * m2b.xy);
-		} else {
-			tuv2 = fract(vec2(v_world.x, v_world.y) * m2b.xy);
-		}
-		int tia = (m2a.x >= 0.0 && m2a.x <= 4.0) ? int(m2a.x + 0.5) : -1;
-		if (tia >= 0) {
-			alb = albedo * texture(tex_arr[tia], tuv2).rgb;
-		}
-		int tir = (m2a.y >= 0.0 && m2a.y <= 4.0) ? int(m2a.y + 0.5) : -1;
-		if (tir >= 0) {
-			rough = clamp(rough * texture(tex_arr[tir], tuv2).r, 0.0, 1.0);
-		}
-		int tin = (m2a.z >= 0.0 && m2a.z <= 4.0) ? int(m2a.z + 0.5) : -1;
-		if (tin >= 0) {
-			vec3 nm = texture(tex_arr[tin], tuv2).rgb * 2.0 - 1.0;
-			if (an2.x >= an2.y && an2.x >= an2.z) {
-				N = normalize(N + vec3(0.0, nm.y, nm.z) * 0.6);
-			} else if (an2.y >= an2.x && an2.y >= an2.z) {
-				N = normalize(N + vec3(nm.x, 0.0, nm.z) * 0.6);
-			} else {
-				N = normalize(N + vec3(nm.x, nm.y, 0.0) * 0.6);
+		vec3 aw = abs(N);
+		aw = aw / max(aw.x + aw.y + aw.z, 1e-5);
+		vec2 t_yz = fract(vec2(v_world.z, v_world.y) * m2b.xy);
+		vec2 t_xz = fract(vec2(v_world.x, v_world.z) * m2b.xy);
+		vec2 t_xy = fract(vec2(v_world.x, v_world.y) * m2b.xy);
+		if (m2a.x >= 0.0 && m2a.x <= 4.0) {
+			int tia = int(m2a.x + 0.5);
+			if (tia < 8) {
+				vec3 ca = texture(tex_arr[tia], t_yz).rgb * aw.x + texture(tex_arr[tia], t_xz).rgb * aw.y + texture(tex_arr[tia], t_xy).rgb * aw.z;
+				alb = albedo * ca;
 			}
-			out_normal = vec4(N, 0.0);
+		}
+		if (m2a.y >= 0.0 && m2a.y <= 4.0) {
+			int tir = int(m2a.y + 0.5);
+			if (tir < 8) {
+				float cr = texture(tex_arr[tir], t_yz).r * aw.x + texture(tex_arr[tir], t_xz).r * aw.y + texture(tex_arr[tir], t_xy).r * aw.z;
+				rough = clamp(rough * cr, 0.0, 1.0);
+			}
+		}
+		if (m2a.z >= 0.0 && m2a.z <= 4.0) {
+			int tin = int(m2a.z + 0.5);
+			if (tin < 8) {
+				vec3 nm = (texture(tex_arr[tin], t_yz).rgb * aw.x + texture(tex_arr[tin], t_xz).rgb * aw.y + texture(tex_arr[tin], t_xy).rgb * aw.z) * 2.0 - 1.0;
+				vec3 an2 = abs(N);
+				if (an2.x >= an2.y && an2.x >= an2.z) {
+					N = normalize(N + vec3(0.0, nm.y, nm.z) * 0.6);
+				} else if (an2.y >= an2.x && an2.y >= an2.z) {
+					N = normalize(N + vec3(nm.x, 0.0, nm.z) * 0.6);
+				} else {
+					N = normalize(N + vec3(nm.x, nm.y, 0.0) * 0.6);
+				}
+				out_normal = vec4(N, 0.0);
+			}
 		}
 	}
 	vec3 L = params.light_dir_ambient.xyz;

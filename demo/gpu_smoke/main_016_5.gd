@@ -135,8 +135,11 @@ func _measure() -> void:
 	print("GNE 016.5: checker id=", tid)
 	if tid < 0:
 		_fail(4020, "texture load"); return
-	if not server.gpu_texture_bind(0, 0, tid):
-		_fail(4021, "texture_bind"); return
+	if not server.gpu_texture_bind(0, 1, tid):
+		_fail(4021, "texture publish"); return
+	# gpu_texture_bind publishes the texture into the sampler array + refreshes
+	# the bound set (per the 017 store). Slot 1 avoids the legacy texel path
+	# (tex_slot_pad.x = 0 -> legacy reads slot 0, which stays unbound).
 	if not server.gpu_material_set_maps(0, tid, -1, -1, Vector2(0.0125, 0.0125)):
 		_fail(4022, "set_maps"); return
 	# M5: OFF-state cost reps (before enabling)
@@ -181,6 +184,50 @@ func _measure() -> void:
 	var m4_ok := m4_delta >= 0.05
 	print("GNE 016.5: M4 normals flat=", n_flat, " mapped=", n_map, " delta=", m4_delta, " pass=", m4_ok)
 
+	# --- slice-2: weighted triplanar evidence on a tilted surface (octahedron) ---
+	server.gpu_scene_set_instance_mesh(3, 1)
+	if not server.gpu_texture_bind(3, 1, tid):
+		_fail(4026, "bind octa"); return
+	if not server.gpu_material_set_maps(3, tid, -1, -1, Vector2(0.0125, 0.0125)):
+		_fail(4027, "maps octa"); return
+	if not _redraw():
+		return
+	var pix_octa := server.gpu_raster_read_pixels()
+	var opx := _proj_px(Vector3(320, 0, -686), vp)
+	var wsd := _window_stddev(pix_octa, opx, 4)
+	var wsd_ok := wsd >= 0.05
+	print("GNE 016.5: S2 octa window stddev=", wsd, " pass=*** ", wsd_ok)
+	var oimg := Image.create_from_data(RASTER_W, RASTER_H, false, Image.FORMAT_RGBA8, pix_octa)
+	oimg.save_png("C:/Users/opc/AppData/Local/Temp/opencode/s165_octa.png")
+	# --- slice-2: roughness-channel evidence (roughness-only config on the cube) ---
+	if not server.gpu_material_set_maps(3, -1, -1, -1, Vector2(0.0125, 0.0125)):
+		_fail(4028, "unmap octa"); return
+	if not server.gpu_material_set_maps(0, -1, tid, -1, Vector2(0.0125, 0.0125)):
+		_fail(4029, "rough only"); return
+	if not _redraw():
+		return
+	var pix_ro := server.gpu_raster_read_pixels()
+	var m_ro := _window_mean(pix_ro, fpx, 2)
+	var rd := absf(m_ro - m_flat)
+	var r1_ok := rd >= 0.005
+	print("GNE 016.5: S2 roughness-only m=", m_ro, " delta_vs_flat=", rd, " pass=*** ", r1_ok)
+	if not _redraw():
+		return
+	var pix_ro2 := server.gpu_raster_read_pixels()
+	var det2_ok: bool = (pix_ro == pix_ro2)
+	print("GNE 016.5: S2 roughness determinism=", det2_ok)
+	# M5': three-channel fetch case cost
+	if not server.gpu_material_set_maps(0, tid, tid, tid, Vector2(0.0125, 0.0125)):
+		_fail(4034, "3ch maps"); return
+	if not _redraw():
+		return
+	var t_3ch: Array = []
+	for r in range(3):
+		var t3 := Time.get_ticks_usec()
+		if not _redraw():
+			return
+		t_3ch.append(Time.get_ticks_usec() - t3)
+	print("GNE 016.5: S2 3ch_us=", t_3ch)
 	# M4b: determinism (two identical ON-state draws)
 	if not _redraw():
 		return
@@ -200,14 +247,14 @@ func _measure() -> void:
 		t_on.append(Time.get_ticks_usec() - t1)
 	print("GNE 016.5: M5 cost off_us=", t_off, " on_us=", t_on)
 	_show(pix_nm)
-	var sig := "v165|m2=%.4f|n1=%d|n2=%d|m4=%.4f|det=%d|off=%d|on=%d|d1" % [m2_shift, n1, n2, m4_delta, int(det_ok), _p50(t_off), _p50(t_on)]
+	var sig := "v165|m2=%.4f|n1=%d|n2=%d|m4=%.4f|det=%d|off=%d|on=%d|wsd=%.4f|rd=%.4f|t3=%d|d2" % [m2_shift, n1, n2, m4_delta, int(det_ok), _p50(t_off), _p50(t_on), wsd, rd, _p50(t_3ch)]
 	print("GNE 016.5: sig=", sig)
 	if sig_file != "":
 		var f := FileAccess.open(sig_file, FileAccess.WRITE)
 		if f == null:
 			_fail(4025, "sig file"); return
 		f.store_string(sig + "\n")
-	if m2_ok and m3_ok and m4_ok and det_ok:
+	if m2_ok and m3_ok and m4_ok and det_ok and wsd_ok and r1_ok and det2_ok:
 		print("GNE 016.5: SLICE1 PASS")
 	else:
 		print("GNE 016.5: SLICE1 FAIL m2=", m2_ok, " m3=", m3_ok, " m4=", m4_ok, " det=", det_ok)
