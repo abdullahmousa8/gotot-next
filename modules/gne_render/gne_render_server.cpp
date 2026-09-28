@@ -1544,16 +1544,6 @@ viewdata;
 
 // GNE-022 S3-shading (spec_022 section 10): GI field sampling, flag-gated.
 layout(set = 1, binding = 4) uniform sampler2D gi_atlas_s;
-layout(push_constant, std430) uniform GneGiPush {
-	
-vec4 gi_min;
-	
-vec4 gi_max;
-	
-vec4 gi_dims;
-	
-vec4 gi_params; // (enabled, scale, 0, 0)
-} gi_push;
 float gne_gi_fetch_gate(vec3 a, vec3 b) {
 	
 return 1.0; // visible surface: no extra occlusion against itself
@@ -1611,6 +1601,10 @@ layout(push_constant, std430) uniform MatLightParams {
 	vec4 grid_dims;   // x = raster_w, y = raster_h, z = near, w = far
 	vec4 shadow_ctrl; // x = dir bind idx (-1 = none), y = shadow enable, z = cam near, w = csm blend scale
 	vec4 shadow_cam;  // xyz = camera forward (planar depth for CSM select), w = spare
+	vec4 gi_min;    // GNE-022 section 10: probe-field sampling
+	vec4 gi_max;
+	vec4 gi_dims;
+	vec4 gi_params; // (enabled, scale, 0, 0)
 }
 params;
 
@@ -1865,8 +1859,8 @@ void main() {
 		vec3 bem = (flags.z > 0.5) ? emi : vec3(0.0);
 		col = bem;
 	}
-	if (gi_push.gi_params.x > 0.5) {
-		col += gi_push.gi_params.y * gne_gi_sample_field(gi_atlas_s, gi_push.gi_min.xyz, gi_push.gi_max.xyz, gi_push.gi_dims.xyz, v_world);
+	if (params.gi_params.x > 0.5) {
+		col += params.gi_params.y * gne_gi_sample_field(gi_atlas_s, params.gi_min.xyz, params.gi_max.xyz, params.gi_dims.xyz, v_world);
 	}
 	out_color = vec4(col, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
@@ -6887,7 +6881,7 @@ bool GneRenderServer::_light_ensure_geo() {
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
 	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
 	mat_light_pipeline = rendering_device->render_pipeline_create(
-			mat_light_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 64, 0);
+			mat_light_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mat_light_pipeline.is_null()) {
 		print_error("[GNE] light render_pipeline_create failed.");
 		return false;
@@ -8455,7 +8449,11 @@ draw_frame_seq++;
 		float tex_slot_pad[4];
 		float grid_dims[4]; // raster_w, raster_h, near, far
 		float shadow_ctrl[4]; // dir bind idx, shadow enable, cam near, csm blend scale
-		float shadow_cam[4]; // camera forward xyz (planar depth), spare
+		float shadow_cam[4];
+	float gi_min[4];
+	float gi_max[4];
+	float gi_dims[4];
+	float gi_params[4]; // camera forward xyz (planar depth), spare
 	};
 	LightPush push;
 	push.light_xyz_amb[0] = mat_light_dir.x;
@@ -8495,6 +8493,11 @@ draw_frame_seq++;
 	push.shadow_cam[1] = shadow_cam_basis[7];
 	push.shadow_cam[2] = shadow_cam_basis[8];
 	push.shadow_cam[3] = 0.0f;
+	push.gi_min[0] = gi_min.x; push.gi_min[1] = gi_min.y; push.gi_min[2] = gi_min.z; push.gi_min[3] = 0.0f;
+	push.gi_max[0] = gi_max.x; push.gi_max[1] = gi_max.y; push.gi_max[2] = gi_max.z; push.gi_max[3] = 0.0f;
+	push.gi_dims[0] = (float)gi_gx; push.gi_dims[1] = (float)gi_gy; push.gi_dims[2] = (float)gi_gz; push.gi_dims[3] = 0.0f;
+	push.gi_params[0] = (gi_atlas.is_valid() && gne_gi_enabled) ? 1.0f : 0.0f;
+	push.gi_params[1] = 1.0f; push.gi_params[2] = 0.0f; push.gi_params[3] = 0.0f;
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
 	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
@@ -8505,18 +8508,6 @@ draw_frame_seq++;
 	}
 	rendering_device->draw_list_bind_render_pipeline(dl, mat_light_pipeline);
 	rendering_device->draw_list_bind_uniform_set(dl, mat_light_uniform_set, 0);
-	{
-		float gpc[16];
-		if (gi_atlas.is_valid()) {
-			gpc[0] = gi_min.x; gpc[1] = gi_min.y; gpc[2] = gi_min.z; gpc[3] = 0.0f;
-			gpc[4] = gi_max.x; gpc[5] = gi_max.y; gpc[6] = gi_max.z; gpc[7] = 0.0f;
-			gpc[8] = (float)gi_gx; gpc[9] = (float)gi_gy; gpc[10] = (float)gi_gz; gpc[11] = 0.0f;
-			gpc[12] = gne_gi_enabled ? 1.0f : 0.0f; gpc[13] = 1.0f; gpc[14] = 0.0f; gpc[15] = 0.0f;
-		} else {
-			for (int gi = 0; gi < 16; gi++) { gpc[gi] = 0.0f; }
-		}
-		rendering_device->draw_list_set_push_constant(dl, gpc, 64);
-	}
 	rendering_device->draw_list_bind_uniform_set(dl, mat_light_tex_set, 1);
 	if (shadow_set2.is_null() && !_shadow_ensure_set2()) {
 		print_error("[GNE] gpu_material_draw_lights: shadow set-2 unavailable.");
