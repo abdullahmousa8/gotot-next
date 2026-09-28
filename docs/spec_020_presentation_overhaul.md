@@ -1,6 +1,6 @@
 # GNE-020 - Presentation Overhaul (Readback Bytes + Staging) - SPEC DRAFT v0.1
 
-**Status:** DRAFT v0.1 (2026-09-28) - awaiting Architect decision set D9. NOT approved for implementation.
+**Status:** DRAFT v0.1 (2026-09-28) - awaiting Architect decision set D9 (safe defaults adopted for unit 1 - section 11). No module changes yet: unit 1 is the baseline measurement scene/harness only.
 **Depends:** 015.5 (Resource Pool), 015.6 (KI sprint), 009 (raster readback), 018 / 018-rev / 019 gates.
 **Closes (planned):** KI-003 follow-up (presentation cost floor) + 015.5 C6 double-buffering item (deferred here by contract_015_6_c6).
 **Scope guard:** presentation / readback path only. No engine edits (KI-001 / KI-002 / KI-003 consistency rule). No pixel-content change in any existing gated path: the reduced-resolution output lands only behind a new opt-in flag + new scene, so every legacy literal (v18, v18-rev, v19, ...) stays byte-exact.
@@ -104,3 +104,18 @@ then report median/p95/max wall-clock + byte accounting before/after (015.6 evid
 - Module changes (reduced-res present path; staging rotation) behind flags.
 - main_020 + tools/gt_020a (two runs, byte-compare, evidence dump).
 - 5 contracts; evidence note (before/after raw numbers); closure doc + progress section.
+## 11. Adopted defaults + recorded baseline (executor, delegated authority, 2026-09-28)
+
+Adopted so unit 1 could proceed without blocking. All reversible; subject to Architect review.
+- D9-1 = 960x540 primary reduced target (4x fewer bytes - the KI-003 evidenced route).
+- D9-2 = double-buffering in scope; depth 2; effect measured through the same loop (stall-sensitive wall distribution).
+- D9-3 = fixed loop in main_020: warm-up 10 + measured 60 frames; vsync DISABLED for the loop (measurement mode, documented in the scene); same-binary noise-floor runs (both harness runs).
+- D9-4 = gate signature `v20|tw|th|rb|rf|d1` (deterministic fields only; no timings inside).
+- D9-5 = P2 gate threshold >= 2x byte reduction on the reduced path (expected 4x); timings stay evidence-only.
+- D9-6 = env flag `GNE_PRESENT_LOWRES` + feature-detected `gpu_present_lowres_set()` / `gpu_present_read_pixels()` / `gpu_present_info()`; default off / full raster.
+
+Baseline (unit 1: `main_020` + `tools/gt_020a.bat`, this build; wall-clock, evidence-only):
+- sig d1 == d2: `v20|tw=1920|th=1080|rb=8294400|rf=60|d1`; rc 0/0; zero ERROR / RID lines.
+- p50 per run: 14644 / 14800 us; wall_avg: 15108 / 15878 us; p95: 18422 / 17866 us; run wall: 1452 / 1565 ms.
+- Readback accounting: 70 reads x 8,294,400 B = 580,608,000 B per run (scene-side count; the module pool `bytes_copied` counter is currently never incremented - observed; not used for this measurement).
+- Note: vsync clamps frames at ~16.6 ms unless disabled; the scene disables it for the measurement loop.
