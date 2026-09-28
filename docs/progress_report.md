@@ -892,3 +892,21 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 **Characteristics recorded:** bounded GI radius (effective per-hop coefficients ~0.4 -> 0.03; half-float floor) - the practical note stands; M3 occlusion gating by design; no denoiser; determinism preserved; transport cost ~0.7ms/update.
 **Commits:** 159017f ... 4ed572a (see spec_022 section 9.x for the full chain; this closure commits the gate result).
 **Next:** S3 remains an architectural decision (KI-015); shading integration + normalization (17.6x condition) is the next candidate unit; the GI label is now available for labeled work.
+
+## §41. GNE-022 §10 step-2 - fragment integration + ratio gate (2026-09-29)
+
+- Fragment consumer live: shared sampler injected into the material fragment
+  (hook 1.0); params merged into the existing MatLightParams push block (one
+  push_constant block per stage - glslang rule; a second block broke lit scenes
+  briefly, fixed the same day); per-front cached set-1 (gi_draw_sets[2]) because
+  the trace ping-pongs the atlas (the back-atlas bug read byte-zero deltas).
+- Teardown: light set-1 + per-front sets freed BEFORE gi_sampler/atlases
+  (invalid-ID error eliminated).
+- Ratio gate (main_022_shade, witness cubes at the S1b probe cells, s=0.03
+  uniform): near 0.7918 / far 0.04329 = 18.29x >= 16x PASS.
+- Determinism: sig byte-equal across 3 processes; gt_018a literal v18 PASS after
+  the final build; teardown clean (no ERROR/leak lines).
+- Cost evidence: draw-path p50 delta +53us / +230us across two runs (noisy).
+- Commits: 3c6b4c1 (push-block fix), b01d6e6 (front-atlas + teardown + scene).
+- Next: full battery sweep (gate 5), then stop at the decision point (S3 vs
+  deeper integration vs other) with the report.

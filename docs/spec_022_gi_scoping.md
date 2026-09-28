@@ -630,3 +630,25 @@ injection. NEUTRALITY VERIFIED: the paired gate re-ran byte-identical to the
 pre-refactor run (raw A = 0.80571126937866, f240 = 0.00001507811248, PASS paired).
 Remaining for this unit: the material-fragment consumer (hook = 1.0), its parameter
 path, and the five validation gates.
+**Step-2 (fragment integration) done 2026-09-29 (commit b01d6e6):** the material
+fragment samples the field: //GNE_GI_SHARED injection (hook = 1.0), params via 4
+vec4 appended to MatLightParams (one push_constant block per stage - glslang link
+rule, found live when a second GneGiPush block broke lit scenes), set-1 binding 4 =
+gi_sampler + front atlas. The trace ping-pongs gi_atlas/gi_atlas2, so the draw binds
+per-front cached sets (gi_draw_sets[2], built lazily) - without this the fragment
+sampled the back (empty) atlas: symptom was byte-zero ON-OFF delta with a valid
+field. Free order fixed in _destroy_mesh: light set-1 + per-front sets BEFORE
+gi_sampler/atlases (the late free produced "free invalid ID" once both exist).
+Gates on main_022_shade (city + black albedo + witness cubes at the S1b near/far
+probe cells; uniform light scale s=0.03, ratio-invariant by construction):
+1. flag-off: gt_018a literal v18 PASS (byte-identical) - re-verified after every
+   step including the final build.
+2. ratio: near 0.7918 / far 0.04329 = 18.29x >= 16x PASS; 5141 of 591829 positive
+   pixels saturate at scale 1.0 (brightest spots; both witnesses unclipped).
+3. determinism: sig byte-equal across 3 processes
+   (v22shade|nr=0.7918|fr=0.04329|rt=18.29|s=0.03|clip=5141|d1).
+4. cost: redraw p50 delta +53us (run A) and +230us (run B) - noisy, evidence-only.
+5. teardown: no invalid-ID/leak lines after the free-order fix.
+Field cross-check same scene, single raw trace: near 0.6858 / far 0.0523 = 13.1x
+(the S1b 22.60/1.29 was read after 7 traces with bounce feedback; the rendered
+window ratio 18.29 is the gate measurement). Battery full sweep still pending.
