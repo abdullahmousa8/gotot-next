@@ -159,3 +159,22 @@ and proceed as planned.
 **Artifacts:** `modules/gne_render/gne_rt_selftest.cpp` (test-only, additive;
 tracked tool), `demo/gpu_smoke/main_022_rt0.gd/.tscn`; evidence logs (temp):
 rt0_run1/rt0_run2/rt0_verbose.
+## 8. S1 build plan (frozen design for the first slice)
+
+- Probe grid: uniform grid over the scene AABB; dims configurable; initial default
+  16 x 8 x 16 = 2048 probes (budget measured in S1, not assumed).
+- Rays: fixed per-probe direction set (8x8 cosine-weighted hemisphere, deterministic) -
+  64 rays/probe; ray-vs-AABB slab test over the instance bounds buffer (existing), with
+  per-instance transform + scale decode.
+- Radiance at hit: analytic - sum over lights in range of the hit point (sphere test;
+  same model as the light cull), scaled by a simple BRDF factor; miss rays receive a
+  constant ambient term (documented; no sky model in S1).
+- Storage: octahedral irradiance atlas RGBA16F, 8x8 texels per probe.
+- Update: full-grid deterministic recompute per dispatch (prototype); round-robin /
+  temporal accumulation = S2.
+- Determinism: fixed ray set + fixed accumulation order (no atomics) - byte-stable per
+  machine; gate-friendly.
+- Validation: (a) closed-form case (single light + single wall plane; probe irradiance
+  vs the analytic formula), (b) city sanity (near-street probes brighter than far
+  probes), (c) budget report (dispatch cost, atlas size, probe budget).
+- Flag: `gne_gi_enabled` (default false); no existing gate touches it.

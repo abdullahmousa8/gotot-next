@@ -285,6 +285,35 @@ field in the rev signature; the OFF path remains ot=0. Overflow semantics / cap
 policy re-examination is parked with the dense-light scenario. Status unchanged:
 FIXED (gated), verified in R1.
 
+## KI-015: Hardware Ray Tracing Unusable - RT Pipeline Creation Fails (Fork-Level)
+
+**Date:** 2026-09-28
+**Status:** Open - fork/engine-level blocker; NOT GI-specific (any future RT feature hits it)
+**Severity:** Medium (blocks hardware-RT features: GI S3 backend, future RT reflections; compute-only paths unaffected)
+**Owner:** GNE Architecture / engine-fork owner
+
+**FACT:**
+- R0-RT isolation test (spec_022 section 7) proved the RD RT stack works up to and including:
+  RT capability detection + feature enablement at device creation, BLAS/TLAS create+build,
+  RT GLSL raygen/miss/closest-hit compilation, shader creation, SBT create/range handling,
+  acceleration-structure uniform binding.
+- `vkCreateRayTracingPipelinesKHR` fails with `VK_ERROR_INITIALIZATION_FAILED` (-3) in
+  `RenderingDeviceDriverVulkan::raytracing_pipeline_create`
+  (godot-master/drivers/vulkan/rendering_device_driver_vulkan.cpp:6677). Reproduced across
+  runs; the pipeline-cache hypothesis was tested (cache-disabled run) and eliminated.
+
+**ROOT CAUSE:** NOT diagnosed. Candidates (undistinguished): SPIR-V post-processing of RT
+stages inside the fork; pipeline-layout stage-flag construction for RT pipelines; a
+driver-level condition on this pipeline configuration.
+
+**IMPACT / GNE RELEVANCE:**
+- Blocks any hardware-RT feature on this fork (GI S3, future RT reflections/ray queries).
+- Does NOT affect raster/compute pipelines, compute-only GI (S1/S2), or any existing gate.
+
+**NEXT (not scheduled):** engine-level diagnosis requires dedicated engine work outside the
+current boundaries. Until then: hardware RT = unavailable; designs must not assume it.
+
+**Evidence:** temp rt0_run1.log / rt0_run2.log / rt0_verbose.log; code references above.
 ## 015.5 C6 status (closed in 015.6)
 
 **الحالة:** مقبول + موثّق (double-buffering مؤجّل إلى 020) — "تقليل الحجم" يكسر DET.
