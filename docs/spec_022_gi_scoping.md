@@ -455,3 +455,33 @@ accumulation frames each; criteria frozen per 9.3.
   (c) candidate mechanism suspect: M3's grazing-margin behavior for segments lying
       along the ground face (tn>0.5 margin vs grazing) - verify whether legitimate
       contributions are being gated by the ground plane itself.
+### 9.3.6 Manual re-derivation of the deep expectation (Architect-ordered, before any bug chase)
+
+Observation base (this run): rawA = 0.8057, rawM = 0.00251, M240 = 0.00394 (echo =
++0.00143 over its own direct), deep-B = 0.0. Lattice: 200-unit z cells; A at +500,
+M at -500 (5 hops), B at -900 (7 hops).
+
+**Original derivation (frozen interval):** est = rawA x 0.35 x 0.1 = 0.0282 ->
+[0.0094, 0.0846]. Applied the attenuation factor ONCE regardless of the 7-hop path -
+i.e., it implicitly assumed near-lossless multi-hop transport. This is over-idealized:
+the attenuation must compound per hop.
+
+**Per-hop compounding, calibrated from the measurement itself:**
+- echo(M) = source x c^hops: 0.00143 = 0.8057 x c^5 -> c = (0.001774)^(1/5) = 0.282.
+- predicted deep-B = 0.8057 x c^7 = 0.8057 x 1.41e-4 = **1.13e-4** (or, chained from M:
+  c^2 x M240 = 3.1e-4).
+- half-float storage floor (denormal min) = 5.96e-8: the predicted 1.1e-4..3.1e-4 is
+  well ABOVE the floor -> the observed 0.0 is NOT explained by storage precision.
+
+**Conclusion of the re-derivation:** the original interval WAS physically flawed
+(single-factor), so the frozen [-0.0094..0.0846]-style check could never be met
+by a realistic cascade - that part of the architect's suspicion is confirmed. BUT the
+empirically-calibrated expectation (~1e-4..3e-4) is still ~10^5 above the observed 0.0:
+a real tension remains. Therefore the mechanism investigation continues, in the
+recorded order - starting with the grazing-margin check (item #3) plus the -700-row
+instrumentation (item #2), before any criterion change.
+
+**Recorded for the criterion history:** the deep-probe interval as frozen (9.3) is
+acknowledged over-idealized; any future interval must be derived per-hop (compounded),
+and the calibration c must be measured, not assumed. No change is applied to the
+official criteria until the mechanism question is settled (Architect to rule).
