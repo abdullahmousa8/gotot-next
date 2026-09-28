@@ -165,3 +165,21 @@ Flag-gated module changes; cone buffer + pass + set updates; `main_018_rev` + `g
   back-face anchor (`gne_backface_dot_box`); teardown frees for the cone objects.
 - Evidence: docs/rev_r1_evidence.md; progress_report section 37. Commits: 51fbf5c,
   ef0d402, 9fa2de1, a3d5e8e, a696b9f.
+## 12. Default-state decision: cone culling ships DISABLED by default (2026-09-28)
+
+**Decision (explicit; recorded so the code state is never read as a claim):**
+`light_cone_enabled` stays `false` by default in `gpu_light_create` (header default,
+`gne_render_server.h`). Enabling happens only via `gpu_light_set_normal_cone(true)` or
+the measurement-only env override `GNE_REV_CONE=1` (read once; unset in every gate).
+
+Rationale (same spirit as the 020 "mitigated, not solved" framing):
+- The mechanism is VERIFIED correct and safe: R1 confinement + NdotL signature gates
+  (outside=0, unexplained=0), R7 staleness gate (age=1), DET, full sweep green.
+- The QUANTITATIVE benefit is NOT yet proven: dc=13 assignments (0.11% of the corrected
+  base) on the rev scene; the provisional >=10% target is unmet and not claimed.
+- Default-on would ship extra per-frame cost (cone build pass + 55 KB buffer + cull
+  prefilter) with unproven net effect. Therefore: OFF until the dense-light scenario
+  demonstrates savings > cost (tracked in spec_020 section 13 open items).
+- Flipping the default is a one-line change to be made AFTER that evidence lands - at
+  which point this section gets an update note. This is an explicit decision, not an
+  implicit state.
