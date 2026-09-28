@@ -11,6 +11,7 @@ set GODOT=C:\Users\opc\Documents\AI_ENGINE\godot-master\bin\godot.windows.editor
 set PROJ=C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\demo\gpu_smoke
 set TMPC=C:\Users\opc\AppData\Local\Temp\opencode
 set OUT=%TMPC%\gt_regress.txt
+set FAILED=0
 
 if not exist "%GODOT%" (
   echo [FATAL] engine exe missing: %GODOT%
@@ -41,6 +42,8 @@ exit /b 1
 set NAME=%1
 REM %2 = XFAIL for known WIP milestones that are deferred by Architect decision
 REM (012 = occlusion WIP). They are reported, never counted as gate failures.
+REM 2026-09-28: fixed XFAIL semantics - a deferred scene no longer
+REM resets/erases failures recorded by earlier scenes (KI-013).
 set XFAIL=%2
 set LOGF=%TMPC%\reg_%NAME%.log
 set SIGF=%TMPC%\reg_%NAME%.txt
@@ -62,8 +65,7 @@ if "%HAS%"=="0" set BAD=1
 if "%OK%"=="0" set BAD=1
 findstr /c:"ERROR:" "%LOGF%" >nul 2>&1
 if not errorlevel 1 set BAD=1
-if "%BAD%"=="1" set FAILED=1
-if "%BAD%"=="1" if "%XFAIL%"=="XFAIL" set FAILED=0
+if "%BAD%"=="1" if not "%XFAIL%"=="XFAIL" set FAILED=1
 if "%BAD%"=="1" if "%XFAIL%"=="XFAIL" echo     XFAIL (known WIP, deferred - not gating)
 if "%BAD%"=="0" if "%XFAIL%"=="XFAIL" echo     UNEXPECTED PASS - XFAIL milestone now passes; promote it to a gate and drop the marker
 echo     rc=%RC% marker=%HAS% pass=%OK% bad=%BAD%

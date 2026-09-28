@@ -189,7 +189,7 @@
 ## KI-013: gt_regress FAILED Flag Reset By The XFAIL Scene (Harness, Pre-Existing)
 
 **Date:** 2026-09-28
-**Status:** Open - pre-existing harness accounting defect; unrelated to 018-rev
+**Status:** Open - masking defect FIXED 2026-09-28 (see Update); main_008b own-failure disposition pending
 **Severity:** Medium (masked failures - any scene failing BEFORE the main_012 XFAIL call is forgiven)
 **Owner:** GNE Architecture
 
@@ -207,6 +207,8 @@
 
 **Evidence:**
 - temp\opencode\r0_dbg_regress.bat / r0_dbg_mask.bat runs (repro), r0_baseline\r0_verdict_summary.txt.
+
+**Update 2026-09-28 (directive task A completed):** the masking defect is fixed in `tools/gt_regress.bat`: `set FAILED=0` initialization added; the XFAIL branch no longer resets the accumulated flag (`if not "%XFAIL%"=="XFAIL" set FAILED=1`); REM note added. Validated by scenario runs: [008b + 012-XFAIL] -> FAIL (exit 1, no masking), [012-XFAIL only] -> PASS (exit 0), [007 only] -> PASS (exit 0). Post-fix battery re-run shows the true per-scene state; main_008b now surfaces its own rc=75 openly - its disposition is tracked under directive task B.
 
 ## 015.5 C6 status (closed in 015.6)
 
