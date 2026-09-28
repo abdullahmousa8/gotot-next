@@ -1,0 +1,9 @@
+# GNE CVS baseline - exact expected signatures for the GT gates.
+# Change values ONLY when a signature change is an accepted, recorded decision.
+gt_016a=v16|mc=8|L-0.41|-0.82|-0.41|amb=0.10|hp=2072056|hr=0.95|d1
+gt_017a=v17|tc=1|fmt=uastc|slot=5|hr=0.51|d1
+gt_018a=v18|lc=20|cc=2841|ot=0|hr=0.94|d1
+gt_018a_rev=v18-rev|lc=20|cc=3091|dc=13|ot=9|dp=2558|d1
+gt_019a=v19|lc=20|sm=5|cs=4|rd=1|hr=1.00|d1
+gt_020a=v20|tw=1920|th=1080|rb=8294400|rf=60|d1
+gt_021a=v21|lc=256|of=36097|sl=38620|on=38434|d1
