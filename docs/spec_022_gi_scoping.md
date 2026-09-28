@@ -240,3 +240,47 @@ from 0.023 (edge) to 0.356 (near the light) - monotonic toward the light.
 lands (shading integration), the normalized near/far ratio must PRESERVE the measured
 ~17.6x (raw 22.60 vs 1.29) - no compression or saturation - and must be tested with
 the same rigor as this section.
+## 9. S2 pre-registration (frozen BEFORE implementation; Architect, 2026-09-28)
+
+S2 opens the feedback loop (probe -> probe across frames). Three decisions frozen up
+front, same pattern as S1:
+
+### 9.1 Convergence/stability acceptance (FIRST test, before any accuracy measurement)
+
+- Static scene; N = 60 accumulation frames; a fixed probe's average recorded every
+  10 frames.
+- PASS requires ALL of: (a) every recorded value finite; (b) late convergence:
+  |v60 - v50| <= 1% of v60; (c) bounded gain: v60 <= 3x v10.
+- Rationale for 3x: with albedo 0.35 the physical steady-state gain over direct is
+  ~1/(1 - 0.35) = 1.54x; 3x leaves slack for sampling approximation without permitting
+  blow-up. Any blow-up/oscillation fails S2 at THIS gate first; later units may not
+  mask it.
+
+### 9.2 Cross-frame determinism (documented BEFORE any S2 regression gate)
+
+- Frame N depends ONLY on frame N-1 plus fixed program constants: each accumulation
+  step is self-contained per dispatch (reads atlas A, writes atlas B; no atomics; fixed
+  iteration order; no wall-clock, no timestamps, no viewport/window dependence - the
+  KI-012 class of inputs is excluded by construction).
+- Verified by: two fresh-process runs of the same 60-frame sequence produce identical
+  recorded values (byte-equal printed sequences). No S2 regression gate ships before
+  this verification exists.
+
+### 9.3 "GI" naming gate (official acceptance criterion, built FIRST)
+
+- Scene: light in region A; a wall separates region B; every hit point inside B lies
+  outside the light's range and the gate run uses miss-ambient = 0, so direct radiance
+  in B is identically zero.
+- Gate: after N accumulation frames a deep-B probe shows avg radiance > 0 (beyond a
+  documented float-noise floor, e.g. > 1e-3) WHILE its single-shot direct-only reading
+  (mode RAW, bounce disabled, same scene) is exactly 0.0.
+- Only after this gate passes may the milestone use the word "GI" in any claim. The
+  gate is built before any performance tuning or shading integration.
+- Honesty note: the current direct model has no per-light shadowing/NdotL (occlusion
+  comes from first-hit only); the gate is designed to be strict under that model.
+
+### 9.4 Order (binding)
+
+convergence/stability -> cross-frame determinism -> GI naming gate -> shading
+integration + normalization (with the recorded 17.6x-preservation condition, section
+8.3).
