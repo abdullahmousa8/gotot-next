@@ -7,11 +7,11 @@
 | KI-001 | GPU timestamps NA | 015.6 | Before 018 | Scheduled |
 | KI-002 | Async readback shares staging | 015.6 | Before 018 | Scheduled |
 | KI-003 | Presentation optimization no effect | 020 | Before Production | Deferred |
-| KI-007 | HZB uses AABB occluders | 019 | Before 020 | Scheduled |
+| KI-007 | HZB uses AABB occluders | 019 | Before 020 | CLOSED via 019 (real depth, rd=1) |
 | KI-011 | Specular not gated by NdotL (pre-existing) | Unassigned | Owner decision | Open |
 | KI-012 | Demo window size externally mutable (pre-existing) | Unassigned | Owner decision | Open |
-| KI-013 | gt_regress FAILED reset by XFAIL scene (harness) | Unassigned | Owner decision | Open |
-| KI-014 | Cluster lists under-cover corner pixels (linear vs euclidean slice) | 018-rev (fixed behind rev flag) | Before R1 | FIXED (gated) |
+| KI-013 | gt_regress FAILED reset by XFAIL scene (harness) | Unassigned | Owner decision | Resolved (commit 6bf851a) |
+| KI-014 | Cluster lists under-cover corner pixels (linear vs euclidean slice) | 018-rev (fixed behind rev flag) | Before R1 | FIXED (gated) + verified in R1 |
 
 ## Closure Schedule
 

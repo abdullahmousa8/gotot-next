@@ -274,6 +274,15 @@
 - temp\opencode\b008\r0chk_f6_run2.log (F6 rows); m018_off.log / m018_on.log (stats);
   docs/rev_slab_gap_note.md (mechanism derivation).
 
+**R1 closure addendum (2026-09-28):** final canonical numbers on `main_018_rev`:
+slab=12363 -> on=12350 assignments; overflows 0 -> 9; dc=13; d1==d2 signature
+`v18-rev|lc=20|cc=3091|dc=13|ot=9|dp=2558|d1`. (The earlier env-override
+measurement on main_018 read overflows 0 -> 13; both are recorded; the rev-scene
+number is canonical for 018-rev.) The over-cap clusters stay loud via the `ot`
+field in the rev signature; the OFF path remains ot=0. Overflow semantics / cap
+policy re-examination is parked with the dense-light scenario. Status unchanged:
+FIXED (gated), verified in R1.
+
 ## 015.5 C6 status (closed in 015.6)
 
 **الحالة:** مقبول + موثّق (double-buffering مؤجّل إلى 020) — "تقليل الحجم" يكسر DET.

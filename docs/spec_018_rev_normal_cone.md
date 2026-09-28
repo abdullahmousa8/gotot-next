@@ -1,7 +1,7 @@
 # GNE-018-rev - Normal-Cone Back-Face Cluster Culling (SPEC v1.0)
 
 **Status:** FINAL v1.0 - D8-rev decisions approved (Architect, 2026-09-28); amendments A1/A2 applied.
-Lab reference frozen at ClusteredLightingLab `28d5af0`. Ready for implementation.
+Lab reference frozen at ClusteredLightingLab `28d5af0`. Implemented + R1 PASS (2026-09-28); canonical rev signature `v18-rev|lc=20|cc=3091|dc=13|ot=9|dp=2558|d1` (d1 == d2); closure note in section 11.
 **Depends:** 018 (Lighting, FINAL).
 **Borrows (math + safety rules, NOT code):** isolated reference lab `ClusteredLightingLab`
 (GL 4.3, no shared code); frozen reference revision `28d5af0` (2026-09-28) containing the
@@ -148,3 +148,20 @@ Flag-gated module changes; cone buffer + pass + set updates; `main_018_rev` + `g
   regions with the NdotL <= 0 signature check; no leak fix inside 018-rev.
 - **A2 (2026-09-28, Architect directive):** single-frame staleness converted from a
   documentation note into an explicit regression criterion (R7) tied to gt_018a_rev.
+
+## 11. Closure (2026-09-28)
+
+- Units 2a/2b/2c + R1 complete; full sweep 9/9 green; the flag-off path stays
+  byte-identical (v18 literal intact).
+- As-built signature fields: `lc, cc, dc, ot, dp, d1` (dp = differing-pixel count;
+  evidence per R6 - replaces the proposal's hr field).
+- R2 decision (delegated): measured dc=13; the provisional >=10% target is NOT met
+  on this scene and not claimed; the quantitative scale target stays open and moves
+  to the dense-light scenario (benchmark city). The criterion was not redefined to
+  pass.
+- ot=9 on the rev path: loud marker kept; overflow semantics / cap policy tracked
+  in KI-014's R1 addendum.
+- Two integration defects found and fixed by the R1 self-check: closest-point
+  back-face anchor (`gne_backface_dot_box`); teardown frees for the cone objects.
+- Evidence: docs/rev_r1_evidence.md; progress_report section 37. Commits: 51fbf5c,
+  ef0d402, 9fa2de1, a3d5e8e, a696b9f.

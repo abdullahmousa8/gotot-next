@@ -32,11 +32,25 @@ assignments=11348, overflows=0).
 2. **Teardown gaps:** light_cone_{shader,pipeline,sampler,set} + selftest objects
    were not freed (KI-009 pattern); closed in _destroy_mesh.
 
-## Open decision items (Architect)
+## Battery state
 
-- **dc on this scene = 13 assignments (~0.1% of the corrected base):** the SPEC's R2
-  was provisional (>=10% initial, measured-at). The 20-light scene simply offers few
-  back-facing clusters. Options: (a) re-scope the threshold to the measured reality,
-  (b) add a dense-light stress sub-scene, (c) accept and document.
-- **ot=9 on the ON path** (the slab fix pushes 9 clusters past the 16 cap on this
-  scene; overflow is the loud by-design marker; the OFF path stays ot=0).
+Full sweep on the final binary: 9/9 green - gt_regress, gt_011, gt_015a, gt_015_5_phase4,
+gt_016a, gt_017a, gt_018a, gt_019a, gt_018a_rev (all rc=0; legacy literals v18/v19
+byte-intact).
+
+## Decisions (executor, under user authorization 2026-09-28)
+
+Both open items were decided under explicit user delegation ("choose the safest
+decision") with this principle: never move a threshold to make a test pass, never
+hide a measured defect, keep every gap falsifiable and tracked.
+
+1. **dc / R2 - measured, not redefined:** dc=13 assignments (~0.11% of the corrected
+   base). The provisional >=10% target is NOT met on this scene and is NOT claimed;
+   per D8-rev-5 "measured-at" the measured value is recorded and pinned byte-exact
+   by the signature (dc=13 inside `v18-rev|...`). The quantitative >=10% scale
+   target is deferred - still open - to the dense-light scenario (benchmark-city
+   work item); the criterion is not redefined to pass here.
+2. **ot=9 - accepted, loud, tracked:** the KI-014 fix expands cluster lists, pushing
+   9 clusters over the 16 cap on this scene; the overflow count stays visible in
+   the rev signature (ot=9) and the OFF path remains ot=0. Overflow semantics / cap
+   policy re-examination is recorded in KI-014's R1 closure addendum.

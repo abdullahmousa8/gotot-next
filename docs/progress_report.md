@@ -841,3 +841,13 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 **KI-009 (RID leaks):** CLOSED - _shadow_ensure_set2 lazy dummies were recreated unfreed by the store block; reuse-only fix; zero leak lines in all runs.
 **KI-010 (harness RID check):** FIXED - all harnesses now match the current Godot leak format (RID.*of type).
 **Commits:** b85d4dd (019 milestone), 3951191 (RID leaks), b661c0f (KI-010). Next: 020 (GI) per SPEC.
+
+## 37. GNE-018-rev - Normal-Cone Back-Face Culling (PASS - R1 gate)
+
+**Outcome:** GT_018A_REV PASS - d1/d2 byte-identical `v18-rev|lc=20|cc=3091|dc=13|ot=9|dp=2558|d1`; rc 0/0; zero leak lines; the OFF/legacy paths stay byte-identical (v18 literal intact in gt_018a and gt_regress).
+**Criteria:** R1 scoped PASS (2558 differing pixels: outside=0 - all inside cull-affected clusters; unexplained=0 - all carry the KI-011 NdotL<=0 signature). R7 PASS (cone source age=1 at use; engine-exposed epochs [3,3,1,1]). R3 DET PASS. R4 regressions PASS (full sweep; v18/v19 literals byte-intact). R5 hygiene PASS (zero RID leaks after closing the unit's teardown gaps). R6 evidence: assignment counts and dropped lists recorded; no timings in the signature.
+**R2 decision (executor, delegated 2026-09-28):** measured dc=13 assignments (slab 12363 -> on 12350; ~0.11% of the corrected base). The provisional >=10% target is NOT met on this scene and is NOT claimed; per D8-rev-5 "measured-at" the measured value is recorded and pinned byte-exact by the signature; the quantitative >=10% scale target moves to the dense-light scenario (benchmark-city work item), still open. The criterion was not redefined to pass.
+**Defects found + fixed during the unit (both by the R1 self-check):** (1) back-face anchor over-cull - the AABB-min anchor (lab pattern) sat up to ~330 units off-surface with our 120 px tiles (~25 degree direction error), measured 2682 unexplained pixels; fixed with `gne_backface_dot_box` (closest-point anchor, strictly conservative; after fix unexplained=0). (2) teardown gaps - light_cone objects and selftest objects now freed in _destroy_mesh (KI-009 pattern).
+**ot=9 note:** the KI-014 fix expands lists; 9 clusters exceed the 16 cap on this scene (loud marker in the signature; OFF path stays ot=0). Overflow semantics / cap policy tracked in KI-014's R1 addendum.
+**Artifacts:** main_018_rev.gd/.tscn, tools/gt_018a_rev.bat, docs/rev_r1_evidence.md. Commits: 51fbf5c (2a), ef0d402 (2b), 9fa2de1 (KI-014), a3d5e8e (2c), a696b9f (R1).
+**Next:** 020 (open scope decision: presentation/KI-003 vs GI).
