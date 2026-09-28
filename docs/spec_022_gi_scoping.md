@@ -536,3 +536,32 @@ time mixes spatial decay with per-hop time lag and steepens toward the tail. Che
 growth of the iz=4/iz=3 values over 1000+ frames (cheap - ~0.7 ms per frame).
 The official gate has no fixed N in its criteria (9.3), so a longer accumulation window
 is legitimate IF this candidate confirms.
+### 9.3.9 Long-window convergence check (Architect-ordered geometric-delta test) - RESULT
+
+1200 accumulation frames; samples every 100; iz4 and iz3 (the tail cells).
+
+- iz4: IDENTICAL value 1.507811248e-5 at EVERY sample f=100..1200 (deltas all exactly
+  0.0). iz3: 0.0 always.
+- Geometric-delta check reports true trivially (all deltas zero) - i.e., the tail is
+  NOT lagging-converging; it is LOCKED at its steady state.
+
+**Hypothesis update:** temporal-lag hypotheses REFUTED (frozen, not lagging). The
+spatial steepening/cliff measured in 9.3.8 is a STEADY-STATE property of the coupling
+itself.
+
+**Candidate mechanism story (shown arithmetically, labeled candidate):** the per-hop
+coupling coefficient is small because the gather is a 64-ray average where only a few
+rays sample the lit-side neighbour with meaningful trilinear weight. At iz4: implied
+gather G = v/0.35 = 4.31e-5; an estimate with ~4 of 64 rays sampling iz5 at weight
+~0.5: G ~= (4/64) x 0.5 x 0.0039 x 0.35 = 4.3e-5 - matches the implied value. Effective
+per-hop coefficients ~0.03 (tail) to ~0.4 (bright zone). At iz3 the expected value
+(0.35 x ~0.01-0.03 x 1.5e-5 ~ 5e-8..1.6e-7) sits at/below the half-float subnormal
+range (5.96e-8) and rounds to 0.0.
+
+**Practical note recorded (Architect-ordered, stands regardless of the final gate
+outcome):** convergence of the local value is fast (~85-90 frames, S2), but the
+USABLE transport radius is limited by (i) the small effective per-hop coefficients and
+(ii) the half-float storage floor - light transport dies out within a handful of cells
+for realistic albedo. For any future interactive use this defines a practical GI
+radius budget; same "MITIGATED not SOLVED" spirit - reported as a characteristic, not a
+defect to hide.

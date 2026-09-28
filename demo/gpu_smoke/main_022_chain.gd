@@ -34,21 +34,29 @@ func _ready() -> void:
 	print("CHAIN: raw_row iz=3..12 (z=-900..+900)=", raw_row)
 	server.gpu_gi_config({"bounce": true})
 	server.gpu_gi_reset()
-	for f in range(1, 241):
+	var s3: Array = []
+	var s4: Array = []
+	for f in range(1, 1201):
 		if not server.gpu_gi_accum_step():
 			_fail(409, "accum")
 			return
-	var fin_row := PackedFloat32Array()
-	for iz in range(3, 13):
-		fin_row.append(float((server.gpu_gi_read_avg(8 + 16 + iz * 128))[0]))
-	print("CHAIN: fin_row iz=3..12=", fin_row)
-	var parts := PackedStringArray()
-	for iz in range(3, 12):
-		var a := fin_row[iz - 3]
-		var b := fin_row[iz - 2]
-		var c := (a / b) if b > 0.0 else -1.0
-		parts.append("c(iz%d->%d)=%.3f" % [iz + 1, iz, c])
-	print("CHAIN: hop ratios toward B: ", " ".join(parts))
+		if f % 100 == 0:
+			s3.append(float((server.gpu_gi_read_avg(8 + 16 + 3 * 128))[0]))
+			s4.append(float((server.gpu_gi_read_avg(8 + 16 + 4 * 128))[0]))
+	print("CHAIN: long iz3 samples f=100..1200=", s3)
+	print("CHAIN: long iz4 samples f=100..1200=", s4)
+	# geometric-delta convergence check (9.1-style): every delta <= 0.6x previous
+	for pair in [["iz4", s4], ["iz3", s3]]:
+		var nm: String = pair[0]
+		var arr: Array = pair[1]
+		var deltas: Array = []
+		for i in range(1, arr.size()):
+			deltas.append(float(arr[i]) - float(arr[i - 1]))
+		var geo := true
+		for i in range(1, deltas.size()):
+			if float(deltas[i]) > 0.6 * float(deltas[i - 1]):
+				geo = false
+		print("CHAIN: ", nm, " deltas=", deltas, " geometric_decay=", geo)
 	server.gpu_scene_destroy()
 	print("CHAIN: DONE")
 	get_tree().quit(0)
