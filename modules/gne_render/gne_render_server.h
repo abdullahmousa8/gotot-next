@@ -762,6 +762,9 @@ PackedByteArray gpu_present_read_pixels();
 	bool gpu_light_cones_build(); // GNE-018-rev unit 2b
 	PackedInt32Array gpu_light_cone_epochs(); // {raster_epoch, cone_src_epoch}
 	PackedFloat32Array gpu_light_cones_selftest(int p_mode); // unit 2b isolation
+// GNE-022 R0-RT: RD ray-tracing isolation test (test-only, additive).
+// Returns [status, hit_t, miss_marker, expected_t, bytes]; status 0 = pass.
+PackedFloat32Array gpu_rt_selftest();
 	void gpu_light_set_normal_cone(bool p_enabled); // GNE-018-rev
 	void gpu_light_cones_clear(); // GNE-018-rev tooling (A/B)
 

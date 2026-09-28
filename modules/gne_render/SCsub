@@ -11,6 +11,7 @@ sources = [
     "register_types.cpp",
     "gne_render.cpp",
     "gne_render_server.cpp",
+    "gne_rt_selftest.cpp",
 ]
 
 env_gne_render = env_modules.Clone()

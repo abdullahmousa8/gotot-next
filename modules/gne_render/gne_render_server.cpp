@@ -2709,6 +2709,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_build"), &GneRenderServer::gpu_light_cones_build);
 	ClassDB::bind_method(D_METHOD("gpu_light_cone_epochs"), &GneRenderServer::gpu_light_cone_epochs);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_selftest", "mode"), &GneRenderServer::gpu_light_cones_selftest);
+	ClassDB::bind_method(D_METHOD("gpu_rt_selftest"), &GneRenderServer::gpu_rt_selftest);
 	ClassDB::bind_method(D_METHOD("gpu_light_set_normal_cone", "enabled"), &GneRenderServer::gpu_light_set_normal_cone);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_clear"), &GneRenderServer::gpu_light_cones_clear);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);

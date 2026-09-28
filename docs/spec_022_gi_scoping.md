@@ -129,3 +129,33 @@ Scope (deliberately minimal - NOT a GI implementation):
 - Outcomes: PASS => S3 (RT backend) has a verified path; FAIL / partial => S3 becomes
   an architectural decision to re-evaluate with full knowledge (recorded in this file).
 - Constraint: module-only test code (additive, gated, unset in every existing gate).
+### R0-RT RESULTS (executed 2026-09-28)
+
+**Chain exercised - all VERIFIED working:** device + RT capability detection
+("- Vulkan Raytracing supported"; RT extensions found; features enabled at device
+creation), AS build-input buffer creation, `blas_create` + `blas_build`,
+`tlas_create` + `tlas_build` (the engine's own validation caught an ordering rule:
+the SBT range must be allocated BEFORE the TLAS build - "Instance 0 has an invalid hit
+shader binding table range"), GLSL raygen/miss/closest-hit compilation via
+`shader_compile_spirv_from_source`, `shader_create_from_spirv` with RT stages,
+`hit_sbt_create` + `hit_sbt_set_pipeline` + `hit_sbt_range_alloc/update`, and the
+`UNIFORM_TYPE_ACCELERATION_STRUCTURE` uniform-binding surface.
+
+**BLOCKED at:** `vkCreateRayTracingPipelinesKHR` -> `VK_ERROR_INITIALIZATION_FAILED`
+(-3) in `RenderingDeviceDriverVulkan::raytracing_pipeline_create`
+(rendering_device_driver_vulkan.cpp:6677), reproduced across runs. The pipeline-cache
+hypothesis was tested (cache-disabled run) and did NOT change the result.
+**Root cause: NOT diagnosed.** Candidates (not distinguished): SPIR-V post-processing
+of RT stages inside the fork; pipeline-layout stage-flag construction for RT pipelines;
+a driver-level condition on this pipeline configuration.
+
+**Verdict (per the D10-5 mandate):** the RT scaffold is far more than a header stub -
+every layer up to pipeline creation works - but it is NOT usable end-to-end in the
+current fork+driver state. Consequence: S3 (RT tracing backend) is now an
+ARCHITECTURAL DECISION requiring engine-level diagnosis before any commitment; it is
+no longer advertised as a walk-in upgrade. S1/S2 (compute-only DDGI) are unaffected
+and proceed as planned.
+
+**Artifacts:** `modules/gne_render/gne_rt_selftest.cpp` (test-only, additive;
+tracked tool), `demo/gpu_smoke/main_022_rt0.gd/.tscn`; evidence logs (temp):
+rt0_run1/rt0_run2/rt0_verbose.
