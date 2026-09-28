@@ -337,8 +337,44 @@ preserves both momentum and accuracy.)
   The deep probe (2+ cells behind) read 0.0 within the 240-frame window; the
   pre-computed interval check therefore did NOT pass. THE OFFICIAL GATE HAS NOT
   PASSED YET; the "GI" label stays closed.
+- NAMING PRECISION (Architect, 2026-09-28): this outcome is a THIRD, UNPLANNED branch -
+  (b) passed definitively while (a) came in partial - it is NOT covered by the
+  pre-registered 9.3.1 (which governed "(b) fails = leak") and must not be read as a
+  continuation of it. The response (diagnose before any re-run; touch the mechanism,
+  never the criterion) is a NEW decision recorded here, not a silently assumed
+  extension.
+- Worth highlighting: the definitive negative (byte-zero across 240 frames) is real
+  evidence that the propagation layer does NOT penetrate a real barrier even without
+  explicit per-sample occlusion (the model relies on range+first-hit) - this makes an
+  occlusion defect a LESS likely cause of the current decay and tilts toward
+  consumption / lattice degeneracy.
+- Diagnostic ORDER (cheapest first, Architect): test lattice degeneracy first - a small
+  sub-cell offset of the sampling position away from exact lattice nodes is a very
+  cheap experiment; if the signal improves markedly with the offset alone, lattice
+  degeneracy is the problem, not the model. Only then dig into decay calibration.
 - Candidate explanations (observed + candidate, NOT confirmed): (i) per-cell transport
   decay is steeper than the coarse estimate; (ii) lattice-degenerate sampling - hit
   points landing exactly on ground-plane lattice nodes self-sample (the y=0 row is
   only weakly diffusive). To be diagnosed with targeted reads (next construction
   round) BEFORE any official gate re-run: the acceptance criteria stay untouched.
+### 9.3.3 Lattice-offset diagnostic experiment (2026-09-28) - RESULTS TABLE
+
+| sampling offset (cells) | POS: M(f240) | POS: B(f240) | NEG: B(f240) | verdict |
+|---|---|---|---|---|
+| (0, 0, 0) - baseline | 0.0091 | 0.0 | 0.0 | transport dead; isolation perfect |
+| (0.31, 0.17, 0.47) | 0.0201 | 4.06e-4 | 9.1e-4 (+M 2.8e-3) | transport APPEARS; barrier LEAKS |
+| (0.31, 0.17, 0.0) - z unbiased | 0.0093 | 0.0 | 0.0 | transport dead again; isolation perfect |
+
+Reading (candidate conclusions, to be confirmed in the next round):
+- The z-direction sampling bias was the ACTIVE ingredient in experiment 2: it acted as
+  an ADVECTION (smearing toward A), which both "moved" the signal and crossed the
+  barrier. It is NOT a legitimate transport fix.
+- With unbiased sampling, horizontal coupling through the bounce integral is
+  essentially absent in this configuration: each probe's bounce integrates the field
+  mostly within its own cell (self-consistent local gain), giving no neighbour
+  transport. The earlier "lattice degeneracy" hypothesis explains the vertical
+  self-locking at the ground rows but NOT the missing horizontal cascade.
+- Therefore the next work item is a MECHANISM design question, not a parameter tune:
+  the hit-point gather needs a legitimate directional/diffusive coupling (candidates:
+  cosine/directional weighting at the gather using the hit normal; a larger effective
+  gather footprint; or a proper per-cell flux formulation) - criteria untouched.

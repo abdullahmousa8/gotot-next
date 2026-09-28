@@ -69,6 +69,10 @@ vec2 octa_encode(vec3 n) {
 vec3 gne_gi_sample_field(vec3 pos) {
 	vec3 gsz = pc.dims.xyz;
 	vec3 g = (pos - pc.gmin.xyz) / (pc.gmax.xyz - pc.gmin.xyz) * gsz - 0.5;
+	// Diagnostic round (spec_022 9.3.2): sub-cell offset removes the lattice
+	// degeneracy where hit points land exactly on node positions (w=0 -> self
+	// sampling). Irrational-ish per-axis constants; no exact-node sampling remains.
+	g += vec3(0.31, 0.17, 0.0);
 	vec3 g0 = floor(g);
 	vec3 w = g - g0;
 	vec3 acc = vec3(0.0);
