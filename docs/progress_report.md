@@ -958,3 +958,18 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - Section 11-M1 spec drafted (float field convergence instrumentation; measurement
   only; no criterion changes) - STOPPED for owner approval before implementation;
   no code changes made.
+## §45. Workflow v2 + CVS v1 + 11-M1 backlog (2026-09-29)
+
+- Owner decision adopted: three tracks (ARCHITECTURE/FEATURE/BUGFIX); SPEC only for
+  architecture/contract changes; automate verification instead of repeating human
+  ceremony (docs/workflow_v2.md).
+- 11-R1 stays CLOSED (FP32 accepted); section 11 stays FAIL (criterion b) with the
+  official wording preserved. 11-M1 (float-field convergence instrumentation) moved
+  to BACKLOG as KI-016/11-M1 - Priority: Medium; measurement infrastructure only;
+  NOT a criterion change; no implementation.
+- GNE CVS v1 built (tools/gne_verify.ps1 + tools/verify_baseline.txt +
+  tools/verify_history.tsv): build -> gt_regress -> 7 literal-signature gates ->
+  GI gate2/shade checks -> error scan -> summary + history row.
+- FIRST FULL RUN: PASS 12/12 (build; gt_regress; v16/v17/v18/v18-rev/v19/v20/v21
+  all byte-exact vs baseline; gi_gate2; gi_shade; 0 error lines). History row
+  recorded.

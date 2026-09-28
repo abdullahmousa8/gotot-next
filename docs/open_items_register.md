@@ -1,6 +1,6 @@
 # GNE - Open Items Register (single source of truth)
 
-**Updated:** 2026-09-28 (post-GNE-021 closure; the pre-GI pause review).
+**Updated:** 2026-09-29 (post-11-R1 closure; workflow v2 adopted; 11-M1 backlogged; CVS v1 added).
 **Purpose:** one clear list of everything still OPEN or DEFERRED. If an item is not
 listed here, it is not open. Detailed records stay in their home documents (linked).
 Update this file whenever a status changes.
@@ -22,6 +22,7 @@ Update this file whenever a status changes.
 | Cone culling default-ON | DISABLED by decision (dc = 0.48% < 10%; net -6.47%) | only if a directionally-coherent scene use-case appears (open-outdoors class) | spec_021 section 4 + spec_018_rev section 12 |
 | GI S3 RT-backend (hardware ray tracing) | R0-RT PARTIAL: scaffold works up to pipeline creation; vkCreateRayTracingPipelinesKHR fails (-3), root cause open | engine-level diagnosis, then re-decide S3 | spec_022 section 7 |
 | VSM / RT / volumetric shadows | Deferred since 019 | a future shadow milestone | spec_019 section 7 |
+| KI-016 / 11-M1 | Float-field convergence instrumentation (measurement infrastructure ONLY; NOT a section-11 criterion change) | BACKLOG - Priority: Medium | when a GI/temporal measurement need arises; build as shared instrumentation | spec_022 section 11-M1 |
 | 015.5 partial checklist gaps | Recorded partial (5/8 + 3 documented items) | per item, as scheduled | progress section 30 |
 
 ## C. The arc at a glance (016 -> 021)
@@ -33,4 +34,4 @@ closed as measured: 0.48%; default stays OFF). Every milestone closed with liter
 signatures, honest accounting, and its own recorded decision set; lessons 1-6 live in
 docs/lessons.md.
 
-Next: section 11-M1 spec written; awaiting owner approval before implementation. section 11 official = FAIL (criterion b) unchanged; R1 closed at 52ab47a (RGBA32F adopted).
+Next: section 11-M1 spec written; awaiting owner approval before implementation. 11-R1 CLOSED (FP32 accepted; section 11 = FAIL (criterion b) unchanged - official wording preserved). 11-M1/KI-016 backlogged, no implementation. Workflow v2 + CVS v1 in place (tools/gne_verify.ps1). Next architectural target: owner pick (see section B).
