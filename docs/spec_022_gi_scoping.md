@@ -585,3 +585,33 @@ CONFIRMED equation: est = 0.35 x (4/64) x 0.5 x v(iz5). No transport code was to
 
 **RESULT: the paired gate PASSES -> the "GI" label is OPENED for the first time in this
 project (within the documented bounded-radius characteristic of 9.3.9).**
+## 10. S3 interim unit plan - shading integration + normalization (frozen before implementation)
+
+**Goal:** add the GI field as an additive term in the material lighting, flag-gated
+(`gne_gi_enabled`, default off; the flag-off path stays byte-identical), with the
+recorded normalization requirement: the normalized near/far ratio is PRESERVED
+(~16-17.6x, no compression or saturation).
+
+**Interface (single-source, per 8.1 req 3):** extract the octa encode/decode + the
+trilinear field sampler into a shared GLSL snippet (`gpu_gi_sample_glsl`); the sampler
+takes an explicit per-probe fetch hook so each caller supplies its own variant: the S2
+trace passes the M3-gated fetch; the material fragment passes the PLAIN fetch (a
+visible surface needs no extra occlusion against itself). Parameters (gmin / gmax /
+dims / scale / enabled) reach the fragment through a small dedicated uniform path
+appended to the material pipeline's existing params block.
+
+**Normalization:** `gi_scale` default 1.0 - field units ~= gathered radiance, added
+like a light's radiance term; documented, not fitted. The ratio gate is
+scale-invariant by construction, so the scale choice cannot game it.
+
+**Validation gates (all required):**
+1. Flag-off: byte-identical legacy results (all existing literals; full sweep).
+2. Ratio preservation: measured near/far of the normalized GI contribution >= 16x
+   (single-source ratio check on the same scene; no compression/saturation).
+3. Determinism: same-run repeats byte-equal.
+4. Cost: fragment sampling measured and reported (one 8-tap trilinear sample per
+   covering pixel; evidence-only).
+5. No new RID leaks; battery green.
+
+**Explicitly not in this unit:** denoiser, temporal denoising of the fragment term,
+S3 (RT backend - KI-015), aesthetic tuning.
