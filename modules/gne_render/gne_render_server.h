@@ -92,6 +92,7 @@ class GneRenderServer : public Object {
 	int raster_depth_format_value = -1;
 	RID raster_depth_texture;
 	RID raster_viewz_texture; // R32_SFLOAT view-space depth (GNE-012 pyramid source).
+	RID raster_normal_texture; // RGBA16F world-space normal (GNE-018-rev cone source).
 	bool mesh_depth_enabled = false;
 	bool raster_depth_enabled = false;
 
@@ -620,6 +621,7 @@ public:
 	// smaller == nearer) via a blocking GPU readback. Range [-1,1]-safe: 0..1.
 	PackedFloat32Array gpu_raster_read_depth();
 	float gpu_raster_read_viewz(int p_x, int p_y);
+	PackedFloat32Array gpu_raster_read_normal(int p_x, int p_y);
 	//
 	// --- TEST-ONLY GETTERS --- (probe the 009 wiring from GDScript).
 	// Returns the depth attachment format enum value (125 == D32_SFLOAT) or -1

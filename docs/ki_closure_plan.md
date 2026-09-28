@@ -9,6 +9,8 @@
 | KI-003 | Presentation optimization no effect | 020 | Before Production | Deferred |
 | KI-007 | HZB uses AABB occluders | 019 | Before 020 | Scheduled |
 | KI-011 | Specular not gated by NdotL (pre-existing) | Unassigned | Owner decision | Open |
+| KI-012 | Demo window size externally mutable (pre-existing) | Unassigned | Owner decision | Open |
+| KI-013 | gt_regress FAILED reset by XFAIL scene (harness) | Unassigned | Owner decision | Open |
 
 ## Closure Schedule
 

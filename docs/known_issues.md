@@ -163,6 +163,51 @@
 - Source review 2026-09-28: material fragment light-accumulate loop in gne_render_server.cpp.
 - Recorded during 018-rev SPEC review; ticket opened per Architect directive (this file).
 
+## KI-012: Demo Window Size Is Externally Mutable (Pre-Existing)
+
+**Date:** 2026-09-28
+**Status:** Open - pre-existing; unrelated to 018-rev
+**Severity:** Low (gated DET content proven insensitive; affects only printed counts and screenshots of spread scenes)
+**Owner:** GNE Architecture
+
+**Details:**
+- Demos obtain their "viewport" from `get_viewport().get_visible_rect().size` (the OS window size) and feed it to `gpu_scene_set_viewport`. That value lands in `viewdata.viewport` and feeds the HZB occlusion pixel-radius math.
+- No demo or module code sets the window size or mode (full audit: zero DisplayServer/window-size calls; demo project.godot has no display settings); the window runs at the Godot default 1152x648 unless changed externally.
+- Source located and REPRODUCED: an external maximize of the game window mid-run flips the very next read to 1920x1009 (observed: visible counts jumped 370 -> 402 in the same run). The R0 baseline battery (2026-09-28 17:11) shows the same signature - a mid-run transition that persisted across that battery's processes (an active-session external interaction; not reproducible by any code path).
+
+**Impact (evidence):**
+- Affected: marginal occlusion decisions in spread scenes (007/008/008B) -> Visible/Indirect-args/Green-pixels printouts and window screenshot content vary run-to-run (noise-floor: two runs of the same binary differ in exactly these values).
+- NOT affected (proven): gated DET signatures. Forced-resolution A/B on the current binary gives byte-identical signatures - main_011 `v128|st0|m64|gc64|dc64|ic64|cc64|dF0.92076|dB0.95204|cb1|dt1` and main_018 `v18|lc=20|cc=2841|ot=0|hr=0.94|d1` at 1280x720 vs 1920x1009. All closed-milestone signature files and CSM dumps matched across the two R0 batteries although the baseline ran with maximized windows and the post battery at default size.
+
+**Recommendations:**
+- For future cross-run pixel comparisons on spread scenes: pin the window size (e.g., `--resolution`) or compare fixed-target readbacks only.
+- The 018-rev metrics ride the fixed 1920x1080 cluster grid (see main_018 A/B above) and are window-independent; the R7 staleness counter is frame-based and unaffected.
+
+**Evidence:**
+- temp\opencode\x\expA2.log (maximize reproduction), x\s011_*.txt, x\s018_*.txt (forced-resolution A/B), temp\opencode\nf (noise floor).
+
+## KI-013: gt_regress FAILED Flag Reset By The XFAIL Scene (Harness, Pre-Existing)
+
+**Date:** 2026-09-28
+**Status:** Open - pre-existing harness accounting defect; unrelated to 018-rev
+**Severity:** Medium (masked failures - any scene failing BEFORE the main_012 XFAIL call is forgiven)
+**Owner:** GNE Architecture
+
+**Details:**
+- `tools/gt_regress.bat` line 66 (`if "%BAD%"=="1" if "%XFAIL%"=="XFAIL" set FAILED=0`) resets the accumulated FAILED flag when the XFAIL scene (main_012) is processed, erasing failures recorded by any earlier scene.
+- Reproduced deterministically with an isolated copy of the harness: only `main_008b` -> FAILED=1 -> `GT_REGRESS: FAIL` (exit 1); `main_008b` + `main_012 XFAIL` -> `GT_REGRESS: PASS` (exit 0). Debug trace shows failed=1 after 008b and a final PASS because the XFAIL scene cleared the flag.
+- Masked consequence today: `main_008b` fails its own spot-check (rc=75, misses 20..32 on a dynamic scene) in every observed battery while the sweep reports PASS. The JEV pilot log (2026-09-27) already records a main_008b det=DIFF anomaly; progress_report recorded an earlier 008B PASS.
+
+**Impact:**
+- Scenes ordered before main_012 (currently 007..011) cannot gate the sweep even if they fail.
+- Gate-trust defect in the harness; no engine correctness risk.
+
+**Fix path (Owner decision):**
+- Make XFAIL handling not touch other scenes' failures (XFAIL should skip only its own failure), then decide main_008b's disposition (fix its spot-check, mark it XFAIL deliberately, or re-scope) and re-run the full battery as evidence.
+
+**Evidence:**
+- temp\opencode\r0_dbg_regress.bat / r0_dbg_mask.bat runs (repro), r0_baseline\r0_verdict_summary.txt.
+
 ## 015.5 C6 status (closed in 015.6)
 
 **الحالة:** مقبول + موثّق (double-buffering مؤجّل إلى 020) — "تقليل الحجم" يكسر DET.

@@ -415,10 +415,12 @@ const char *gpu_raster_frag_glsl = R"(
 layout(location = 0) out vec4 out_color;
 // GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
+layout(location = 2) out vec4 out_normal;
 
 void main() {
 	out_color = vec4(0.95, 0.18, 0.9, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
+	out_normal = vec4(0.0);
 }
 )";
 
@@ -505,10 +507,12 @@ const char *gpu_mesh_frag_glsl = R"(
 layout(location = 0) out vec4 out_color;
 // GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
+layout(location = 2) out vec4 out_normal;
 
 void main() {
 	out_color = vec4(0.15, 0.85, 0.35, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
+	out_normal = vec4(0.0);
 }
 )";
 
@@ -848,10 +852,12 @@ mesh_colors;
 layout(location = 0) out vec4 out_color;
 // GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
+layout(location = 2) out vec4 out_normal;
 
 void main() {
 	out_color = mesh_colors.colors[v_mesh_id];
 	out_view_z = -1.0 / gl_FragCoord.w;
+	out_normal = vec4(0.0);
 }
 )";
 
@@ -942,6 +948,7 @@ params;
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out float out_view_z;
+layout(location = 2) out vec4 out_normal;
 
 void main() {
 	uint m = v_mesh_id * 4u;
@@ -953,6 +960,7 @@ void main() {
 	float shiny = materials.mats[m + 2u].a;
 	vec4 flags = materials.mats[m + 3u];
 	vec3 N = normalize(cross(dFdx(v_world), dFdy(v_world)));
+	out_normal = vec4(N, 0.0);
 	vec3 Vv = normalize(params.cam_pos.xyz - v_world);
 	vec3 emi = (flags.x > 0.5) ? emissive * flags.y : vec3(0.0);
 	// GNE-017: albedo-slot sampling (triplanar, hard axis switch). Unbound
@@ -1200,6 +1208,7 @@ params;
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out float out_view_z;
+layout(location = 2) out vec4 out_normal;
 
 // GNE-019 shadow sampling implementation. Depth convention: the R32 maps hold
 // the rasterizer's gl_FragCoord.z (Vulkan viewport 0..1 over Godot
@@ -1375,6 +1384,7 @@ void main() {
 	float shiny = materials.mats[m + 2u].a;
 	vec4 flags = materials.mats[m + 3u];
 	vec3 N = normalize(cross(dFdx(v_world), dFdy(v_world)));
+	out_normal = vec4(N, 0.0);
 	vec3 Vv = normalize(params.cam_pos.xyz - v_world);
 	vec3 emi = (flags.x > 0.5) ? emissive * flags.y : vec3(0.0);
 	int tid = mattex.tex_ids[int(v_mesh_id) * 5 + int(params.tex_slot_pad.x)];
@@ -2256,6 +2266,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_scene_set_instance_transform", "index", "position", "scale"), &GneRenderServer::gpu_scene_set_instance_transform);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_depth"), &GneRenderServer::gpu_raster_read_depth);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz", "x", "y"), &GneRenderServer::gpu_raster_read_viewz);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_normal", "x", "y"), &GneRenderServer::gpu_raster_read_normal);
 	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_format"), &GneRenderServer::gpu_raster_get_depth_format);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_depth_enabled"), &GneRenderServer::gpu_mesh_get_depth_enabled);
 	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_enabled"), &GneRenderServer::gpu_raster_get_depth_enabled);
@@ -2789,6 +2800,10 @@ void GneRenderServer::_destroy_gpu_scene() {
 	if (raster_viewz_texture.is_valid()) {
 		rendering_device->free_rid(raster_viewz_texture);
 		raster_viewz_texture = RID();
+	}
+	if (raster_normal_texture.is_valid()) {
+		rendering_device->free_rid(raster_normal_texture);
+		raster_normal_texture = RID();
 	}
 	raster_framebuffer_format = -1;
 	raster_depth_attached = false;
@@ -4527,6 +4542,22 @@ bool GneRenderServer::_create_raster_pipeline() {
 		return false;
 	}
 
+	// GNE-018-rev: per-pixel surface normal (world space, xyz) for the cluster
+	// normal-cone stage. RGBA16F color attachment (output 2) written by the
+	// material fragment shaders. Purely additive; existing attachments untouched.
+	RD::TextureFormat nf;
+	nf.format = RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
+	nf.width = RASTER_TARGET_W;
+	nf.height = RASTER_TARGET_H;
+	nf.depth = 1;
+	nf.texture_type = RD::TEXTURE_TYPE_2D;
+	nf.usage_bits = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	raster_normal_texture = rendering_device->texture_create(nf, RD::TextureView());
+	if (raster_normal_texture.is_null()) {
+		print_error("[GNE] raster normal texture_create failed.");
+		return false;
+	}
+
 	Vector<RD::AttachmentFormat> afs;
 	RD::AttachmentFormat af;
 	af.format = RD::DATA_FORMAT_R8G8B8A8_UNORM;
@@ -4543,6 +4574,11 @@ bool GneRenderServer::_create_raster_pipeline() {
 	vf_af.samples = RD::TEXTURE_SAMPLES_1;
 	vf_af.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	afs.push_back(vf_af);
+	RD::AttachmentFormat nf_af;
+	nf_af.format = RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
+	nf_af.samples = RD::TEXTURE_SAMPLES_1;
+	nf_af.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	afs.push_back(nf_af);
 	raster_framebuffer_format = rendering_device->framebuffer_format_create(afs);
 	if (raster_framebuffer_format < 0) {
 		print_error("[GNE] raster framebuffer_format_create failed.");
@@ -4552,6 +4588,7 @@ bool GneRenderServer::_create_raster_pipeline() {
 	Vector<RID> attachments;
 	attachments.push_back(raster_color_texture);
 	attachments.push_back(raster_viewz_texture);
+	attachments.push_back(raster_normal_texture);
 	attachments.push_back(raster_depth_texture);
 	// Skip the format-check id so RD recomputes the format from the textures
 	// themselves (identical layout; the check only guards against stale ids).
@@ -4568,7 +4605,7 @@ bool GneRenderServer::_create_raster_pipeline() {
 	RD::PipelineRasterizationState rs;
 	RD::PipelineMultisampleState ms;
 	RD::PipelineDepthStencilState ds;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
 	raster_pipeline = rendering_device->render_pipeline_create(
 			raster_shader, raster_framebuffer_format, RD::INVALID_ID, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (raster_pipeline.is_null()) {
@@ -4650,7 +4687,7 @@ bool GneRenderServer::_create_mesh_pipeline() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
 	mesh_pipeline = rendering_device->render_pipeline_create(
 			mesh_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mesh_pipeline.is_null()) {
@@ -5078,7 +5115,7 @@ bool GneRenderServer::_init_mesh_table_gpu() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
 	mesh_batch_pipeline = rendering_device->render_pipeline_create(
 			mesh_batch_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mesh_batch_pipeline.is_null()) {
@@ -5159,7 +5196,7 @@ bool GneRenderServer::_init_mesh_table_gpu() {
 		gds.enable_depth_test = true;
 		gds.enable_depth_write = true;
 		gds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-		RD::PipelineColorBlendState gbs = RD::PipelineColorBlendState::create_disabled(2);
+		RD::PipelineColorBlendState gbs = RD::PipelineColorBlendState::create_disabled(3);
 		group_batch_pipeline = rendering_device->render_pipeline_create(
 				group_batch_shader, raster_framebuffer_format, group_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, grs, gms, gds, gbs, 0, 0);
 		if (group_batch_pipeline.is_null()) {
@@ -5530,7 +5567,7 @@ bool GneRenderServer::gpu_material_create() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
 	mat_batch_pipeline = rendering_device->render_pipeline_create(
 			mat_batch_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mat_batch_pipeline.is_null()) {
@@ -6308,7 +6345,7 @@ bool GneRenderServer::_light_ensure_geo() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
 	mat_light_pipeline = rendering_device->render_pipeline_create(
 			mat_light_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mat_light_pipeline.is_null()) {
@@ -8142,6 +8179,60 @@ float GneRenderServer::gpu_raster_read_viewz(int p_x, int p_y) {
 	return v;
 }
 
+
+// GNE-018-rev: half-float decode for the normal-attachment spot checks.
+static float gne_half_to_float(uint16_t h) {
+	const uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+	const uint32_t exp = ((uint32_t)h >> 10) & 0x1Fu;
+	const uint32_t man = (uint32_t)h & 0x3FFu;
+	uint32_t f;
+	if (exp == 0u) {
+		if (man == 0u) {
+			f = sign;
+		} else {
+			uint32_t e = 113u;
+			uint32_t mm = man;
+			while ((mm & 0x400u) == 0u) {
+				mm <<= 1;
+				e--;
+			}
+			mm &= 0x3FFu;
+			f = sign | (e << 23) | (mm << 13);
+		}
+	} else if (exp == 0x1Fu) {
+		f = sign | 0x7F800000u | (man << 13);
+	} else {
+		f = sign | ((exp + 112u) << 23) | (man << 13);
+	}
+	float out;
+	memcpy(&out, &f, 4);
+	return out;
+}
+
+// GNE-018-rev: read one normal-attachment texel as floats {x, y, z, w}. The
+// all-zero value is the designed "never cull" sentinel; tooling/spot-check
+// path only, not a shipping frame-data path.
+PackedFloat32Array GneRenderServer::gpu_raster_read_normal(int p_x, int p_y) {
+	PackedFloat32Array out;
+	if (!gpu_scene_valid || !gpu_raster_valid) {
+		return out;
+	}
+	if (p_x < 0 || p_x >= RASTER_TARGET_W || p_y < 0 || p_y >= RASTER_TARGET_H) {
+		return out;
+	}
+	Vector<uint8_t> data = rendering_device->texture_get_data(raster_normal_texture, 0);
+	int64_t off = ((int64_t)p_y * (int64_t)RASTER_TARGET_W + (int64_t)p_x) * 8;
+	if ((int64_t)data.size() < off + 8) {
+		return out;
+	}
+	const uint8_t *p = data.ptr() + off;
+	for (int i = 0; i < 4; i++) {
+		uint16_t hbits;
+		memcpy(&hbits, p + i * 2, 2);
+		out.append(gne_half_to_float(hbits));
+	}
+	return out;
+}
 // GNE-009: overwrite a single instance's transform (position_scale) in the
 // SoA transform buffer. Pure fill helper for the 009 overlay demo; the fill/
 // cull/HZB/compaction/drawargs layout is untouched.

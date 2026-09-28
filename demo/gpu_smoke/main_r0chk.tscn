@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://main_r0chk.gd" id="1_r0chk"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_r0chk")
+
+[node name="Camera" type="Camera3D" parent="."]
+fov = 60.0
+near = 1.0
+far = 6000.0
+current = true
