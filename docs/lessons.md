@@ -46,3 +46,31 @@ int 2048 = 0x00000800 = float 2.8e-42 ≈ 0.
 Silent corruption. Only sim2 detected.
 
 **Rule:** UBO field types must match exactly.
+
+## Lesson 4: Frustum Planes Bug (017 phase 2)
+
+**Date:** 2026-09-28
+**Context:** `get_projection_planes` produced wrong planes for rotating
+cameras. Latent bug — only surfaced with motion.
+
+**Impact:**
+- Culling incorrect for rotating cameras.
+- Worked by accident with static cameras.
+
+**Root cause:**
+- Plane extraction from projection matrix incorrect.
+
+**Fix:**
+- Extract planes from VP matrix rows in `set_camera`.
+- 4 independent pieces of evidence.
+
+**Verification:**
+- 6 gates: signatures literal.
+- Zero drift confirmed.
+
+**Lesson:**
+Static-camera tests can hide culling bugs.
+Always test with rotating cameras.
+
+**Related:** KI-007 (HZB AABB).
+Both in set_camera / culling pipeline.
