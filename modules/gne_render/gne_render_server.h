@@ -205,6 +205,7 @@ bool gne_present_lowres = false;
 	int tex_count = 0;
 	int32_t mat_tex_cpu[GNE_MESH_TABLE_SIZE * GNE_MAT_TEX_SLOTS];
 	RID mat_tex_buffer; // int32[64*5] (1280 B)
+	RID mat2_buffer; // GNE-016.5 channel-map records (set0 binding 7)
 	RID tex_sampler;    // shared trilinear/repeat sampler
 	RID tex_dummy;      // 1x1 white texture for unbound array slots
 	RID tex_array[GNE_TEX_ARRAY]; // CPU mirror of the sampler-array entries
@@ -752,6 +753,7 @@ PackedByteArray gpu_present_read_pixels();
 	bool gpu_material_set_albedo(int p_id, const Color &p_color);
 	bool gpu_material_set_params(int p_id, float p_roughness, float p_metallic);
 	bool gpu_material_set_specular(int p_id, const Color &p_color, float p_shininess);
+	bool gpu_material_set_maps(int p_mat, int p_albedo_slot, int p_rough_slot, int p_normal_slot, const Vector2 &p_scale); // GNE-016.5
 	bool gpu_material_set_emissive(int p_id, const Color &p_color, float p_strength, bool p_on, bool p_backface);
 	Dictionary gpu_material_readback(int p_id);
 	bool gpu_material_set_light(const Vector3 &p_dir);

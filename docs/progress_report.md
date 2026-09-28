@@ -998,3 +998,16 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   invariant; acceptance M1-M6 pre-registered in the RFC). Implementation begins
   on presentation per v2.0.
 - Commits: golden+verifier v1.1, RFC 016.5.
+## §48. GNE-016.5 slice-1 — channel-map buffer + API + fragment integration (2026-09-29)
+
+- Implemented: `mat2_buffer` (per-mesh records: albedo/roughness/normal slots +
+  UV scale, defaults -1/unset) on set0 binding 7 (light pipeline only; the mat
+  pipeline's set0 untouched); API `gpu_material_set_maps(mat, a, r, n, scale)`;
+  fragment channel branch (dominant-axis triplanar, 1 fetch/map; normal perturb
+  updates out_normal) gated on `albedo_slot >= 0` -> skipped in legacy scenes.
+- Slice-1 deviation from the RFC note (recorded): triplanar is dominant-axis
+  (1 fetch/map, keeps the <=3-fetch budget); weighted |N| blending deferred to
+  slice-2 with a revised fetch budget.
+- M1 quick evidence: gt_018a literal v18 byte-exact PASS; gt_016a literal v16
+  byte-exact PASS (legacy path untouched).
+- Next: scene main_016_5 + M2/M3/M5 instruments + full CVS.

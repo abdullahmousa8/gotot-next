@@ -1529,6 +1529,7 @@ layout(std430, set = 0, binding = 6) buffer MatTexBuffer {
 	int tex_ids[];
 }
 mattex;
+layout(set = 0, binding = 7, std430) buffer Mat2Buffer { vec4 mats2[]; } mat2buf; // GNE-016.5
 
 layout(std140, set = 0, binding = 2) uniform ViewBlock {
 	mat4 vp;
@@ -1816,6 +1817,41 @@ void main() {
 		texel = texture(tex_arr[tid], tuv).rgb;
 	}
 	vec3 alb = albedo * texel;
+	// GNE-016.5 slice-1: texture-driven channels (per-material opt-in; when all
+	// slots are unset this branch is skipped and the legacy path is untouched).
+	vec4 m2a = mat2buf.mats2[int(v_mesh_id) * 2 + 0];
+	if (m2a.x >= -0.5) {
+		vec4 m2b = mat2buf.mats2[int(v_mesh_id) * 2 + 1];
+		vec3 an2 = abs(N);
+		vec2 tuv2;
+		if (an2.x >= an2.y && an2.x >= an2.z) {
+			tuv2 = fract(vec2(v_world.z, v_world.y) * m2b.xy);
+		} else if (an2.y >= an2.x && an2.y >= an2.z) {
+			tuv2 = fract(vec2(v_world.x, v_world.z) * m2b.xy);
+		} else {
+			tuv2 = fract(vec2(v_world.x, v_world.y) * m2b.xy);
+		}
+		int tia = int(m2a.x + 0.5);
+		if (tia >= 0 && tia < 8) {
+			alb = albedo * texture(tex_arr[tia], tuv2).rgb;
+		}
+		int tir = int(m2a.y + 0.5);
+		if (tir >= 0 && tir < 8) {
+			rough = clamp(rough * texture(tex_arr[tir], tuv2).r, 0.0, 1.0);
+		}
+		int tin = int(m2a.z + 0.5);
+		if (tin >= 0 && tin < 8) {
+			vec3 nm = texture(tex_arr[tin], tuv2).rgb * 2.0 - 1.0;
+			if (an2.x >= an2.y && an2.x >= an2.z) {
+				N = normalize(N + vec3(0.0, nm.y, nm.z) * 0.6);
+			} else if (an2.y >= an2.x && an2.y >= an2.z) {
+				N = normalize(N + vec3(nm.x, 0.0, nm.z) * 0.6);
+			} else {
+				N = normalize(N + vec3(nm.x, nm.y, 0.0) * 0.6);
+			}
+			out_normal = vec4(N, 0.0);
+		}
+	}
 	vec3 L = params.light_dir_ambient.xyz;
 	float AMB = params.light_dir_ambient.w;
 	float ndl = max(dot(N, L), 0.0);
@@ -2724,6 +2760,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_material_set_albedo", "id", "color"), &GneRenderServer::gpu_material_set_albedo);
 	ClassDB::bind_method(D_METHOD("gpu_material_set_params", "id", "roughness", "metallic"), &GneRenderServer::gpu_material_set_params);
 	ClassDB::bind_method(D_METHOD("gpu_material_set_specular", "id", "color", "shininess"), &GneRenderServer::gpu_material_set_specular);
+	ClassDB::bind_method(D_METHOD("gpu_material_set_maps", "mat", "albedo_slot", "rough_slot", "normal_slot", "scale"), &GneRenderServer::gpu_material_set_maps);
 	ClassDB::bind_method(D_METHOD("gpu_material_set_emissive", "id", "color", "strength", "on", "backface"), &GneRenderServer::gpu_material_set_emissive);
 	ClassDB::bind_method(D_METHOD("gpu_material_readback", "id"), &GneRenderServer::gpu_material_readback);
 	ClassDB::bind_method(D_METHOD("gpu_material_set_light", "dir"), &GneRenderServer::gpu_material_set_light);
@@ -3101,6 +3138,11 @@ void GneRenderServer::_destroy_mesh() {
 			rendering_device->free_rid(mat_buffer);
 			mat_buffer = RID();
 		}
+			// GNE-016.5: channel-map records die with the material store.
+			if (mat2_buffer.is_valid()) {
+				rendering_device->free_rid(mat2_buffer);
+				mat2_buffer = RID();
+			}
 	}
 	gpu_material_valid = false;
 	mat_dispatches = 0;
@@ -6047,6 +6089,28 @@ bool GneRenderServer::gpu_material_create() {
 	}
 	String error;
 	mat_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_MESH_TABLE_SIZE * 64));
+	// GNE-016.5 slice-1: per-material channel-map records (slots -1 = unset).
+	mat2_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_MESH_TABLE_SIZE * 32));
+	if (mat2_buffer.is_null()) {
+		print_error("[GNE] gpu_material_create: mat2 buffer_create failed.");
+		return false;
+	}
+	{
+		Vector<uint8_t> m2z;
+		m2z.resize(GNE_MESH_TABLE_SIZE * 32);
+		float *m2f = (float *)m2z.ptr();
+		for (int mi = 0; mi < GNE_MESH_TABLE_SIZE; mi++) {
+			m2f[mi * 8 + 0] = -1.0f;
+			m2f[mi * 8 + 1] = -1.0f;
+			m2f[mi * 8 + 2] = -1.0f;
+			m2f[mi * 8 + 3] = 0.0f;
+			m2f[mi * 8 + 4] = 0.01f;
+			m2f[mi * 8 + 5] = 0.01f;
+			m2f[mi * 8 + 6] = 0.0f;
+			m2f[mi * 8 + 7] = 0.0f;
+		}
+		rendering_device->buffer_update(mat2_buffer, 0, (uint32_t)m2z.size(), m2z.ptr());
+	}
 	if (mat_buffer.is_null()) {
 		print_error("[GNE] gpu_material_create: buffer_create failed.");
 		return false;
@@ -6301,6 +6365,24 @@ Dictionary GneRenderServer::gpu_material_stats() {
 	d["dispatches"] = mat_dispatches;
 	d["valid"] = gpu_material_valid;
 	return d;
+}
+
+bool GneRenderServer::gpu_material_set_maps(int p_mat, int p_albedo_slot, int p_rough_slot, int p_normal_slot, const Vector2 &p_scale) {
+	if (!gpu_material_valid || mat2_buffer.is_null() || p_mat < 0 || p_mat >= gpu_instance_count) {
+		return false;
+	}
+	// GNE-016.5 slice-1: channel-map record (set0 binding 7). Slots < 0 = unset.
+	float rec[8];
+	rec[0] = (float)p_albedo_slot;
+	rec[1] = (float)p_rough_slot;
+	rec[2] = (float)p_normal_slot;
+	rec[3] = 0.0f;
+	rec[4] = p_scale.x;
+	rec[5] = p_scale.y;
+	rec[6] = 0.0f;
+	rec[7] = 0.0f;
+	rendering_device->buffer_update(mat2_buffer, (uint32_t)(p_mat * 32), 32, rec);
+	return true;
 }
 
 bool GneRenderServer::gpu_material_draw() {
@@ -6816,6 +6898,11 @@ bool GneRenderServer::_light_build_set0() {
 	u6.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 	u6.binding = 6;
 	u6.append_id(mat_tex_buffer);
+	RD::Uniform u7;
+	u7.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	u7.binding = 7;
+	u7.append_id(mat2_buffer);
+	uniforms.push_back(u7);
 	uniforms.push_back(u6);
 	mat_light_uniform_set = rendering_device->uniform_set_create(uniforms, mat_light_shader, 0);
 	if (mat_light_uniform_set.is_null()) {
