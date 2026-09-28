@@ -32,6 +32,60 @@ static float gi_half_to_float(uint16_t p_half) {
 	return out;
 }
 
+// GNE-022 shared probe-field sampling (single source; spec_022 sections 8.1/10):
+// octahedral encode/decode + trilinear probe blend with a caller-provided fetch
+// hook (gne_gi_fetch_gate) so every consumer supplies its own gating variant.
+// Sampling convention: sub-cell offset (0.31, 0.17, 0.0) removes lattice
+// degeneracy in x/y while staying unbiased in z (9.3.3).
+static const char *gpu_gi_sample_glsl = R"(
+vec3 gne_gi_octa_decode(vec2 f) {
+	vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+	float t = max(-n.z, 0.0);
+	n.x += (n.x >= 0.0) ? -t : t;
+	n.y += (n.y >= 0.0) ? -t : t;
+	return normalize(n);
+}
+vec2 gne_gi_octa_encode(vec3 n) {
+	n = normalize(n);
+	n /= (abs(n.x) + abs(n.y) + abs(n.z));
+	vec2 f = n.xy;
+	if (n.z < 0.0) {
+		f = (1.0 - abs(n.yx)) * vec2((n.x >= 0.0) ? 1.0 : -1.0, (n.y >= 0.0) ? 1.0 : -1.0);
+	}
+	return f;
+}
+vec3 gne_gi_sample_field(sampler2D gi_atlas_in, vec3 gmin, vec3 gmax, vec3 gsz, vec3 pos) {
+	vec3 g = (pos - gmin) / (gmax - gmin) * gsz - 0.5;
+	g += vec3(0.31, 0.17, 0.0);
+	vec3 g0 = floor(g);
+	vec3 w = g - g0;
+	vec3 acc = vec3(0.0);
+	for (int dz = 0; dz < 2; dz++) {
+		for (int dy = 0; dy < 2; dy++) {
+			for (int dx = 0; dx < 2; dx++) {
+				vec3 idx = g0 + vec3(dx, dy, dz);
+				idx = clamp(idx, vec3(0.0), gsz - 1.0);
+				float wx = (dx == 0) ? (1.0 - w.x) : w.x;
+				float wy = (dy == 0) ? (1.0 - w.y) : w.y;
+				float wz = (dz == 0) ? (1.0 - w.z) : w.z;
+				vec3 center = gmin + (idx + 0.5) * (gmax - gmin) / gsz;
+				vec3 d = pos - center;
+				if (dot(d, d) < 1e-8) {
+					d = vec3(0.0, 1.0, 0.0);
+				}
+				if (gne_gi_fetch_gate(pos, center) > 0.5) {
+					vec2 f = gne_gi_octa_encode(d);
+					ivec2 lxy = ivec2(clamp((f * 0.5 + 0.5) * 8.0, vec2(0.0), vec2(7.999)));
+					ivec2 tile = ivec2(int(idx.x) * 8, (int(idx.y) + int(idx.z) * int(gsz.y)) * 8);
+					acc += wx * wy * wz * texelFetch(gi_atlas_in, tile + lxy, 0).rgb;
+				}
+			}
+		}
+	}
+	return acc;
+}
+)";
+
 static const char *gne_gi_trace_glsl = R"(
 #version 450
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -47,22 +101,7 @@ layout(push_constant, std430) uniform P {
 	vec4 counts;  // (light_count, 0, 0, 0)
 	vec4 params;  // (mode: 0 accum / 1 raw / 2 zero, alpha, albedo, bounce_on)
 } pc;
-vec3 octa_decode(vec2 f) {
-	vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
-	float t = max(-n.z, 0.0);
-	n.x += (n.x >= 0.0) ? -t : t;
-	n.y += (n.y >= 0.0) ? -t : t;
-	return normalize(n);
-}
-vec2 octa_encode(vec3 n) {
-	n = normalize(n);
-	n /= (abs(n.x) + abs(n.y) + abs(n.z));
-	vec2 f = n.xy;
-	if (n.z < 0.0) {
-		f = (1.0 - abs(n.yx)) * vec2((n.x >= 0.0) ? 1.0 : -1.0, (n.y >= 0.0) ? 1.0 : -1.0);
-	}
-	return f;
-}
+
 // M3 (spec_022 9.3.4): analytic occlusion between two points using the existing
 // instance boxes - the by-design leak barrier for the coupling gather. A blocked
 // segment contributes zero, so a hidden source's cells cannot inject.
@@ -99,50 +138,21 @@ bool gne_gi_seg_blocked(vec3 a, vec3 b) {
 	float len = length(b - a);
 	return (t > 0.5 && t < len - 0.5);
 }
-// Single-source probe-field sampler (spec_022 section 8.1 requirement 3):
-// octahedral lookup + trilinear probe blend. Used by the S2 hit-point
-// feedback; later also by the material shading integration.
-vec3 gne_gi_sample_field(vec3 pos) {
-	vec3 gsz = pc.dims.xyz;
-	vec3 g = (pos - pc.gmin.xyz) / (pc.gmax.xyz - pc.gmin.xyz) * gsz - 0.5;
-	// Diagnostic round (spec_022 9.3.2): sub-cell offset removes the lattice
-	// degeneracy where hit points land exactly on node positions (w=0 -> self
-	// sampling). Irrational-ish per-axis constants; no exact-node sampling remains.
-	g += vec3(0.31, 0.17, 0.0);
-	vec3 g0 = floor(g);
-	vec3 w = g - g0;
-	vec3 acc = vec3(0.0);
-	for (int dz = 0; dz < 2; dz++) {
-		for (int dy = 0; dy < 2; dy++) {
-			for (int dx = 0; dx < 2; dx++) {
-				vec3 idx = g0 + vec3(dx, dy, dz);
-				idx = clamp(idx, vec3(0.0), gsz - 1.0);
-				float wx = (dx == 0) ? (1.0 - w.x) : w.x;
-				float wy = (dy == 0) ? (1.0 - w.y) : w.y;
-				float wz = (dz == 0) ? (1.0 - w.z) : w.z;
-				vec3 center = pc.gmin.xyz + (idx + 0.5) * (pc.gmax.xyz - pc.gmin.xyz) / gsz;
-				vec3 d = pos - center;
-				if (dot(d, d) < 1e-8) {
-					d = vec3(0.0, 1.0, 0.0);
-				}
-				vec2 f = octa_encode(d);
-				ivec2 lxy = ivec2(clamp((f * 0.5 + 0.5) * 8.0, vec2(0.0), vec2(7.999)));
-				ivec2 tile = ivec2(int(idx.x) * 8, (int(idx.y) + int(idx.z) * int(gsz.y)) * 8);
-				if (!gne_gi_seg_blocked(pos, center)) {
-				acc += wx * wy * wz * texelFetch(gi_prev, tile + lxy, 0).rgb;
-			}
-			}
-		}
-	}
-	return acc;
+
+// Caller-provided fetch hook for the shared sampler: 0.0 = drop this probe's
+// contribution (blocked), 1.0 = take it. The S2 trace gates with the analytic
+// occlusion test; plain consumers (material fragment) will answer 1.0.
+float gne_gi_fetch_gate(vec3 a, vec3 b) {
+	return gne_gi_seg_blocked(a, b) ? 0.0 : 1.0;
 }
+//GNE_GI_SHARED
 void main() {
 	ivec3 wid = ivec3(gl_WorkGroupID);
 	ivec2 lp = ivec2(gl_LocalInvocationID.xy);
 	vec3 cell = (pc.gmax.xyz - pc.gmin.xyz) / pc.dims.xyz;
 	vec3 ppos = pc.gmin.xyz + (vec3(wid) + 0.5) * cell;
 	vec2 f = ((vec2(lp) + 0.5) / 8.0) * 2.0 - 1.0;
-	vec3 dir = octa_decode(f);
+	vec3 dir = gne_gi_octa_decode(f);
 	float best = 1e30;
 	uint ninst = uint(pc.dims.w + 0.5);
 	for (uint i = 0u; i < ninst; i++) {
@@ -214,7 +224,7 @@ void main() {
 		if (pc.params.w > 0.5) {
 			// S2 bounce: surface receives the previous frame's probe field as an
 			// additional incoming source (constant albedo approximation).
-			rad += pc.params.z * gne_gi_sample_field(hp);
+			rad += pc.params.z * gne_gi_sample_field(gi_prev, pc.gmin.xyz, pc.gmax.xyz, pc.dims.xyz, hp);
 		}
 	} else {
 		rad = pc.ambient.rgb;
@@ -320,7 +330,7 @@ bool GneRenderServer::gpu_gi_create(const Dictionary &p_cfg) {
 	}
 	String error;
 	Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
-			RD::SHADER_STAGE_COMPUTE, String(gne_gi_trace_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+			RD::SHADER_STAGE_COMPUTE, String(gne_gi_trace_glsl).replace("//GNE_GI_SHARED", gpu_gi_sample_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (spirv.is_empty()) {
 		print_error("[GNE] gi trace shader compile failed:");
 		print_error(error);

@@ -622,3 +622,11 @@ observation recorded honestly: the S2C convergence sequence differs by ~0.04% ac
 sessions (16.834774 vs 16.841488 at f10; same-session byte-equality per 9.2 stands) -
 an unexplained cross-session microdrift, noted for the record, not chased in this
 round.
+**Step-1 (extraction) done 2026-09-29:** the probe-field sampler is now a single
+source (`gpu_gi_sample_glsl`: octa encode/decode + trilinear blend with the
+caller-provided `gne_gi_fetch_gate` hook; the S2 trace wires the hook to
+`gne_gi_seg_blocked`); the trace shader consumes it via the `//GNE_GI_SHARED` marker
+injection. NEUTRALITY VERIFIED: the paired gate re-ran byte-identical to the
+pre-refactor run (raw A = 0.80571126937866, f240 = 0.00001507811248, PASS paired).
+Remaining for this unit: the material-fragment consumer (hook = 1.0), its parameter
+path, and the five validation gates.
