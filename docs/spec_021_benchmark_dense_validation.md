@@ -11,8 +11,9 @@ prototype-checklist item.
 
 ### 1.1 Flag-flip criterion (cone culling default)
 The default flips from OFF to ON iff, on the benchmark city scene:
-- **dc >= 10%**, where dc = net assignment reduction = (flag-off assignments - flag-on
-  assignments) / flag-off assignments, measured on the same run pair; AND
+- **dc >= 10%**, where dc = CONE savings on the CORRECTED base = (slab assignments -
+  cone-on assignments) / slab assignments, measured on the same scene revision with the
+  three-state run (off / slab-only / cone-on); AND
 - the flag-on frame time does not regress beyond the same-session noise floor
   (median within +5%; same-binary noise-floor method).
 
