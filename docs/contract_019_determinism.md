@@ -7,7 +7,7 @@ No PASS without a byte-identical d1/d2 signature.
 
 - The `v19|lc|sm|cs|rd|hr|d` signature (D7-7): sm = bound shadow lights,
   cs = total casters, rd = real-depth flag 1/0, hr = histogram range (2 decimals),
-  d = DET flag. Canonical PASS target: `v19|lc=20|sm=5|cs=4|rd=1|hr=0.88|d1`.
+  d = DET flag. Canonical PASS target: `v19|lc=20|sm=5|cs=4|rd=1|hr=1.00|d1` (measured on the calibrated 019 scene; the S6 threshold hr >= 0.3 is unchanged).
 - Bias constants frozen (D7-6): 0.001 + 0.005×tanθ + normal offset 0.02 —
   part of DET (same binary, same constants, same pixels).
 - The 8 thresholds (§4, D7-8) are gate constants, not tunables.

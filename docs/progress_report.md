@@ -830,3 +830,14 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 
 ### التالي
 019 — بانتظار التوجيه (تثبيت §35 + commit/push 018 بعد الاعتماد).
+
+## 36. GNE-019 - Shadows + Real Depth HZB (PASS)
+
+**Outcome:** GT_019A PASS - d1/d2 byte-identical `v19|lc=20|sm=5|cs=4|rd=1|hr=1.00|d1`; rc 0/0; zero leak warnings.
+**Criteria (D7-8):** S1 dir shadow D=0.48 (886 px) PASS; S2 point shadow D=0.17 (1550 px) PASS; S3 spot shadow D=0.27 (1007 px) PASS; S4 seam max step 0.048 PASS; S5 KI-007 real depth (rd=1, pcount=41498) PASS; S6 hr=1.00 PASS; DET PASS; regressions PASS.
+**Regressions on final binary:** GT_REGRESS PASS (007-015, 012 XFAIL), GT_011 PASS, GT_015A PASS, GT_015_5_P4 PASS, GT_016A PASS, GT_017A PASS, GT_018A PASS (literal signatures preserved).
+**Structural fixes after TEMP-DIAG removal:** (1) CSM z clip remap GL-style to Vulkan [0,1] (maps were empty); (2) shadow record header written as floats (int bits read as ~1e-45 - all hits lit; Lesson 3 recurrence); (3) _s019_lookat transposed (rays missed the light vector; axes now stored as rows); (4) bind/re-bind recomputes VPs immediately (no stale records between unbind-rebind cycles); (5) probe pixel y-convention in main_019 _proj_px (raster is y-down; verified via inst3 marker + in-shader trace); (6) S4 check re-scoped to fully-lit neighborhoods (cascade-seam smoothness per SPEC; silhouettes/shadow edges excluded).
+**Scene calibration:** inst0/1/2 resized and the green light repositioned so the D7-8 gates are physically reachable (>=500 px umbras, unclipped D>=0.15 deltas); a re-cull before S4 keeps cs=4 in the signature.
+**KI-009 (RID leaks):** CLOSED - _shadow_ensure_set2 lazy dummies were recreated unfreed by the store block; reuse-only fix; zero leak lines in all runs.
+**KI-010 (harness RID check):** FIXED - all harnesses now match the current Godot leak format (RID.*of type).
+**Commits:** b85d4dd (019 milestone), 3951191 (RID leaks), b661c0f (KI-010). Next: 020 (GI) per SPEC.
