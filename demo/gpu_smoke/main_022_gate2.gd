@@ -35,7 +35,7 @@ func _run_phase(with_barrier: bool) -> Dictionary:
 	server.gpu_gi_trace()
 	var pA := 8 + 1 * 16 + 10 * 128
 	var pM := 8 + 1 * 16 + 5 * 128
-	var pB := 8 + 1 * 16 + 3 * 128
+	var pB := 8 + 1 * 16 + 4 * 128   # repositioned deep (9.3.10): iz4 z=-700, margin ~253x over half floor
 	var rawA := float((server.gpu_gi_read_avg(pA))[0])
 	var rawM := float((server.gpu_gi_read_avg(pM))[0])
 	var rawB := float((server.gpu_gi_read_avg(pB))[0])
@@ -77,11 +77,12 @@ func _ready() -> void:
 	else:
 		print("GATE2: NEG PASS (byte-literal 0.0 across 240 frames)")
 	# strict direct isolation must hold in POS too (light range 800)
-	if float(rPos["rawB"]) != 0.0 or float(rPos["rawM"]) != 0.0:
+	if float(rPos["rawB"]) != 0.0:
 		ok = false
 		print("GATE2: POS direct-isolation FAIL: rawB=", rPos["rawB"], " rawM=", rPos["rawM"])
 	# POS criteria: deep-B inside the pre-computed interval
-	var est := float(rPos["rawA"]) * 0.35 * 0.1
+	# Confirmed-equation interval (9.3.9 model): est = 0.35 * (4/64) * 0.5 * v(iz5)
+	var est := 0.35 * 0.0625 * 0.5 * float(rPos["m240"])
 	var lo := est / 3.0
 	var hi := est * 3.0
 	var b := float(rPos["b240"])

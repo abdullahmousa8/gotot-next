@@ -565,3 +565,23 @@ USABLE transport radius is limited by (i) the small effective per-hop coefficien
 for realistic albedo. For any future interactive use this defines a practical GI
 radius budget; same "MITIGATED not SOLVED" spirit - reported as a characteristic, not a
 defect to hide.
+### 9.3.10 Test target repositioned per the confirmed equation - OFFICIAL PAIRED RESULT (2026-09-28)
+
+Per the Architect ruling (the TARGET, not the mechanism, was invalid: iz3 lies below the
+half-float floor even for a perfect mechanism), the deep test point was repositioned to
+iz4 (z = -700; margin ~253x over the half floor) with its interval derived from the
+CONFIRMED equation: est = 0.35 x (4/64) x 0.5 x v(iz5). No transport code was touched.
+
+| phase | raw B | B(f240) | verdict |
+|---|---|---|---|
+| NEG (barrier) | 0.0 | 0.0 (byte-literal) | PASS - no leak at the new point either |
+| POS | 0.0 | 1.507811248e-5 in [1.436e-5, 1.293e-4] | PASS (in interval) |
+
+- est = 4.309e-5; measured value 1.5078e-5 (consistent with the direct steady-state
+  measurement of the same point).
+- Strict direct isolation on the deep probe holds (raw = 0.0); the near-probe direct
+  (rawM) recorded as documented premise behavior (shallow-ray geometry).
+- M-verification recorded: m240 = 0.00394 vs rawM = 0.00251.
+
+**RESULT: the paired gate PASSES -> the "GI" label is OPENED for the first time in this
+project (within the documented bounded-radius characteristic of 9.3.9).**

@@ -884,3 +884,11 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 **Artifacts:** docs/spec_021_benchmark_dense_validation.md (pre-registered + results), demo/gpu_smoke/main_021.gd/.tscn, tools/gt_021a.bat. Commits: e1834cb (pre-registration) -> f71ba3c (dc clarification + scene v2) -> (this) freeze + gate + results.
 **Note:** no engine/module changes in 021 (scene + docs only) - existing gates unaffected by construction.
 **Next:** GI (022+) per Architect; remaining open items unchanged (KI-011, KI-012, zero-copy future item).
+
+## 40. GNE-022 S2 - Feedback Transport + GI Naming Gate (PASS - GI label OPENED)
+
+**Outcome:** the paired official gate (single process, NEG+POS, 240 frames) PASSED - NEG: byte-literal 0.0 across all probes/frames (no leak under M3); POS: deep-probe (iz4, repositioned per the confirmed equation) = 1.507811248e-5 inside [1.436e-5, 1.293e-4]. The "GI" label opens for the first time in the project - within the documented bounded-radius characteristic.
+**Gates chain:** 9.1 convergence (adopted geometric-decay criterion, no fixed N), 9.2 cross-frame determinism (byte-equal across processes), 9.3 raised-bar naming gate, then the full diagnostic chain 9.3.1-9.3.10 (failed-fix analysis; M reclassification; M3 visibility-gated gather with measured cost 0.71ms/update; tn measurement refuting the grazing gate; multi-point chain; temporal-lag refuted by the 1100-frame lock; target reposition per the arithmetic-confirmed model).
+**Characteristics recorded:** bounded GI radius (effective per-hop coefficients ~0.4 -> 0.03; half-float floor) - the practical note stands; M3 occlusion gating by design; no denoiser; determinism preserved; transport cost ~0.7ms/update.
+**Commits:** 159017f ... 4ed572a (see spec_022 section 9.x for the full chain; this closure commits the gate result).
+**Next:** S3 remains an architectural decision (KI-015); shading integration + normalization (17.6x condition) is the next candidate unit; the GI label is now available for labeled work.

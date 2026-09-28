@@ -33,4 +33,4 @@ closed as measured: 0.48%; default stays OFF). Every milestone closed with liter
 signatures, honest accounting, and its own recorded decision set; lessons 1-6 live in
 docs/lessons.md.
 
-**Next:** GI (022+) - scoping draft delivered (`docs/spec_022_gi_scoping.md`); awaiting the Architect decision set D10 before any implementation.
+**Next:** GI S1 + S2 complete - the "GI" label is OPENED (spec_022 section 9.3.10; paired gate PASS 2026-09-28) within its documented bounded-radius characteristic; S3 (hardware-RT backend) remains an open architectural decision (KI-015); shading integration + normalization is the next candidate unit.
