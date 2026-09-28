@@ -615,3 +615,10 @@ scale-invariant by construction, so the scale choice cannot game it.
 
 **Explicitly not in this unit:** denoiser, temporal denoising of the fragment term,
 S3 (RT backend - KI-015), aesthetic tuning.
+**Post-closure verification (2026-09-29):** re-ran the flagship artifacts after the
+§10 plan commit - paired gate PASS (NEG byte-zero, POS in-interval), 9.1 convergence
+PASS, gt_018a literal v18 intact, zero ERROR/leak lines across the GI scenes. One
+observation recorded honestly: the S2C convergence sequence differs by ~0.04% across
+sessions (16.834774 vs 16.841488 at f10; same-session byte-equality per 9.2 stands) -
+an unexplained cross-session microdrift, noted for the record, not chased in this
+round.
