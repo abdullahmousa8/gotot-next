@@ -204,3 +204,20 @@ measured multi-bounce result exists (see below).
 
 This mirrors the F3 lesson: the transport-interface decision is made now, before the
 S1 design freezes further, instead of being discovered silently later.
+### 8.2 S1b results - city migration + trace budget (executed 2026-09-28)
+
+Scene: full GNE-021 city (56 instances incl. ground + 256 lights). Field: 16x8x16 =
+2048 probes x 64 fixed rays = 131,072 rays per dispatch. Atlas 128x1024 RGBA16F.
+
+**Trace budget (same-session wall clock incl. submit+sync; 6 runs):**
+
+| run | 1 | 2 | 3 | 4 | 5 | 6 | p50 | min | max |
+|---|---|---|---|---|---|---|---|---|---|
+| us | 231 | 212 | 205 | 204 | 211 | 223 | **212** | 204 | 231 |
+
+- Full-field trace ~= **0.21 ms** per dispatch on the RTX 3070. Even at 4-8x rays per
+  probe this stays ~1 ms class: the trace cost is NOT a threat to any future
+  `gne_gi_enabled` decision - measured, not assumed.
+- Sanity: near-street probe avg radiance 22.60 (r) vs far-field probe 1.29 (r) -
+  ratio ~17.6x, both above the miss-ambient floor (0.03). Values are UNNORMALIZED
+  raw radiance (normalization arrives with the shading integration).
