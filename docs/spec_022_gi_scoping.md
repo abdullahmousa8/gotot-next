@@ -698,3 +698,39 @@ per-front draw sets already exist for exactly this loop). The flag-off battery
 stands from commit 5ea0c1f. The scene must exit with zero ERROR/leak lines.
 
 **Not in this unit:** denoiser, anisotropy, dynamic-light response, aesthetics, S3.
+**First official run (2026-09-29) - RESULT: FAIL (clause b), fully diagnosed.** Raw
+evidence kept (run ids loop_sig1..3 in the operator temp log area):
+- m-seq (16 samples every 10 frames): 0.3342532, 0.5042847, 0.5908819, 0.6341644,
+  0.6562414, 0.6672961, 0.6723634, 0.6759784, then CONSTANT for the remaining 8.
+- field cross-evidence f: 0.365234, 0.550293, 0.644531, 0.692871, 0.717285,
+  0.729492, 0.735840, 0.739258, then constant.
+- delta ratios: five-six samples at 0.46-0.51 (textbook geometric; mirrors 9.1),
+  then 0.713 (FAIL vs 0.6), then zeros.
+- (a) finite PASS; (c) bound PASS (2.02x <= 3x); determinism in-process PASS
+  (byte-equal sequences); cost p50: accum 563us, draw 2170us per frame; zero
+  ERROR/leak lines.
+
+DIAGNOSIS (observed, direct evidence): the per-frame dump k=60..100 (run 3) shows
+the field marching on the half-float lattice (steps of exactly 2^-11 = 0.00048828125)
+through k=77, then a HARD FREEZE at f=0.739257812 (= 1514 x 2^-11); the displayed
+window mean freezes in the SAME frame (m = 0.675978375). Mechanism: the EMA
+increment 0.1 x (g - old) falls below the round-to-nearest threshold (~half quantum
+= 2.44e-4 per frame) -> the stored bits stop changing. This is a STORAGE-RESOLUTION
+LATCH, not a transport failure. The failing 0.713 ratio is the rounding-walk tail:
+per-frame +1-quantum stepping (rounding bias while the increment sits in
+[0.5q, 1q)) followed by the cliff to zero distorts the last deltas. Same latch CLASS
+as the S2 long-window freeze (9.3.9, iz4); here its mid-range threshold is pinned.
+
+Instrument corrections recorded (made BEFORE the results run, both gain/sensitivity
+class; the ratio-form criterion is gain-invariant by construction): (1) s 0.03 ->
+0.015 - the accumulated field is ~2.16x the single-trace field, so s=0.03 saturated
+the image at 1.0 (void-by-saturation run kept in the record as loop_sig1);
+(2) window r 2 -> 4 (quantization floor 1/(255 x 81)).
+
+STATUS: the criteria stand AS REGISTERED; the FAIL is recorded as such. Resolution
+options for the architect/owner (NOT enacted): (i) a criterion amendment with a
+pre-registered instrument-resolution rationale (the 9.1 amendment process) - rate
+the decay on the resolvable range and report the latch onset as the convergence
+endpoint; (ii) an engine-side change: higher-precision accumulation storage (32F) or
+rounding-aware writes to remove the latch from the physics. Executor recommendation:
+scope (ii) as a small unit; (i) only with architect approval, per precedent.

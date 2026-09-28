@@ -916,3 +916,18 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - Decision point reached: S3 (RT backend) stays blocked by KI-015 (fork-level RT
   pipeline creation failure, engine-level diagnosis); denoiser / temporal
   integration were explicitly out of the section-10 unit scope.
+## §42. GNE-022 §11 live-loop first run — FAIL (clause b) + full latch diagnosis (2026-09-29)
+
+- Pre-registration aa8e2ee (frozen: m-metric every 10 frames, ratio-form decay
+  <= 0.6, bound 3x, in-process byte-equal determinism, cost evidence-only).
+- Scene main_022_loop + per-frame lattice diagnostic committed. Runs: 1 saturated
+  (void, kept), 2 = official criteria run, 3 = diagnostic.
+- Verdict: FAIL on clause (b) - ratios 0.46-0.51 for six samples, then 0.713, then
+  a hard freeze. (a), (c), determinism, cost, cleanliness all PASS; accum p50
+  563us, draw p50 2170us per frame.
+- Diagnosis (direct): half-float storage latch - field marches on the 2^-11 lattice,
+  then freezes at k=77 when the EMA increment < half quantum (2.44e-4/frame); the
+  image freezes in the same frame. Not a transport failure; criteria untouched.
+- Options recorded (not enacted): (i) registered amendment (instrument resolution,
+  9.1 process), (ii) engine-side 32F/rounding-aware accumulation; recommendation:
+  scope (ii) small, (i) with architect approval.
