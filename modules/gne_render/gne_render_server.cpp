@@ -1164,17 +1164,206 @@ layout(std430, set = 1, binding = 3) buffer ClIndexBuffer {
 }
 clidx;
 
+// GNE-019: shadow sampling set (D7-1..D7-7). CSM array (4x2048), two cube
+// arrays (6x1024), two spot maps (2048), bind records, light->bind LUT.
+// Guarded everywhere: unbound/disabled lights return exactly 1.0, so 018
+// pixels reproduce bit-exactly when no shadows are bound.
+layout(set = 2, binding = 0) uniform sampler2DArray shadow_csm;
+layout(set = 2, binding = 1) uniform sampler2DArray shadow_cube0;
+layout(set = 2, binding = 2) uniform sampler2DArray shadow_cube1;
+layout(set = 2, binding = 3) uniform sampler2D shadow_spot0;
+layout(set = 2, binding = 4) uniform sampler2D shadow_spot1;
+struct ShadowRec019 {
+	vec4 h0; // x = light_id, y = type (0 CSM, 1 cube, 2 spot), z = slot, w = enabled
+	vec4 splits; // CSM: s1..s4 planar view-depth splits; cube/spot: light pos xyz + far
+	mat4 vps[6]; // column-major VP per cascade/face (CSM 4, cube 6, spot 1)
+};
+layout(std430, set = 2, binding = 5) buffer ShadowRecs019 {
+	ShadowRec019 recs[];
+}
+shadowrec;
+layout(std430, set = 2, binding = 6) buffer ShadowLut019 {
+	uint lut[];
+}
+shadowlut;
+
 layout(push_constant, std430) uniform MatLightParams {
 	vec4 light_dir_ambient;
 	vec4 cam_pos;
 	vec4 light_color;
 	vec4 tex_slot_pad;
 	vec4 grid_dims;   // x = raster_w, y = raster_h, z = near, w = far
+	vec4 shadow_ctrl; // x = dir bind idx (-1 = none), y = shadow enable, z = cam near, w = csm blend scale
+	vec4 shadow_cam;  // xyz = camera forward (planar depth for CSM select), w = spare
 }
 params;
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out float out_view_z;
+
+// GNE-019 shadow sampling implementation. Depth convention: the R32 maps hold
+// the rasterizer's gl_FragCoord.z (Vulkan viewport 0..1 over Godot
+// Vulkan-style 0..1 NDC), so ref = clamp(ndc_z) - bias with the SAME VP that
+// rendered the map. If S1 shows inverted/missing shadows, this single mapping
+// is the suspect (see §36).
+float gne_shadow_bias(vec3 N, vec3 Ld) {
+	float ndl = clamp(dot(N, Ld), 0.0, 1.0);
+	float th = acos(clamp(ndl, -1.0, 1.0));
+	float sl = 0.005 * tan(min(th, 1.45)); // D7-6 slope, grazing-clamped
+	return 0.001 + min(sl, 0.05); // D7-6 constant
+}
+
+float gne_pcf_arr(sampler2DArray arr, vec2 uv, int layer, float size, float ref) {
+	vec2 p = clamp(uv, vec2(0.0), vec2(1.0)) * (size - 1.0);
+	float xmax = size - 1.0;
+	float s = 0.0;
+	s += float(ref <= texelFetch(arr, ivec3(min(int(p.x), int(xmax)), min(int(p.y), int(xmax)), layer), 0).r);
+	s += float(ref <= texelFetch(arr, ivec3(min(int(p.x) + 1, int(xmax)), min(int(p.y), int(xmax)), layer), 0).r);
+	s += float(ref <= texelFetch(arr, ivec3(min(int(p.x), int(xmax)), min(int(p.y) + 1, int(xmax)), layer), 0).r);
+	s += float(ref <= texelFetch(arr, ivec3(min(int(p.x) + 1, int(xmax)), min(int(p.y) + 1, int(xmax)), layer), 0).r);
+	return s * 0.25;
+}
+
+float gne_pcf_2d(sampler2D sp, vec2 uv, float size, float ref) {
+	vec2 p = clamp(uv, vec2(0.0), vec2(1.0)) * (size - 1.0);
+	float xmax = size - 1.0;
+	float s = 0.0;
+	s += float(ref <= texelFetch(sp, ivec2(min(int(p.x), int(xmax)), min(int(p.y), int(xmax))), 0).r);
+	s += float(ref <= texelFetch(sp, ivec2(min(int(p.x) + 1, int(xmax)), min(int(p.y), int(xmax))), 0).r);
+	s += float(ref <= texelFetch(sp, ivec2(min(int(p.x), int(xmax)), min(int(p.y) + 1, int(xmax))), 0).r);
+	s += float(ref <= texelFetch(sp, ivec2(min(int(p.x) + 1, int(xmax)), min(int(p.y) + 1, int(xmax))), 0).r);
+	return s * 0.25;
+}
+
+// Projective sample of one cascade/spot map. Returns 1.0 outside the map.
+float gne_sample_cas(ShadowRec019 r, int cas, vec3 wp, float bias, bool is_spot, int slot) {
+	vec4 c = r.vps[is_spot ? 0 : cas] * vec4(wp, 1.0);
+	float w = max(abs(c.w), 1e-6);
+	vec3 ndc = c.xyz / w;
+	vec2 uv = ndc.xy * 0.5 + 0.5;
+	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+		return 1.0;
+	}
+	float ref = clamp(ndc.z, -1.0, 1.0) - bias;
+	if (is_spot) {
+		if (slot == 0) {
+			return gne_pcf_2d(shadow_spot0, uv, 2048.0, ref);
+		}
+		return gne_pcf_2d(shadow_spot1, uv, 2048.0, ref);
+	}
+	return gne_pcf_arr(shadow_csm, uv, cas, 2048.0, ref);
+}
+
+// Cube-face frame. Axes mirror _shadow_vp_cube UPS/DIRS exactly (closed loop:
+// render lookat basis == sample basis by construction, verified in §36).
+void gne_cube_frame(vec3 d, out int face, out vec2 uv) {
+	vec3 a = abs(d);
+	if (a.x >= a.y && a.x >= a.z) {
+		if (d.x > 0.0) {
+			face = 0;
+			uv = vec2(d.z, d.y) / a.x;
+		} else {
+			face = 1;
+			uv = vec2(-d.z, d.y) / a.x;
+		}
+	} else if (a.y >= a.x && a.y >= a.z) {
+		if (d.y > 0.0) {
+			face = 2;
+			uv = vec2(-d.x, -d.z) / a.y;
+		} else {
+			face = 3;
+			uv = vec2(-d.x, d.z) / a.y;
+		}
+	} else {
+		if (d.z > 0.0) {
+			face = 4;
+			uv = vec2(-d.x, d.y) / a.z;
+		} else {
+			face = 5;
+			uv = vec2(d.x, d.y) / a.z;
+		}
+	}
+	uv = uv * 0.5 + 0.5;
+}
+
+// Full per-light shadow factor. Unbound/disabled -> exactly 1.0.
+float gne_shadow_light(uint light_id, vec3 wpos, vec3 N, vec3 Ld, float zview) {
+	if (params.shadow_ctrl.y < 0.5 || light_id >= 1024u) {
+		return 1.0;
+	}
+	uint bi = shadowlut.lut[light_id];
+	if (bi == 0xFFFFFFFFu) {
+		return 1.0;
+	}
+	ShadowRec019 r = shadowrec.recs[bi];
+	if (r.h0.w < 0.5) {
+		return 1.0;
+	}
+	int tp = int(r.h0.y + 0.5);
+	int slot = int(r.h0.z + 0.5);
+	float bias = gne_shadow_bias(N, Ld);
+	vec3 wp = wpos + N * 0.02; // D7-6 normal offset (exact world units)
+	if (tp == 1) {
+		vec3 lp = r.splits.xyz;
+		vec3 d = wp - lp;
+		int face;
+		vec2 cuv;
+		gne_cube_frame(d, face, cuv);
+		if (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0) {
+			return 1.0;
+		}
+		vec4 c = r.vps[face] * vec4(wp, 1.0);
+		float w = max(abs(c.w), 1e-6);
+		float ref = clamp(c.z / w, -1.0, 1.0) - bias;
+		if (slot == 0) {
+			return gne_pcf_arr(shadow_cube0, cuv, face, 1024.0, ref);
+		}
+		return gne_pcf_arr(shadow_cube1, cuv, face, 1024.0, ref);
+	}
+	if (tp == 2) {
+		return gne_sample_cas(r, 0, wp, bias, true, slot);
+	}
+	return 1.0; // CSM on a cluster light is rejected at bind time; never sample
+}
+
+// Directional (CSM) factor for the hardcoded push dir.
+float gne_shadow_dir(vec3 wpos, vec3 N, vec3 Ld) {
+	if (params.shadow_ctrl.y < 0.5) {
+		return 1.0;
+	}
+	int bi = int(params.shadow_ctrl.x + 0.5);
+	if (bi < 0) {
+		return 1.0;
+	}
+	ShadowRec019 r = shadowrec.recs[uint(bi)];
+	if (r.h0.w < 0.5) {
+		return 1.0;
+	}
+	float bias = gne_shadow_bias(N, Ld);
+	vec3 wp = wpos + N * 0.02;
+	float planar = dot(wp - params.cam_pos.xyz, params.shadow_cam.xyz);
+	int cas = 3;
+	if (planar <= r.splits.x) {
+		cas = 0;
+	} else if (planar <= r.splits.y) {
+		cas = 1;
+	} else if (planar <= r.splits.z) {
+		cas = 2;
+	}
+	float f = gne_sample_cas(r, cas, wp, bias, false, 0);
+	// S4: blend across the upper split over a band (D7-2 smooth transitions).
+	if (cas < 3) {
+		float s_lo = (cas == 0) ? params.shadow_ctrl.z : (cas == 1 ? r.splits.x : r.splits.y);
+		float s_hi = (cas == 0) ? r.splits.x : (cas == 1 ? r.splits.y : r.splits.z);
+		float band = max((s_hi - s_lo) * 0.05 * params.shadow_ctrl.w, 1e-3);
+		float t = (planar - (s_hi - band)) / (2.0 * band);
+		if (t > 0.0 && t < 1.0) {
+			float f2 = gne_sample_cas(r, cas + 1, wp, bias, false, 0);
+			f = mix(f, f2, smoothstep(0.0, 1.0, t));
+		}
+	}
+	return f;
+}
 
 void main() {
 	uint m = v_mesh_id * 4u;
@@ -1213,6 +1402,9 @@ void main() {
 	float spec = pow(max(dot(N, H), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
 	vec3 sc = mix(spec_col, alb, metal);
 	vec3 specular = spec * sc * params.light_color.rgb;
+	float dir_sh = gne_shadow_dir(v_world, N, L);
+	diff *= dir_sh;
+	specular *= dir_sh;
 	vec3 col = AMB * alb + diff + specular + emi;
 	if (dot(N, Vv) >= 0.0) {
 		// Cluster lookup: framebuffer tile + exponential depth slice.
@@ -1248,7 +1440,8 @@ void main() {
 			vec3 H2 = normalize(Ld + V);
 			float s2 = pow(max(dot(N, H2), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
 			vec3 lspec = s2 * sc * A1.rgb * (A1.a * att * cone_f);
-			col += ldiff + lspec;
+			float shf = gne_shadow_light(lid, v_world, N, Ld, z_view);
+			col += (ldiff + lspec) * shf;
 		}
 	} else {
 		vec3 bem = (flags.z > 0.5) ? emi : vec3(0.0);
@@ -1256,6 +1449,191 @@ void main() {
 	}
 	out_color = vec4(col, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
+}
+)";
+
+// GNE-019: shadow depth vertex shader. Clone of the batch vertex shader (same
+// set-0 layout) PLUS v_ndc_z = gl_Position.z/gl_Position.w. Storing raw ndc.z
+// (instead of gl_FragCoord.z) makes the depth compare convention-independent:
+// the sampler recomputes the identical ndc.z from the same VP.
+const char *gpu_shadow_depth_vert_glsl = R"(
+#version 450
+
+layout(location = 0) in vec3 vertex_position;
+
+layout(std430, set = 0, binding = 0) buffer BatchInstancesBuffer {
+	uint instances[];
+}
+batch_instances;
+
+layout(std430, set = 0, binding = 1) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std140, set = 0, binding = 2) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+layout(std430, set = 0, binding = 3) buffer MeshIdBuffer {
+	uint mesh_id[];
+}
+meshids;
+
+layout(location = 1) flat out uint v_mesh_id;
+layout(location = 0) out vec3 v_world;
+layout(location = 2) out float v_ndc_z;
+
+void main() {
+	uint orig = batch_instances.instances[gl_InstanceIndex];
+	uint m = meshids.mesh_id[orig];
+	vec4 ts = transforms.position_scale[orig];
+	vec3 world = ts.xyz + vertex_position * ts.w;
+	gl_Position = viewdata.vp * vec4(world, 1.0);
+	v_ndc_z = gl_Position.z / max(abs(gl_Position.w), 1e-6);
+	v_mesh_id = m;
+	v_world = world;
+}
+)";
+
+// GNE-019: shadow depth fragment shader. Reuses the batch vertex shader
+// (identical set-0 layout, binding 2 swapped for the dedicated shadow view
+// UBO), so no new vertex code exists. Writes window-space depth
+// (gl_FragCoord.z) into R32 — the SAME quantity the sampling side recomputes
+// from the same VP, so the compare is exact by construction regardless of
+// clip conventions. A D32 attachment on the same framebuffer provides the
+// depth test (self-occlusion correctness).
+const char *gpu_shadow_depth_frag_glsl = R"(
+#version 450
+
+layout(location = 0) in vec3 v_world;
+layout(location = 2) in float v_ndc_z;
+
+layout(push_constant, std430) uniform ShadowDepthParams {
+	vec4 light_pos; // xyz = light position (unused for CSM, kept for uniformity)
+}
+params;
+
+layout(location = 0) out vec4 out_dist;
+
+void main() {
+	out_dist = vec4(v_ndc_z, 0.0, 0.0, 1.0); // raw ndc.z; sampler recomputes the identical value
+}
+)";
+
+// GNE-019: pack a 2D shadow render target into a sampling-array layer.
+// texture_copy is unreliable in this RDG fork (observed: array stays at the
+// clear value), so the copy runs as a compute pass - the same reliable
+// sample-a-render-target route the 012 depth-source pass uses.
+const char *gpu_shadow_pack_glsl = R"(
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1, r32f) uniform writeonly image2DArray dst;
+
+layout(push_constant, std430) uniform PackParams {
+	uint layer;
+	uint size;
+	uint pad0;
+	uint pad1;
+}
+params;
+
+void main() {
+	ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+	if (px.x >= int(params.size) || px.y >= int(params.size)) {
+		return;
+	}
+	vec2 uv = (vec2(px) + 0.5) / float(params.size);
+	float v = textureLod(src, uv, 0.0).r;
+	// TEMP-DIAG-019c removed — real depth path active (line 1528)
+	imageStore(dst, ivec3(px, int(params.layer)), vec4(v, 0.0, 0.0, 1.0));
+}
+)";
+
+// GNE-019: shadow caster culling (D7-5). One thread per (bind, instance):
+// 64x4 = 256 threads, single group. Sphere (from position_scale, r = w*1.74
+// conservative for the unit cube) vs per-bind frustum planes; CSM/dir always
+// casts (whole-scene ortho, documented); cube = range-sphere test. Results via
+// atomicOr bitmasks (bit i = instance i) - concurrent atomicOr on one word is
+// safe (014 RMW lesson: atomics, never read-modify-write).
+const char *gpu_shadow_cull_glsl = R"(
+#version 450
+
+layout(local_size_x = 64, local_size_y = 4, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform ShadowCullParams {
+	uint bind_count;
+	uint instance_count;
+	uint pad0;
+	uint pad1;
+}
+params;
+
+layout(std430, set = 0, binding = 0) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std430, set = 0, binding = 1) buffer PlanesBuffer {
+	vec4 planes[];
+}
+planebuf;
+
+layout(std430, set = 0, binding = 2) buffer AuxBuffer {
+	vec4 aux[]; // x = type (0 CSM, 1 cube, 2 spot), y = range
+}
+auxbuf;
+
+layout(std430, set = 0, binding = 3) buffer PosBuffer {
+	vec4 lightpos[]; // xyz = light position
+}
+posbuf;
+
+layout(std430, set = 0, binding = 4) buffer MaskBuffer {
+	uint mask[];
+}
+maskbuf;
+
+void main() {
+	uint b = gl_GlobalInvocationID.x;
+	uint i = gl_GlobalInvocationID.y;
+	if (b >= params.bind_count || i >= params.instance_count || i >= 32u) {
+		return;
+	}
+	vec4 ts = transforms.position_scale[i];
+	vec3 c = ts.xyz;
+	float r = ts.w * 1.74;
+	float tp = auxbuf.aux[b].x;
+	bool hit = false;
+	if (tp < 0.5) {
+		hit = true; // CSM/dir: whole-scene ortho always covers all casters
+	} else if (tp < 1.5) {
+		float dd = length(c - posbuf.lightpos[b].xyz);
+		hit = dd < auxbuf.aux[b].y + r;
+	} else {
+		hit = true;
+		for (int k = 0; k < 6; k++) {
+			vec4 pl = planebuf.planes[b * 6u + uint(k)];
+			if (dot(pl.xyz, c) + pl.w < -r) {
+				hit = false;
+				break;
+			}
+		}
+	}
+	if (hit) {
+		atomicOr(maskbuf.mask[b], 1u << i);
+	}
 }
 )";
 
@@ -1921,6 +2299,16 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_light_update", "id", "params"), &GneRenderServer::gpu_light_update);
 	ClassDB::bind_method(D_METHOD("gpu_light_destroy", "id"), &GneRenderServer::gpu_light_destroy);
 	ClassDB::bind_method(D_METHOD("gpu_light_get_stats"), &GneRenderServer::gpu_light_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_light_bind", "light_id", "shadow_id"), &GneRenderServer::gpu_shadow_light_bind);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_cull_dispatch"), &GneRenderServer::gpu_shadow_cull_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_render_maps"), &GneRenderServer::gpu_shadow_render_maps);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_get_stats"), &GneRenderServer::gpu_shadow_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_dbg_map", "type", "slot", "face"), &GneRenderServer::gpu_shadow_dbg_map);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_dbg_dump", "layer", "path"), &GneRenderServer::gpu_shadow_dbg_dump);
+	ClassDB::bind_method(D_METHOD("gpu_shadow_dbg_vp", "bind", "cas"), &GneRenderServer::gpu_shadow_dbg_vp);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_set_real_depth", "enabled"), &GneRenderServer::gpu_hzb_set_real_depth);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_depth_feed"), &GneRenderServer::gpu_hzb_depth_feed);
 	ClassDB::bind_method(D_METHOD("gpu_material_draw_lights"), &GneRenderServer::gpu_material_draw_lights);
 	ClassDB::bind_method(D_METHOD("gpu_light_debug_cluster", "tx", "ty", "tz"), &GneRenderServer::gpu_light_debug_cluster);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_PER_MESH", GNE_BATCH_STRATEGY_PER_MESH);
@@ -2100,6 +2488,9 @@ void GneRenderServer::_destroy_mesh() {
 	// GNE-018: light store teardown. ORDER: sets first (they reference the
 	// buffers), then pipelines/shaders, then buffers. (016-lifetime lesson:
 	// RD auto-invalidates sets whose buffers die first.)
+	// GNE-019: shadow teardown FIRST of all: shadow_set2 is bound to
+	// mat_light_shader, which dies below (same auto-invalidate rule).
+	_destroy_shadow();
 	if (rendering_device != nullptr) {
 		if (light_cull_uniform_set.is_valid()) {
 			rendering_device->free_rid(light_cull_uniform_set);
@@ -2884,6 +3275,21 @@ void GneRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transform
 	meshlet_camera_position[0] = p_camera_transform.origin.x;
 	meshlet_camera_position[1] = p_camera_transform.origin.y;
 	meshlet_camera_position[2] = p_camera_transform.origin.z;
+	// GNE-019: camera basis for shadow VP math (right/up/forward columns).
+	{
+		Vector3 bx = p_camera_transform.basis.get_column(0);
+		Vector3 by = p_camera_transform.basis.get_column(1);
+		Vector3 bz = p_camera_transform.basis.get_column(2);
+		shadow_cam_basis[0] = bx.x;
+		shadow_cam_basis[1] = bx.y;
+		shadow_cam_basis[2] = bx.z;
+		shadow_cam_basis[3] = by.x;
+		shadow_cam_basis[4] = by.y;
+		shadow_cam_basis[5] = by.z;
+		shadow_cam_basis[6] = -bz.x;
+		shadow_cam_basis[7] = -bz.y;
+		shadow_cam_basis[8] = -bz.z;
+	}
 	far_plane = p_projection.get_z_far();
 	// GNE-018: cluster inputs (unconditional, like the meshlet capture above).
 	cam_near_v = p_projection.get_z_near();
@@ -5925,7 +6331,1435 @@ bool GneRenderServer::_light_ensure_geo() {
 		print_error("[GNE] light tex uniform_set_create failed.");
 		return false;
 	}
-	return _light_build_set0();
+	if (!_light_build_set0()) {
+		return false;
+	}
+	// GNE-019: frag set 2 (dummy until shadow maps exist). Always valid once
+	// the light pipeline exists, so the 019-extended frag never sees an
+	// unbound set — 018 pixels reproduce exactly (guarded sampling).
+	return _shadow_ensure_set2();
+}
+
+// GNE-019: shadow math helpers (file-local). Column-major float[16].
+static void _s019_mat_mul(float *r_out, const float *p_a, const float *p_b) {
+	for (int c = 0; c < 4; c++) {
+		for (int r = 0; r < 4; r++) {
+			float s = 0.0f;
+			for (int k = 0; k < 4; k++) {
+				s += p_a[k * 4 + r] * p_b[c * 4 + k];
+			}
+			r_out[c * 4 + r] = s;
+		}
+	}
+}
+
+static void _s019_lookat(float *r_view, const float *p_eye, const float *p_f, const float *p_up_hint) {
+	float z[3] = { -p_f[0], -p_f[1], -p_f[2] };
+	float x[3] = {
+		p_up_hint[1] * z[2] - p_up_hint[2] * z[1],
+		p_up_hint[2] * z[0] - p_up_hint[0] * z[2],
+		p_up_hint[0] * z[1] - p_up_hint[1] * z[0]
+	};
+	float xl = Math::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+	if (xl < 1e-6f) {
+		x[0] = 1.0f;
+		x[1] = 0.0f;
+		x[2] = 0.0f;
+		xl = 1.0f;
+	}
+	x[0] /= xl;
+	x[1] /= xl;
+	x[2] /= xl;
+	float y[3] = {
+		z[1] * x[2] - z[2] * x[1],
+		z[2] * x[0] - z[0] * x[2],
+		z[0] * x[1] - z[1] * x[0]
+	};
+	// Column-major storage: the matrix ROWS must be the basis axes
+	// (Godot convention: m[0]=x[0], m[1]=y[0], m[2]=z[0]). Storing the axes as
+	// columns built the transposed (inverse-rotated) view: projection rays
+	// missed the light direction and casters never landed over their receivers.
+	r_view[0] = x[0];
+	r_view[1] = y[0];
+	r_view[2] = z[0];
+	r_view[3] = 0.0f;
+	r_view[4] = x[1];
+	r_view[5] = y[1];
+	r_view[6] = z[1];
+	r_view[7] = 0.0f;
+	r_view[8] = x[2];
+	r_view[9] = y[2];
+	r_view[10] = z[2];
+	r_view[11] = 0.0f;
+	r_view[12] = -(x[0] * p_eye[0] + x[1] * p_eye[1] + x[2] * p_eye[2]);
+	r_view[13] = -(y[0] * p_eye[0] + y[1] * p_eye[1] + y[2] * p_eye[2]);
+	r_view[14] = -(z[0] * p_eye[0] + z[1] * p_eye[1] + z[2] * p_eye[2]);
+	r_view[15] = 1.0f;
+}
+
+void GneRenderServer::_shadow_planes_from_vp(const float *p_vp, float *r_planes) {
+	// Rows of a column-major 4x4: row r = (m[r], m[4+r], m[8+r], m[12+r]).
+	float rows[4][4];
+	for (int r = 0; r < 4; r++) {
+		rows[r][0] = p_vp[r];
+		rows[r][1] = p_vp[4 + r];
+		rows[r][2] = p_vp[8 + r];
+		rows[r][3] = p_vp[12 + r];
+	}
+	const int comb[6][2] = { { 3, 0 }, { 3, 0 }, { 3, 1 }, { 3, 1 }, { 3, 2 }, { 3, 2 } };
+	const float sign[6] = { 1.0f, -1.0f, 1.0f, -1.0f, 1.0f, -1.0f };
+	for (int k = 0; k < 6; k++) {
+		int a = comb[k][0];
+		int b = comb[k][1];
+		float px = rows[a][0] + sign[k] * rows[b][0];
+		float py = rows[a][1] + sign[k] * rows[b][1];
+		float pz = rows[a][2] + sign[k] * rows[b][2];
+		float pw = rows[a][3] + sign[k] * rows[b][3];
+		float il = 1.0f / MAX(Math::sqrt(px * px + py * py + pz * pz), 1e-9f);
+		r_planes[k * 4 + 0] = px * il;
+		r_planes[k * 4 + 1] = py * il;
+		r_planes[k * 4 + 2] = pz * il;
+		r_planes[k * 4 + 3] = pw * il;
+	}
+}
+
+void GneRenderServer::_shadow_vp_csm(float *r_vps, float *r_splits, float *r_bounds) {
+	// Hybrid splits (D7-2, lambda = 0.5) in planar view depth.
+	float near_d = cam_near_v;
+	float far_d = far_plane;
+	float ratio = far_d / MAX(near_d, 1e-3f);
+	float s[5];
+	s[0] = near_d;
+	s[4] = far_d;
+	for (int i = 1; i <= 3; i++) {
+		float f = (float)i / 4.0f;
+		float log_part = near_d * Math::pow(ratio, f);
+		float uni_part = near_d + f * (far_d - near_d);
+		s[i] = 0.5f * log_part + 0.5f * uni_part;
+	}
+	r_splits[0] = s[1];
+	r_splits[1] = s[2];
+	r_splits[2] = s[3];
+	r_splits[3] = s[4];
+	Vector3 dir = mat_light_dir.normalized();
+	// View direction = -L (the direction light TRAVELS, toward the scene).
+	// The shadow camera sits on the light-source side (+L) and looks toward
+	// the instances; looking along +L puts the scene behind the camera and
+	// yields empty maps (observed: non_far = 0).
+	float f[3] = { -dir.x, -dir.y, -dir.z };
+	float up0[3] = { 0.0f, 1.0f, 0.0f };
+	// Light-space basis (orthonormal): r/l/u.
+	float zax[3] = { -f[0], -f[1], -f[2] };
+	float rax[3] = {
+		up0[1] * zax[2] - up0[2] * zax[1],
+		up0[2] * zax[0] - up0[0] * zax[2],
+		up0[0] * zax[1] - up0[1] * zax[0]
+	};
+	float rl = Math::sqrt(rax[0] * rax[0] + rax[1] * rax[1] + rax[2] * rax[2]);
+	rax[0] /= rl;
+	rax[1] /= rl;
+	rax[2] /= rl;
+	float uax[3] = {
+		zax[1] * rax[2] - zax[2] * rax[1],
+		zax[2] * rax[0] - zax[0] * rax[2],
+		zax[0] * rax[1] - zax[1] * rax[0]
+	};
+	float aspect = (float)RASTER_TARGET_W / (float)RASTER_TARGET_H;
+	float eye[3] = {
+		meshlet_camera_position[0] + dir.x * 2000.0f,
+		meshlet_camera_position[1] + dir.y * 2000.0f,
+		meshlet_camera_position[2] + dir.z * 2000.0f
+	};
+	float view[16];
+	_s019_lookat(view, eye, f, up0);
+	float r_ortho[6];
+	for (int k = 0; k < 4; k++) {
+		float z0 = s[k];
+		float z1 = s[k + 1];
+		float minx = 1e30f, maxx = -1e30f, miny = 1e30f, maxy = -1e30f, minz = 1e30f, maxz = -1e30f;
+		for (int ci = 0; ci < 8; ci++) {
+			float sx = (ci & 1) ? 1.0f : -1.0f;
+			float sy = (ci & 2) ? 1.0f : -1.0f;
+			float sz = (ci & 4) ? z1 : z0;
+			float hx = sx * cam_tan_v * aspect * sz;
+			float hy = sy * cam_tan_v * sz;
+			float wx = meshlet_camera_position[0] + shadow_cam_basis[0] * hx + shadow_cam_basis[3] * hy + shadow_cam_basis[6] * sz;
+			float wy = meshlet_camera_position[1] + shadow_cam_basis[1] * hx + shadow_cam_basis[4] * hy + shadow_cam_basis[7] * sz;
+			float wz = meshlet_camera_position[2] + shadow_cam_basis[2] * hx + shadow_cam_basis[5] * hy + shadow_cam_basis[8] * sz;
+			float dx = wx - eye[0], dy = wy - eye[1], dz = wz - eye[2];
+			float lx = dx * rax[0] + dy * rax[1] + dz * rax[2];
+			float ly = dx * uax[0] + dy * uax[1] + dz * uax[2];
+			float lz = dx * f[0] + dy * f[1] + dz * f[2];
+			minx = MIN(minx, lx);
+			maxx = MAX(maxx, lx);
+			miny = MIN(miny, ly);
+			maxy = MAX(maxy, ly);
+			minz = MIN(minz, lz);
+			maxz = MAX(maxz, lz);
+		}
+		float mx = (maxx - minx) * 0.05f + 10.0f;
+		float my = (maxy - miny) * 0.05f + 10.0f;
+		float mz = (maxz - minz) * 0.05f + 10.0f;
+		Projection ortho = Projection::create_orthogonal(minx - mx, maxx + mx, miny - my, maxy + my, minz - mz, maxz + mz);
+		Projection depth_fix;
+		depth_fix.set_depth_correction(false, false, true); // remap only (GL [-1,1] -> Vulkan [0,1])
+		// Vulkan clip space requires 0 <= z <= w. The raw ortho maps to GL-style
+		// [-1, 1] and every scene fragment lands at negative z -> all clipped
+		// (observed: empty CSM maps, S1 fail). Remap forward to [0, 1]: z prime =
+		// 0.5*z + 0.5 (near -> 0, far -> 1), keeping the forward-z convention
+		// (compare LESS_OR_EQUAL, clear 1.0). The sampling side recomputes ref
+		// with this same matrix, so stored/ref stay identical.
+		Projection ortho_clip = depth_fix * ortho;
+		float pm[16];
+		for (int c = 0; c < 4; c++) {
+			for (int r = 0; r < 4; r++) {
+				pm[c * 4 + r] = ortho_clip.columns[c][r];
+			}
+		}
+		_s019_mat_mul(&r_vps[k * 16], pm, view);
+		if (k == 3) {
+			r_ortho[0] = minx - mx;
+			r_ortho[1] = maxx + mx;
+			r_ortho[2] = miny - my;
+			r_ortho[3] = maxy + my;
+			r_ortho[4] = minz - mz;
+			r_ortho[5] = maxz + mz;
+		}
+	}
+	for (int i = 0; i < 6; i++) {
+		r_bounds[i] = r_ortho[i];
+	}
+}
+
+void GneRenderServer::_shadow_vp_cube(const float *p_pos, float *r_vps) {
+	// Face order 0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z. Ups mirror the GLSL sampler
+	// convention exactly (closed loop: render and sample share these axes).
+	static const float DIRS[6][3] = {
+		{ 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f },
+		{ 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f },
+		{ 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -1.0f }
+	};
+	static const float UPS[6][3] = {
+		{ 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f },
+		{ 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f, 1.0f },
+		{ 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }
+	};
+	Projection persp = Projection::create_perspective(90.0f, 1.0f, 10.0f, 4000.0f);
+	float pm[16];
+	for (int c = 0; c < 4; c++) {
+		for (int r = 0; r < 4; r++) {
+			pm[c * 4 + r] = persp.columns[c][r];
+		}
+	}
+	for (int k = 0; k < 6; k++) {
+		float view[16];
+		_s019_lookat(view, p_pos, DIRS[k], UPS[k]);
+		_s019_mat_mul(&r_vps[k * 16], pm, view);
+	}
+}
+
+void GneRenderServer::_shadow_vp_spot(const float *p_pos, const float *p_dir, float p_outer, float *r_vp) {
+	float up[3] = { 0.0f, 1.0f, 0.0f };
+	if (Math::abs(p_dir[1]) > 0.98f) {
+		up[0] = 1.0f;
+		up[1] = 0.0f;
+		up[2] = 0.0f;
+	}
+	float view[16];
+	_s019_lookat(view, p_pos, p_dir, up);
+	float fov_deg = 2.0f * p_outer * 57.29578f;
+	Projection persp = Projection::create_perspective(fov_deg, 1.0f, 10.0f, 4000.0f);
+	float pm[16];
+	for (int c = 0; c < 4; c++) {
+		for (int r = 0; r < 4; r++) {
+			pm[c * 4 + r] = persp.columns[c][r];
+		}
+	}
+	_s019_mat_mul(r_vp, pm, view);
+}
+
+bool GneRenderServer::_shadow_upload_binds() {
+	if (rendering_device == nullptr) {
+		return false;
+	}
+	if (shadow_record_buffer.is_null() || shadow_lut_buffer.is_null()) {
+		return true; // store not created yet; nothing to upload
+	}
+	uint8_t rec_bytes[GNE_SHADOW_MAX_BINDS * 416];
+	memset(rec_bytes, 0, sizeof(rec_bytes));
+	for (int i = 0; i < shadow_bind_count; i++) {
+		uint8_t *dst = rec_bytes + i * 416;
+		// GLSL reads h0 as floats: int(r.h0.y + 0.5), r.h0.w < 0.5. Raw
+		// int32 bits read back as ~1e-45 made every lookup return "lit"
+		// (Lesson 3: silent int/float type mismatch). Write floats instead.
+		float rec_h0[4] = { (float)shadow_binds[i].light_id, (float)shadow_binds[i].type, (float)shadow_binds[i].slot, (float)shadow_binds[i].enabled };
+		memcpy(dst, rec_h0, 16); // light_id/type/slot/enabled (float-typed header)
+		memcpy(dst + 16, shadow_binds[i].splits, 16);
+		memcpy(dst + 32, shadow_binds[i].vps, 384);
+	}
+	rendering_device->buffer_update(shadow_record_buffer, 0, sizeof(rec_bytes), rec_bytes);
+	uint32_t lut[GNE_LIGHT_MAX];
+	for (int i = 0; i < GNE_LIGHT_MAX; i++) {
+		lut[i] = 0xFFFFFFFFu;
+	}
+	for (int i = 0; i < shadow_bind_count; i++) {
+		int lid = shadow_binds[i].light_id;
+		if (lid >= 0 && lid < GNE_LIGHT_MAX) {
+			lut[lid] = (uint32_t)i;
+		}
+	}
+	rendering_device->buffer_update(shadow_lut_buffer, 0, sizeof(lut), lut);
+	return _shadow_ensure_set2();
+}
+
+bool GneRenderServer::_shadow_ensure_set2() {
+	if (rendering_device == nullptr || mat_light_shader.is_null()) {
+		return false;
+	}
+	// Lazy dummies: set 2 must exist (018-safe) even when no shadow map was
+	// ever created. Guarded sampling never reads them (enable = 0).
+	if (shadow_sampler.is_null()) {
+		RD::SamplerState ss;
+		shadow_sampler = rendering_device->sampler_create(ss);
+		shadow_dummy_tex = _shadow_make_r32(1, 1, false, 1, false);
+		shadow_dummy_arr = _shadow_make_r32(1, 1, true, 1, false);
+		shadow_dummy_buf = rendering_device->storage_buffer_create(4);
+		if (shadow_sampler.is_null() || shadow_dummy_tex.is_null() || shadow_dummy_arr.is_null() || shadow_dummy_buf.is_null()) {
+			print_error("[GNE] shadow dummy resource_create failed.");
+			return false;
+		}
+	}
+	if (shadow_set2.is_valid()) {
+		rendering_device->free_rid(shadow_set2);
+		shadow_set2 = RID();
+	}
+	bool use_real = gpu_shadow_valid;
+	RID csm_tex = use_real ? shadow_csm_array : shadow_dummy_arr;
+	RID cube0_tex = (use_real && shadow_cube_taken[0]) ? shadow_cube_array[0] : shadow_dummy_arr;
+	RID cube1_tex = (use_real && shadow_cube_taken[1]) ? shadow_cube_array[1] : shadow_dummy_arr;
+	RID spot0_tex = (use_real && shadow_spot_taken[0]) ? shadow_spot_render[0] : shadow_dummy_tex;
+	RID spot1_tex = (use_real && shadow_spot_taken[1]) ? shadow_spot_render[1] : shadow_dummy_tex;
+	RID rec_buf = (use_real && shadow_record_buffer.is_valid()) ? shadow_record_buffer : shadow_dummy_buf;
+	RID lut_buf = (use_real && shadow_lut_buffer.is_valid()) ? shadow_lut_buffer : shadow_dummy_buf;
+	Vector<RD::Uniform> su;
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u.binding = 0;
+		u.append_id(shadow_sampler);
+		u.append_id(csm_tex);
+		su.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u.binding = 1;
+		u.append_id(shadow_sampler);
+		u.append_id(cube0_tex);
+		su.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u.binding = 2;
+		u.append_id(shadow_sampler);
+		u.append_id(cube1_tex);
+		su.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u.binding = 3;
+		u.append_id(shadow_sampler);
+		u.append_id(spot0_tex);
+		su.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u.binding = 4;
+		u.append_id(shadow_sampler);
+		u.append_id(spot1_tex);
+		su.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 5;
+		u.append_id(rec_buf);
+		su.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 6;
+		u.append_id(lut_buf);
+		su.push_back(u);
+	}
+	shadow_set2 = rendering_device->uniform_set_create(su, mat_light_shader, 2);
+	if (shadow_set2.is_null()) {
+		print_error("[GNE] shadow set-2 uniform_set_create failed.");
+		return false;
+	}
+	return true;
+}
+
+void GneRenderServer::_destroy_shadow() {
+	if (rendering_device == nullptr) {
+		return;
+	}
+	if (shadow_set2.is_valid()) {
+		rendering_device->free_rid(shadow_set2);
+		shadow_set2 = RID();
+	}
+	if (shadow_cull_set.is_valid()) {
+		rendering_device->free_rid(shadow_cull_set);
+		shadow_cull_set = RID();
+	}
+	if (shadow_depth_set.is_valid()) {
+		rendering_device->free_rid(shadow_depth_set);
+		shadow_depth_set = RID();
+	}
+	if (shadow_cull_pipeline.is_valid()) {
+		rendering_device->free_rid(shadow_cull_pipeline);
+		shadow_cull_pipeline = RID();
+	}
+	if (shadow_pack_pipeline.is_valid()) {
+		rendering_device->free_rid(shadow_pack_pipeline);
+		shadow_pack_pipeline = RID();
+	}
+	if (shadow_pack_shader.is_valid()) {
+		rendering_device->free_rid(shadow_pack_shader);
+		shadow_pack_shader = RID();
+	}
+	if (shadow_cull_shader.is_valid()) {
+		rendering_device->free_rid(shadow_cull_shader);
+		shadow_cull_shader = RID();
+	}
+	if (shadow_depth_pipeline.is_valid()) {
+		rendering_device->free_rid(shadow_depth_pipeline);
+		shadow_depth_pipeline = RID();
+	}
+	if (shadow_depth_shader.is_valid()) {
+		rendering_device->free_rid(shadow_depth_shader);
+		shadow_depth_shader = RID();
+	}
+	if (shadow_record_buffer.is_valid()) {
+		rendering_device->free_rid(shadow_record_buffer);
+		shadow_record_buffer = RID();
+	}
+	if (shadow_lut_buffer.is_valid()) {
+		rendering_device->free_rid(shadow_lut_buffer);
+		shadow_lut_buffer = RID();
+	}
+	if (shadow_cull_planes_buffer.is_valid()) {
+		rendering_device->free_rid(shadow_cull_planes_buffer);
+		shadow_cull_planes_buffer = RID();
+	}
+	if (shadow_cull_aux_buffer.is_valid()) {
+		rendering_device->free_rid(shadow_cull_aux_buffer);
+		shadow_cull_aux_buffer = RID();
+	}
+	if (shadow_cull_pos_buffer.is_valid()) {
+		rendering_device->free_rid(shadow_cull_pos_buffer);
+		shadow_cull_pos_buffer = RID();
+	}
+	if (shadow_cull_mask_buffer.is_valid()) {
+		rendering_device->free_rid(shadow_cull_mask_buffer);
+		shadow_cull_mask_buffer = RID();
+	}
+	if (shadow_view_ubo.is_valid()) {
+		rendering_device->free_rid(shadow_view_ubo);
+		shadow_view_ubo = RID();
+	}
+	// ORDER: framebuffers before their textures (an FB auto-invalidates when
+	// its attachment dies; freeing the texture first makes the FB free fail).
+	for (int i = 0; i < 4; i++) {
+		if (shadow_csm_fb[i].is_valid()) {
+			rendering_device->free_rid(shadow_csm_fb[i]);
+			shadow_csm_fb[i] = RID();
+		}
+	}
+	for (int s = 0; s < 2; s++) {
+		for (int k = 0; k < 6; k++) {
+			if (shadow_cube_fb[s][k].is_valid()) {
+				rendering_device->free_rid(shadow_cube_fb[s][k]);
+				shadow_cube_fb[s][k] = RID();
+			}
+		}
+		if (shadow_spot_fb[s].is_valid()) {
+			rendering_device->free_rid(shadow_spot_fb[s]);
+			shadow_spot_fb[s] = RID();
+		}
+	}
+	for (int i = 0; i < 4; i++) {
+		if (shadow_csm_render[i].is_valid()) {
+			rendering_device->free_rid(shadow_csm_render[i]);
+			shadow_csm_render[i] = RID();
+		}
+	}
+	if (shadow_csm_array.is_valid()) {
+		rendering_device->free_rid(shadow_csm_array);
+		shadow_csm_array = RID();
+	}
+	for (int s = 0; s < 2; s++) {
+		for (int k = 0; k < 6; k++) {
+			if (shadow_cube_render[s][k].is_valid()) {
+				rendering_device->free_rid(shadow_cube_render[s][k]);
+				shadow_cube_render[s][k] = RID();
+			}
+		}
+		if (shadow_cube_array[s].is_valid()) {
+			rendering_device->free_rid(shadow_cube_array[s]);
+			shadow_cube_array[s] = RID();
+		}
+		if (shadow_spot_render[s].is_valid()) {
+			rendering_device->free_rid(shadow_spot_render[s]);
+			shadow_spot_render[s] = RID();
+		}
+	}
+	if (shadow_depth_big.is_valid()) {
+		rendering_device->free_rid(shadow_depth_big);
+		shadow_depth_big = RID();
+	}
+	if (shadow_depth_small.is_valid()) {
+		rendering_device->free_rid(shadow_depth_small);
+		shadow_depth_small = RID();
+	}
+	if (shadow_sampler.is_valid()) {
+		rendering_device->free_rid(shadow_sampler);
+		shadow_sampler = RID();
+	}
+	if (shadow_dummy_tex.is_valid()) {
+		rendering_device->free_rid(shadow_dummy_tex);
+		shadow_dummy_tex = RID();
+	}
+	if (shadow_dummy_arr.is_valid()) {
+		rendering_device->free_rid(shadow_dummy_arr);
+		shadow_dummy_arr = RID();
+	}
+	if (shadow_dummy_buf.is_valid()) {
+		rendering_device->free_rid(shadow_dummy_buf);
+		shadow_dummy_buf = RID();
+	}
+	shadow_fb_format = -1;
+	gpu_shadow_valid = false;
+	shadow_bind_count = 0;
+	shadow_caster_total = 0;
+	shadow_csm_taken = false;
+	shadow_cube_taken[0] = shadow_cube_taken[1] = false;
+	shadow_spot_taken[0] = shadow_spot_taken[1] = false;
+	memset(shadow_binds, 0, sizeof(shadow_binds));
+	memset(shadow_bind_casters, 0, sizeof(shadow_bind_casters));
+}
+
+RID GneRenderServer::_shadow_make_r32(int p_w, int p_h, bool p_array, int p_layers, bool p_attach) {
+	RD::TextureFormat tf;
+	tf.format = RD::DATA_FORMAT_R32_SFLOAT;
+	tf.texture_type = p_array ? RD::TEXTURE_TYPE_2D_ARRAY : RD::TEXTURE_TYPE_2D;
+	tf.width = (uint32_t)p_w;
+	tf.height = (uint32_t)p_h;
+	tf.depth = 1;
+	tf.array_layers = (uint32_t)(p_array ? p_layers : 1);
+	tf.mipmaps = 1;
+	tf.samples = RD::TEXTURE_SAMPLES_1;
+	tf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
+	if (p_attach) {
+		tf.usage_bits = (RD::TextureUsageBits)(tf.usage_bits | RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT);
+	}
+	return rendering_device->texture_create(tf, RD::TextureView());
+}
+
+int GneRenderServer::gpu_shadow_map_create(int p_type, int p_resolution) {
+	if (!ensure_gpu_device()) {
+		return -1;
+	}
+	if (!_light_ensure_geo()) {
+		print_error("[GNE] gpu_shadow_map_create: light store unavailable.");
+		return -1;
+	}
+	if (p_type == 0) {
+		if (p_resolution != GNE_SHADOW_CSM_RES) {
+			print_error("[GNE] gpu_shadow_map_create: CSM resolution must be 2048 (no silent fallback).");
+			return -1;
+		}
+		if (shadow_csm_taken) {
+			print_error("[GNE] gpu_shadow_map_create: the single CSM unit is taken.");
+			return -1;
+		}
+	} else if (p_type == 1) {
+		if (p_resolution != GNE_SHADOW_CUBE_RES) {
+			print_error("[GNE] gpu_shadow_map_create: cube resolution must be 1024 (no silent fallback).");
+			return -1;
+		}
+	} else if (p_type == 2) {
+		if (p_resolution != GNE_SHADOW_SPOT_RES) {
+			print_error("[GNE] gpu_shadow_map_create: spot resolution must be 2048 (no silent fallback).");
+			return -1;
+		}
+	} else {
+		print_error("[GNE] gpu_shadow_map_create: unknown type (0 = CSM, 1 = cube, 2 = spot).");
+		return -1;
+	}
+	// First create: shared resources (sampler, dummies, buffers, depth pipeline).
+	if (!gpu_shadow_valid) {
+		RD::SamplerState ss; // nearest; texelFetch ignores filtering
+		shadow_sampler = rendering_device->sampler_create(ss);
+		shadow_dummy_tex = _shadow_make_r32(1, 1, false, 1, false);
+		shadow_dummy_arr = _shadow_make_r32(1, 1, true, 1, false);
+		shadow_dummy_buf = rendering_device->storage_buffer_create(4);
+		shadow_record_buffer = rendering_device->storage_buffer_create(GNE_SHADOW_MAX_BINDS * 416);
+		shadow_lut_buffer = rendering_device->storage_buffer_create(GNE_LIGHT_MAX * 4);
+		shadow_cull_planes_buffer = rendering_device->storage_buffer_create(GNE_SHADOW_MAX_BINDS * 6 * 16);
+		shadow_cull_aux_buffer = rendering_device->storage_buffer_create(GNE_SHADOW_MAX_BINDS * 16);
+		shadow_cull_pos_buffer = rendering_device->storage_buffer_create(GNE_SHADOW_MAX_BINDS * 16);
+		shadow_cull_mask_buffer = rendering_device->storage_buffer_create(GNE_SHADOW_MAX_BINDS * 4);
+		shadow_view_ubo = rendering_device->uniform_buffer_create(sizeof(GneViewData));
+		if (shadow_sampler.is_null() || shadow_dummy_tex.is_null() || shadow_dummy_arr.is_null() ||
+				shadow_dummy_buf.is_null() || shadow_record_buffer.is_null() || shadow_lut_buffer.is_null() ||
+				shadow_cull_planes_buffer.is_null() || shadow_cull_aux_buffer.is_null() ||
+				shadow_cull_pos_buffer.is_null() || shadow_cull_mask_buffer.is_null() || shadow_view_ubo.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: shared shadow resource_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		// LUT = unbound sentinel.
+		uint8_t ff[GNE_LIGHT_MAX * 4];
+		memset(ff, 0xFF, sizeof(ff));
+		rendering_device->buffer_update(shadow_lut_buffer, 0, sizeof(ff), ff);
+		// Shared depth attachments (D32, cleared per map; sequential use only).
+		RD::TextureFormat df;
+		df.format = RD::DATA_FORMAT_D32_SFLOAT;
+		df.texture_type = RD::TEXTURE_TYPE_2D;
+		df.depth = 1;
+		df.array_layers = 1;
+		df.mipmaps = 1;
+		df.samples = RD::TEXTURE_SAMPLES_1;
+		df.usage_bits = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		df.width = GNE_SHADOW_CSM_RES;
+		df.height = GNE_SHADOW_CSM_RES;
+		shadow_depth_big = rendering_device->texture_create(df, RD::TextureView());
+		df.width = GNE_SHADOW_CUBE_RES;
+		df.height = GNE_SHADOW_CUBE_RES;
+		shadow_depth_small = rendering_device->texture_create(df, RD::TextureView());
+		if (shadow_depth_big.is_null() || shadow_depth_small.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: shared depth texture_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		// Framebuffer format: R32 color + D32 depth (size-independent).
+		Vector<RD::AttachmentFormat> afs;
+		RD::AttachmentFormat caf;
+		caf.format = RD::DATA_FORMAT_R32_SFLOAT;
+		caf.samples = RD::TEXTURE_SAMPLES_1;
+		caf.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		afs.push_back(caf);
+		RD::AttachmentFormat daf;
+		daf.format = RD::DATA_FORMAT_D32_SFLOAT;
+		daf.samples = RD::TEXTURE_SAMPLES_1;
+		daf.usage_flags = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		afs.push_back(daf);
+		shadow_fb_format = rendering_device->framebuffer_format_create(afs);
+		if (shadow_fb_format < 0) {
+			print_error("[GNE] gpu_shadow_map_create: shadow framebuffer_format_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		// Depth pipeline: SAME batch vertex shader (identical set-0 layout,
+		// binding 2 swapped for shadow_view_ubo) + R32 depth frag.
+		String error;
+		Vector<uint8_t> vert_spv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_VERTEX, String(gpu_shadow_depth_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (vert_spv.is_empty()) {
+			print_error("[GNE] shadow vertex shader compile failed:");
+			print_error(error);
+			_destroy_shadow();
+			return -1;
+		}
+		Vector<uint8_t> frag_spv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_FRAGMENT, String(gpu_shadow_depth_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (frag_spv.is_empty()) {
+			print_error("[GNE] shadow depth fragment shader compile failed:");
+			print_error(error);
+			_destroy_shadow();
+			return -1;
+		}
+		Vector<RD::ShaderStageSPIRVData> stages;
+		RD::ShaderStageSPIRVData vs;
+		vs.shader_stage = RD::SHADER_STAGE_VERTEX;
+		vs.spirv = vert_spv;
+		stages.push_back(vs);
+		RD::ShaderStageSPIRVData fs;
+		fs.shader_stage = RD::SHADER_STAGE_FRAGMENT;
+		fs.spirv = frag_spv;
+		stages.push_back(fs);
+		shadow_depth_shader = rendering_device->shader_create_from_spirv(stages, "gne_shadow_depth");
+		if (shadow_depth_shader.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: shadow shader_create_from_spirv failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		RD::PipelineRasterizationState rs;
+		RD::PipelineMultisampleState ms;
+		RD::PipelineDepthStencilState ds;
+		ds.enable_depth_test = true;
+		ds.enable_depth_write = true;
+		ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
+		RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(1);
+		shadow_depth_pipeline = rendering_device->render_pipeline_create(
+				shadow_depth_shader, shadow_fb_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
+		if (shadow_depth_pipeline.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: shadow render_pipeline_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		// Cull compute pipeline.
+		Vector<uint8_t> cull_spv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_COMPUTE, String(gpu_shadow_cull_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (cull_spv.is_empty()) {
+			print_error("[GNE] shadow cull shader compile failed:");
+			print_error(error);
+			_destroy_shadow();
+			return -1;
+		}
+		RD::ShaderStageSPIRVData cs;
+		cs.shader_stage = RD::SHADER_STAGE_COMPUTE;
+		cs.spirv = cull_spv;
+		Vector<RD::ShaderStageSPIRVData> cstages;
+		cstages.push_back(cs);
+		shadow_cull_shader = rendering_device->shader_create_from_spirv(cstages, "gne_shadow_cull");
+		if (shadow_cull_shader.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: shadow cull shader_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		shadow_cull_pipeline = rendering_device->compute_pipeline_create(shadow_cull_shader);
+		if (shadow_cull_pipeline.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: shadow cull pipeline_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		// Pack pass: 2D render target -> sampling-array layer (texture_copy is
+		// unreliable in this fork).
+		Vector<uint8_t> pack_spv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_COMPUTE, String(gpu_shadow_pack_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (pack_spv.is_empty()) {
+			print_error("[GNE] shadow pack shader compile failed:");
+			print_error(error);
+			_destroy_shadow();
+			return -1;
+		}
+		RD::ShaderStageSPIRVData ps;
+		ps.shader_stage = RD::SHADER_STAGE_COMPUTE;
+		ps.spirv = pack_spv;
+		Vector<RD::ShaderStageSPIRVData> pstages;
+		pstages.push_back(ps);
+		shadow_pack_shader = rendering_device->shader_create_from_spirv(pstages, "gne_shadow_pack");
+		if (shadow_pack_shader.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: shadow pack shader_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		shadow_pack_pipeline = rendering_device->compute_pipeline_create(shadow_pack_shader);
+		if (shadow_pack_pipeline.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: shadow pack pipeline_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		gpu_shadow_valid = true;
+	}
+	int unit = -1;
+	if (p_type == 0) {
+		for (int k = 0; k < 4; k++) {
+			shadow_csm_render[k] = _shadow_make_r32(GNE_SHADOW_CSM_RES, GNE_SHADOW_CSM_RES, false, 1, true);
+			if (shadow_csm_render[k].is_null()) {
+				print_error("[GNE] gpu_shadow_map_create: CSM render texture_create failed.");
+				_destroy_shadow();
+				return -1;
+			}
+			Vector<RID> atts;
+			atts.push_back(shadow_csm_render[k]);
+			atts.push_back(shadow_depth_big);
+			shadow_csm_fb[k] = rendering_device->framebuffer_create(atts, RD::INVALID_ID);
+			if (shadow_csm_fb[k].is_null()) {
+				print_error("[GNE] gpu_shadow_map_create: CSM framebuffer_create failed.");
+				_destroy_shadow();
+				return -1;
+			}
+		}
+		shadow_csm_array = _shadow_make_r32(GNE_SHADOW_CSM_RES, GNE_SHADOW_CSM_RES, true, 4, false);
+		if (shadow_csm_array.is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: CSM array texture_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		shadow_csm_taken = true;
+		unit = 0;
+	} else if (p_type == 1) {
+		for (int s = 0; s < 2; s++) {
+			if (!shadow_cube_taken[s]) {
+				unit = s;
+				break;
+			}
+		}
+		if (unit < 0) {
+			print_error("[GNE] gpu_shadow_map_create: both cube units taken (max 2).");
+			return -1;
+		}
+		for (int k = 0; k < 6; k++) {
+			shadow_cube_render[unit][k] = _shadow_make_r32(GNE_SHADOW_CUBE_RES, GNE_SHADOW_CUBE_RES, false, 1, true);
+			if (shadow_cube_render[unit][k].is_null()) {
+				print_error("[GNE] gpu_shadow_map_create: cube render texture_create failed.");
+				_destroy_shadow();
+				return -1;
+			}
+			Vector<RID> atts;
+			atts.push_back(shadow_cube_render[unit][k]);
+			atts.push_back(shadow_depth_small);
+			shadow_cube_fb[unit][k] = rendering_device->framebuffer_create(atts, RD::INVALID_ID);
+			if (shadow_cube_fb[unit][k].is_null()) {
+				print_error("[GNE] gpu_shadow_map_create: cube framebuffer_create failed.");
+				_destroy_shadow();
+				return -1;
+			}
+		}
+		shadow_cube_array[unit] = _shadow_make_r32(GNE_SHADOW_CUBE_RES, GNE_SHADOW_CUBE_RES, true, 6, false);
+		if (shadow_cube_array[unit].is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: cube array texture_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		shadow_cube_taken[unit] = true;
+	} else {
+		for (int s = 0; s < 2; s++) {
+			if (!shadow_spot_taken[s]) {
+				unit = s;
+				break;
+			}
+		}
+		if (unit < 0) {
+			print_error("[GNE] gpu_shadow_map_create: both spot units taken (max 2).");
+			return -1;
+		}
+		shadow_spot_render[unit] = _shadow_make_r32(GNE_SHADOW_SPOT_RES, GNE_SHADOW_SPOT_RES, false, 1, true);
+		if (shadow_spot_render[unit].is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: spot render texture_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		Vector<RID> atts;
+		atts.push_back(shadow_spot_render[unit]);
+		atts.push_back(shadow_depth_big);
+		shadow_spot_fb[unit] = rendering_device->framebuffer_create(atts, RD::INVALID_ID);
+		if (shadow_spot_fb[unit].is_null()) {
+			print_error("[GNE] gpu_shadow_map_create: spot framebuffer_create failed.");
+			_destroy_shadow();
+			return -1;
+		}
+		shadow_spot_taken[unit] = true;
+	}
+	if (!_shadow_upload_binds()) {
+		_destroy_shadow();
+		return -1;
+	}
+	return (p_type << 8) | unit;
+}
+
+bool GneRenderServer::gpu_shadow_light_bind(int p_light_id, int p_shadow_id) {
+	if (!gpu_shadow_valid) {
+		print_error("[GNE] gpu_shadow_light_bind: no shadow store. Call gpu_shadow_map_create first.");
+		return false;
+	}
+	if (p_shadow_id == -1) {
+		// Unbind = REMOVE (never a silent disable).
+		for (int i = 0; i < shadow_bind_count; i++) {
+			if (shadow_binds[i].light_id == p_light_id) {
+				shadow_binds[i] = shadow_binds[shadow_bind_count - 1];
+				memset(&shadow_binds[shadow_bind_count - 1], 0, sizeof(GneShadowBind));
+				shadow_bind_count--;
+				shadow_caster_total = 0; // recomputed by next cull
+				return _shadow_upload_binds();
+			}
+		}
+		print_error("[GNE] gpu_shadow_light_bind: light has no bind to remove.");
+		return false;
+	}
+	int type = (p_shadow_id >> 8) & 0xFF;
+	int unit = p_shadow_id & 0xFF;
+	if (p_light_id == GNE_SHADOW_DIR_LIGHT) {
+		if (type != 0 || unit != 0 || !shadow_csm_taken) {
+			print_error("[GNE] gpu_shadow_light_bind: dir pseudo-light needs the CSM unit.");
+			return false;
+		}
+	} else {
+		if (p_light_id < 0 || p_light_id >= light_count) {
+			print_error("[GNE] gpu_shadow_light_bind: light id out of range.");
+			return false;
+		}
+		int ltype = (int)light_cpu[p_light_id].type;
+		if ((ltype == 0 && (type != 1 || unit < 0 || unit > 1 || !shadow_cube_taken[unit])) ||
+				(ltype == 1 && (type != 2 || unit < 0 || unit > 1 || !shadow_spot_taken[unit]))) {
+			print_error("[GNE] gpu_shadow_light_bind: light/shadow type mismatch (point->cube, spot->spot).");
+			return false;
+		}
+	}
+	if (shadow_bind_count >= GNE_SHADOW_MAX_BINDS) {
+		print_error("[GNE] gpu_shadow_light_bind: bind table full (64).");
+		return false;
+	}
+	// Rebind in place when the light already has a bind (deterministic order kept).
+	int target = shadow_bind_count;
+	for (int i = 0; i < shadow_bind_count; i++) {
+		if (shadow_binds[i].light_id == p_light_id) {
+			target = i;
+			break;
+		}
+	}
+	if (target == shadow_bind_count) {
+		memset(&shadow_binds[target], 0, sizeof(GneShadowBind));
+		shadow_bind_count++;
+	}
+	GneShadowBind &bnd = shadow_binds[target];
+	bnd.light_id = p_light_id;
+	bnd.type = type;
+	bnd.slot = unit;
+	bnd.enabled = 1;
+	// GNE-019: (re)compute the VPs immediately on every bind - the shadow
+	// records must never carry zero VPs between rebinds (cull_dispatch is
+	// not guaranteed to re-run, e.g. the S1/S2/S3 unbind-rebind checks).
+	if (type == 0) {
+		_shadow_vp_csm(&bnd.vps[0][0], bnd.splits, bnd.ortho_bounds);
+	} else if (type == 1) {
+		const GneLight &L1 = light_cpu[p_light_id];
+		float lpos[3] = { L1.pos[0], L1.pos[1], L1.pos[2] };
+		_shadow_vp_cube(lpos, &bnd.vps[0][0]);
+		bnd.splits[0] = lpos[0];
+		bnd.splits[1] = lpos[1];
+		bnd.splits[2] = lpos[2];
+		bnd.splits[3] = L1.range;
+	} else {
+		const GneLight &L1 = light_cpu[p_light_id];
+		float lpos[3] = { L1.pos[0], L1.pos[1], L1.pos[2] };
+		float ldir[3] = { L1.dir[0], L1.dir[1], L1.dir[2] };
+		_shadow_vp_spot(lpos, ldir, L1.cone_outer, &bnd.vps[0][0]);
+		bnd.splits[0] = lpos[0];
+		bnd.splits[1] = lpos[1];
+		bnd.splits[2] = lpos[2];
+		bnd.splits[3] = L1.range;
+	}
+	return _shadow_upload_binds();
+}
+
+bool GneRenderServer::gpu_shadow_cull_dispatch() {
+	if (!gpu_shadow_valid) {
+		print_error("[GNE] gpu_shadow_cull_dispatch: no shadow store.");
+		return false;
+	}
+	if (shadow_bind_count <= 0) {
+		print_error("[GNE] gpu_shadow_cull_dispatch: no binds (bind lights first).");
+		return false;
+	}
+	if (!camera_view_valid) {
+		print_error("[GNE] gpu_shadow_cull_dispatch: no camera. Call gpu_scene_set_camera first.");
+		return false;
+	}
+	if (!gpu_mesh_batch_valid || transform_buffer.is_null()) {
+		print_error("[GNE] gpu_shadow_cull_dispatch: no batch mesh.");
+		return false;
+	}
+	// VPs first (planes derive from them), then planes/aux/pos uploads.
+	for (int i = 0; i < shadow_bind_count; i++) {
+		GneShadowBind &b = shadow_binds[i];
+		if (b.type == 0) {
+			_shadow_vp_csm(&b.vps[0][0], b.splits, b.ortho_bounds);
+		} else if (b.type == 1) {
+			const GneLight &L = light_cpu[b.light_id];
+			float pos[3] = { L.pos[0], L.pos[1], L.pos[2] };
+			_shadow_vp_cube(pos, &b.vps[0][0]);
+			b.splits[0] = pos[0];
+			b.splits[1] = pos[1];
+			b.splits[2] = pos[2];
+			b.splits[3] = L.range;
+		} else {
+			const GneLight &L = light_cpu[b.light_id];
+			float pos[3] = { L.pos[0], L.pos[1], L.pos[2] };
+			float dir[3] = { L.dir[0], L.dir[1], L.dir[2] };
+			_shadow_vp_spot(pos, dir, L.cone_outer, &b.vps[0][0]);
+			b.splits[0] = pos[0];
+			b.splits[1] = pos[1];
+			b.splits[2] = pos[2];
+			b.splits[3] = L.range;
+		}
+	}
+	uint8_t planes[GNE_SHADOW_MAX_BINDS * 6 * 16];
+	uint8_t aux[GNE_SHADOW_MAX_BINDS * 16];
+	uint8_t pos[GNE_SHADOW_MAX_BINDS * 16];
+	memset(planes, 0, sizeof(planes));
+	memset(aux, 0, sizeof(aux));
+	memset(pos, 0, sizeof(pos));
+	for (int i = 0; i < shadow_bind_count; i++) {
+		GneShadowBind &b = shadow_binds[i];
+		float *pl = (float *)(planes + i * 96);
+		if (b.type == 0) {
+			// CSM/dir: whole-scene ortho (shader short-circuits to all-cast).
+			memset(pl, 0, 96);
+		} else if (b.type == 1) {
+			memset(pl, 0, 96); // cube uses the range-sphere test, not planes
+		} else {
+			_shadow_planes_from_vp(&b.vps[0][0], pl);
+		}
+		float *ax = (float *)(aux + i * 16);
+		ax[0] = (float)b.type;
+		if (b.type == 1 || b.type == 2) {
+			ax[1] = light_cpu[b.light_id].range;
+			float *pp = (float *)(pos + i * 16);
+			pp[0] = light_cpu[b.light_id].pos[0];
+			pp[1] = light_cpu[b.light_id].pos[1];
+			pp[2] = light_cpu[b.light_id].pos[2];
+		}
+	}
+	rendering_device->buffer_update(shadow_cull_planes_buffer, 0, sizeof(planes), planes);
+	rendering_device->buffer_update(shadow_cull_aux_buffer, 0, sizeof(aux), aux);
+	rendering_device->buffer_update(shadow_cull_pos_buffer, 0, sizeof(pos), pos);
+	rendering_device->buffer_clear(shadow_cull_mask_buffer, 0, GNE_SHADOW_MAX_BINDS * 4);
+	// (Re)build the cull set every dispatch: batch buffers may be recreated by
+	// mesh rebuilds, and a stale set is a silent-corruption landmine.
+	if (shadow_cull_set.is_valid()) {
+		rendering_device->free_rid(shadow_cull_set);
+		shadow_cull_set = RID();
+	}
+	Vector<RD::Uniform> cu;
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 0;
+		u.append_id(transform_buffer);
+		cu.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 1;
+		u.append_id(shadow_cull_planes_buffer);
+		cu.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 2;
+		u.append_id(shadow_cull_aux_buffer);
+		cu.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 3;
+		u.append_id(shadow_cull_pos_buffer);
+		cu.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 4;
+		u.append_id(shadow_cull_mask_buffer);
+		cu.push_back(u);
+	}
+	shadow_cull_set = rendering_device->uniform_set_create(cu, shadow_cull_shader, 0);
+	if (shadow_cull_set.is_null()) {
+		print_error("[GNE] gpu_shadow_cull_dispatch: cull uniform_set_create failed.");
+		return false;
+	}
+	struct CullPush {
+		uint32_t bind_count;
+		uint32_t instance_count;
+		uint32_t pad0;
+		uint32_t pad1;
+	};
+	CullPush cp;
+	cp.bind_count = (uint32_t)shadow_bind_count;
+	cp.instance_count = (uint32_t)gpu_instance_count;
+	cp.pad0 = 0;
+	cp.pad1 = 0;
+	_run_compute_pass(shadow_cull_pipeline, shadow_cull_set, &cp, sizeof(cp), 1, 1, 1);
+	Vector<uint8_t> mbytes = rendering_device->buffer_get_data(shadow_cull_mask_buffer, 0, GNE_SHADOW_MAX_BINDS * 4);
+	if (mbytes.size() != GNE_SHADOW_MAX_BINDS * 4) {
+		print_error("[GNE] gpu_shadow_cull_dispatch: mask readback failed.");
+		return false;
+	}
+	const uint32_t *masks = (const uint32_t *)mbytes.ptr();
+	bool seen[1024];
+	memset(seen, 0, sizeof(seen));
+	shadow_caster_total = 0;
+	for (int i = 0; i < shadow_bind_count; i++) {
+		int n = 0;
+		uint32_t m = masks[i];
+		for (int inst = 0; inst < gpu_instance_count && inst < 32; inst++) {
+			if (m & (1u << inst)) {
+				n++;
+				if (!seen[inst]) {
+					seen[inst] = true;
+					shadow_caster_total++;
+				}
+			}
+		}
+		shadow_bind_casters[i] = n;
+		if (n <= 0) {
+			// D7-5: a bound shadow with zero casters is a FAIL, never a skip.
+			print_error(String("[GNE] gpu_shadow_cull_dispatch: bind ") + itos(i) + " has zero casters (no silent fallback).");
+			return false;
+		}
+	}
+	return true;
+}
+
+bool GneRenderServer::gpu_shadow_render_maps() {
+	if (!gpu_shadow_valid) {
+		print_error("[GNE] gpu_shadow_render_maps: no shadow store.");
+		return false;
+	}
+	if (shadow_bind_count <= 0) {
+		print_error("[GNE] gpu_shadow_render_maps: no binds.");
+		return false;
+	}
+	if (!gpu_mesh_batch_valid || last_batch_count <= 0 || mesh_batch_strategy != GNE_BATCH_STRATEGY_PER_MESH) {
+		print_error("[GNE] gpu_shadow_render_maps: requires PER_MESH batch (run gpu_mesh_batch_dispatch first).");
+		return false;
+	}
+	if (mesh_010_vertex_array.is_null() || mesh_010_index_array.is_null()) {
+		print_error("[GNE] gpu_shadow_render_maps: no batch mesh arrays.");
+		return false;
+	}
+	// (Re)build the depth set every render: same staleness discipline as cull.
+	if (shadow_depth_set.is_valid()) {
+		rendering_device->free_rid(shadow_depth_set);
+		shadow_depth_set = RID();
+	}
+	Vector<RD::Uniform> du;
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 0;
+		u.append_id(batch_instances_buffer);
+		du.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 1;
+		u.append_id(transform_buffer);
+		du.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		u.binding = 2;
+		u.append_id(shadow_view_ubo);
+		du.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = 3;
+		u.append_id(mesh_id_buffer);
+		du.push_back(u);
+	}
+	shadow_depth_set = rendering_device->uniform_set_create(du, shadow_depth_shader, 0);
+	if (shadow_depth_set.is_null()) {
+		print_error("[GNE] gpu_shadow_render_maps: depth uniform_set_create failed.");
+		return false;
+	}
+	GneViewData vd;
+	struct DepthPush {
+		float light_pos[4];
+	};
+	DepthPush dp;
+	// One synced submission per map (014-waves discipline: never batch
+	// dependent passes into one submission in this fork).
+	for (int i = 0; i < shadow_bind_count; i++) {
+		GneShadowBind &b = shadow_binds[i];
+		int maps = (b.type == 0) ? 4 : (b.type == 1 ? 6 : 1);
+		for (int k = 0; k < maps; k++) {
+			memset(&vd, 0, sizeof(vd));
+			memcpy(vd.vp, &b.vps[k][0], 64);
+			rendering_device->buffer_update(shadow_view_ubo, 0, sizeof(vd), &vd);
+			RID fb;
+			if (b.type == 0) {
+				fb = shadow_csm_fb[k];
+			} else if (b.type == 1) {
+				fb = shadow_cube_fb[b.slot][k];
+			} else {
+				fb = shadow_spot_fb[b.slot];
+			}
+			if (fb.is_null()) {
+				print_error("[GNE] gpu_shadow_render_maps: null framebuffer (bind out of sync with store).");
+				return false;
+			}
+			dp.light_pos[0] = b.splits[0];
+			dp.light_pos[1] = b.splits[1];
+			dp.light_pos[2] = b.splits[2];
+			dp.light_pos[3] = 0.0f;
+			Vector<Color> cc;
+			cc.push_back(Color(1.0f, 0.0f, 0.0f, 0.0f)); // R32 far = 1.0 dev
+			RD::DrawListID dl = rendering_device->draw_list_begin(fb, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH, cc, 1.0f, 0, Rect2(), 0);
+			if (dl == RD::INVALID_ID) {
+				print_error("[GNE] gpu_shadow_render_maps: draw_list_begin failed.");
+				return false;
+			}
+			rendering_device->draw_list_bind_render_pipeline(dl, shadow_depth_pipeline);
+			rendering_device->draw_list_bind_uniform_set(dl, shadow_depth_set, 0);
+			rendering_device->draw_list_bind_vertex_array(dl, mesh_010_vertex_array);
+			rendering_device->draw_list_bind_index_array(dl, mesh_010_index_array);
+			rendering_device->draw_list_set_push_constant(dl, &dp, sizeof(dp));
+			rendering_device->draw_list_draw_indirect(dl, true, batch_args_buffer, 0, (uint32_t)last_batch_count, 20);
+			rendering_device->draw_list_end();
+			rendering_device->submit();
+			rendering_device->sync();
+			// Array-backed types pack into the sampling arrays (spots sample
+			// directly). texture_copy is unreliable in this fork -> compute pack.
+			if (b.type == 0) {
+				if (!_shadow_pack(shadow_csm_render[k], shadow_csm_array, k, GNE_SHADOW_CSM_RES)) {
+					print_error("[GNE] gpu_shadow_render_maps: CSM pack failed.");
+					return false;
+				}
+			} else if (b.type == 1) {
+				if (!_shadow_pack(shadow_cube_render[b.slot][k], shadow_cube_array[b.slot], k, GNE_SHADOW_CUBE_RES)) {
+					print_error("[GNE] gpu_shadow_render_maps: cube pack failed.");
+					return false;
+				}
+			}
+		}
+	}
+	// Ensure all queued texture_copy operations execute before any readback.
+	rendering_device->submit();
+	rendering_device->sync();
+	return _shadow_upload_binds();
+}
+
+// Pack one 2D shadow render target into a sampling-array layer.
+bool GneRenderServer::_shadow_pack(RID p_src, RID p_dst_array, int p_layer, int p_size) {
+	if (shadow_pack_pipeline.is_null() || p_src.is_null() || p_dst_array.is_null()) {
+		return false;
+	}
+	// (Re)build the pack set every call: the source texture changes per map.
+	if (shadow_pack_set.is_valid()) {
+		rendering_device->free_rid(shadow_pack_set);
+		shadow_pack_set = RID();
+	}
+	Vector<RD::Uniform> pu;
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u.binding = 0;
+		u.append_id(shadow_sampler);
+		u.append_id(p_src);
+		pu.push_back(u);
+	}
+	{
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		u.binding = 1;
+		u.append_id(p_dst_array);
+		pu.push_back(u);
+	}
+	shadow_pack_set = rendering_device->uniform_set_create(pu, shadow_pack_shader, 0);
+	if (shadow_pack_set.is_null()) {
+		print_error("[GNE] shadow pack uniform_set_create failed.");
+		return false;
+	}
+	struct PackParams {
+		uint32_t layer;
+		uint32_t size;
+		uint32_t pad0;
+		uint32_t pad1;
+	};
+	PackParams pp;
+	pp.layer = (uint32_t)p_layer;
+	pp.size = (uint32_t)p_size;
+	pp.pad0 = 0;
+	pp.pad1 = 0;
+	_run_compute_pass(shadow_pack_pipeline, shadow_pack_set, &pp, sizeof(pp),
+			(uint32_t)(p_size / 8), (uint32_t)(p_size / 8), 1);
+	return true;
+}
+
+Dictionary GneRenderServer::gpu_shadow_get_stats() {
+	Dictionary d;
+	d["count"] = shadow_bind_count;
+	int maps = 0;
+	if (shadow_csm_taken) {
+		maps += 4;
+	}
+	for (int s = 0; s < 2; s++) {
+		if (shadow_cube_taken[s]) {
+			maps += 6;
+		}
+		if (shadow_spot_taken[s]) {
+			maps += 1;
+		}
+	}
+	d["maps"] = maps;
+	d["casters"] = shadow_caster_total;
+	d["rd"] = (hzb_real_depth_enabled && hzb_depth_proof_count > 0) ? 1 : 0;
+	d["valid"] = gpu_shadow_valid;
+	return d;
+}
+
+void GneRenderServer::gpu_hzb_set_real_depth(bool p_enabled) {
+	hzb_real_depth_enabled = p_enabled;
+}
+
+PackedFloat32Array GneRenderServer::gpu_shadow_dbg_vp(int p_bind, int p_cas) {
+	PackedFloat32Array out;
+	if (p_bind < 0 || p_bind >= shadow_bind_count) {
+		return out;
+	}
+	const GneShadowBind &b = shadow_binds[p_bind];
+	for (int i = 0; i < 16; i++) {
+		out.append(b.vps[p_cas & 3][i]);
+	}
+	for (int i = 0; i < 4; i++) {
+		out.append(b.splits[i]);
+	}
+	for (int i = 0; i < 6; i++) {
+		out.append(b.ortho_bounds[i]);
+	}
+	return out;
+}
+
+PackedInt32Array GneRenderServer::gpu_shadow_dbg_map(int p_type, int p_slot, int p_face) {
+	PackedInt32Array out;
+	if (!gpu_shadow_valid) {
+		return out;
+	}
+	RID tex;
+	int res;
+	if (p_type == 0) {
+		if (!shadow_csm_taken) {
+			return out;
+		}
+		tex = shadow_csm_array; // read the sampling array (post-copy), like the shader
+		res = GNE_SHADOW_CSM_RES;
+	} else if (p_type == 1) {
+		if (p_slot < 0 || p_slot > 1 || !shadow_cube_taken[p_slot]) {
+			return out;
+		}
+		tex = shadow_cube_render[p_slot][p_face % 6];
+		res = GNE_SHADOW_CUBE_RES;
+	} else {
+		if (p_slot < 0 || p_slot > 1 || !shadow_spot_taken[p_slot]) {
+			return out;
+		}
+		tex = shadow_spot_render[p_slot];
+		res = GNE_SHADOW_SPOT_RES;
+	}
+	if (tex.is_null()) {
+		return out;
+	}
+	uint32_t dbg_layer = (p_type == 0) ? (uint32_t)CLAMP(p_face, 0, 3) : 0; // CSM: face selects the cascade layer
+	Vector<uint8_t> bytes = rendering_device->texture_get_data(tex, dbg_layer);
+	if (bytes.size() < res * res * 4) {
+		return out;
+	}
+	const float *v = (const float *)bytes.ptr();
+	int non_far = 0;
+	int minx = -1, miny = -1, maxx = -1, maxy = -1;
+	float mn = 1e30f, mx = -1e30f;
+	for (int y = 0; y < res; y++) {
+		for (int x = 0; x < res; x++) {
+			float d = v[y * res + x];
+			if (d < 0.999f) {
+				non_far++;
+				if (minx < 0 || x < minx) {
+					minx = x;
+				}
+				if (maxx < 0 || x > maxx) {
+					maxx = x;
+				}
+				if (miny < 0 || y < miny) {
+					miny = y;
+				}
+				if (maxy < 0 || y > maxy) {
+					maxy = y;
+				}
+				mn = MIN(mn, d);
+				mx = MAX(mx, d);
+			}
+		}
+	}
+	out.append(non_far);
+	out.append(minx);
+	out.append(miny);
+	out.append(maxx);
+	out.append(maxy);
+	out.append((int32_t)(mn * 1000.0f));
+	out.append((int32_t)(mx * 1000.0f));
+	out.append((int32_t)(v[(res / 2) * res + (res / 2)] * 1000.0f));
+	return out;
+}
+
+bool GneRenderServer::gpu_shadow_dbg_dump(int p_layer, const String &p_path) {
+	// GNE-019 DIAG: dump one CSM sampling-array layer as raw R32F floats
+	// (2048 * 2048 * 4 bytes) for texel-exact offline inspection.
+	if (!gpu_shadow_valid || !shadow_csm_taken || shadow_csm_array.is_null()) {
+		return false;
+	}
+	uint32_t layer = (uint32_t)CLAMP(p_layer, 0, 3);
+	Vector<uint8_t> bytes = rendering_device->texture_get_data(shadow_csm_array, layer);
+	if (bytes.size() < (int)(GNE_SHADOW_CSM_RES * GNE_SHADOW_CSM_RES * 4)) {
+		return false;
+	}
+	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::WRITE);
+	if (f.is_null()) {
+		return false;
+	}
+	f->store_buffer(bytes.ptr(), (uint64_t)GNE_SHADOW_CSM_RES * GNE_SHADOW_CSM_RES * 4);
+	return true;
+}
+
+bool GneRenderServer::gpu_hzb_depth_feed() {
+	// D7-3/D7-4: dispatch the (currently dead-code) 012 depth-source pass that
+	// samples raster_viewz_texture, then cache the probe as KI-007 proof.
+	// Explicit refusal when disabled: no silent fallback.
+	if (!hzb_real_depth_enabled) {
+		print_error("[GNE] gpu_hzb_depth_feed: refused (hzb_real_depth_enabled = false).");
+		return false;
+	}
+	if (!gpu_hzb_prod_valid) {
+		print_error("[GNE] gpu_hzb_depth_feed: production HZB not created.");
+		return false;
+	}
+	if (raster_viewz_texture.is_null()) {
+		print_error("[GNE] gpu_hzb_depth_feed: no view-z texture (draw the raster first).");
+		return false;
+	}
+	struct DepthFeedPush {
+		uint32_t level0_size;
+		uint32_t levels;
+		float viewport_w;
+		float viewport_h;
+		float image_w;
+		float image_h;
+		float far_plane;
+	};
+	DepthFeedPush fp;
+	fp.level0_size = (uint32_t)HZB_PROD_TEXEL_COUNT;
+	fp.levels = (uint32_t)HZB_PROD_LEVELS;
+	fp.viewport_w = hzb_viewport_w;
+	fp.viewport_h = hzb_viewport_h;
+	fp.image_w = (float)RASTER_TARGET_W;
+	fp.image_h = (float)RASTER_TARGET_H;
+	fp.far_plane = far_plane;
+	rendering_device->buffer_clear(hzb_dbg_probe_buffer, 0, 16);
+	_run_compute_pass(hzb_depth_source_pipeline, hzb_depth_source_uniform_set, &fp, sizeof(fp),
+			(uint32_t)(HZB_PROD_TEXEL_COUNT / 8), (uint32_t)(HZB_PROD_TEXEL_COUNT / 8), 1);
+	Vector<uint8_t> pbytes = rendering_device->buffer_get_data(hzb_dbg_probe_buffer, 0, 16);
+	if (pbytes.size() != 16) {
+		print_error("[GNE] gpu_hzb_depth_feed: probe readback failed.");
+		return false;
+	}
+	const uint32_t *vals = (const uint32_t *)pbytes.ptr();
+	hzb_depth_proof_count = vals[0];
+	return true;
 }
 
 bool GneRenderServer::gpu_material_draw_lights() {
@@ -5956,8 +7790,15 @@ bool GneRenderServer::gpu_material_draw_lights() {
 	if (!_light_ensure_geo()) {
 		return false;
 	}
-	if (light_set0_dirty && !_light_build_set0()) {
-		return false;
+	if (light_set0_dirty) {
+		if (!_light_build_set0()) {
+			return false;
+		}
+		// GNE-019: set 2 carries no matrices, but rebuild on the same trigger
+		// keeps the dummy/real choice in sync with the light pipeline state.
+		if (!_shadow_ensure_set2()) {
+			return false;
+		}
 	}
 	// 1. Cull: clear counts + overflow, dispatch 3456 threads, sync.
 	rendering_device->buffer_clear(cluster_count_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
@@ -6007,6 +7848,8 @@ bool GneRenderServer::gpu_material_draw_lights() {
 		float light_rgb[4];
 		float tex_slot_pad[4];
 		float grid_dims[4]; // raster_w, raster_h, near, far
+		float shadow_ctrl[4]; // dir bind idx, shadow enable, cam near, csm blend scale
+		float shadow_cam[4]; // camera forward xyz (planar depth), spare
 	};
 	LightPush push;
 	push.light_xyz_amb[0] = mat_light_dir.x;
@@ -6029,6 +7872,23 @@ bool GneRenderServer::gpu_material_draw_lights() {
 	push.grid_dims[1] = 1080.0f;
 	push.grid_dims[2] = cam_near_v;
 	push.grid_dims[3] = far_plane;
+	// GNE-019: shadow control (guarded sampling keeps 018 pixels exact when
+	// unbound: dir idx -1 + enable 0 -> factor 1.0 everywhere).
+	int dir_bind = -1;
+	for (int i = 0; i < shadow_bind_count; i++) {
+		if (shadow_binds[i].light_id == GNE_SHADOW_DIR_LIGHT && shadow_binds[i].enabled) {
+			dir_bind = i;
+			break;
+		}
+	}
+	push.shadow_ctrl[0] = (float)dir_bind;
+	push.shadow_ctrl[1] = gpu_shadow_valid ? 1.0f : 0.0f;
+	push.shadow_ctrl[2] = cam_near_v;
+	push.shadow_ctrl[3] = 1.0f; // csm blend scale
+	push.shadow_cam[0] = shadow_cam_basis[6];
+	push.shadow_cam[1] = shadow_cam_basis[7];
+	push.shadow_cam[2] = shadow_cam_basis[8];
+	push.shadow_cam[3] = 0.0f;
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
 	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
@@ -6040,6 +7900,11 @@ bool GneRenderServer::gpu_material_draw_lights() {
 	rendering_device->draw_list_bind_render_pipeline(dl, mat_light_pipeline);
 	rendering_device->draw_list_bind_uniform_set(dl, mat_light_uniform_set, 0);
 	rendering_device->draw_list_bind_uniform_set(dl, mat_light_tex_set, 1);
+	if (shadow_set2.is_null() && !_shadow_ensure_set2()) {
+		print_error("[GNE] gpu_material_draw_lights: shadow set-2 unavailable.");
+		return false;
+	}
+	rendering_device->draw_list_bind_uniform_set(dl, shadow_set2, 2);
 	rendering_device->draw_list_bind_vertex_array(dl, mesh_010_vertex_array);
 	rendering_device->draw_list_bind_index_array(dl, mesh_010_index_array);
 	rendering_device->draw_list_set_push_constant(dl, &push, sizeof(push));

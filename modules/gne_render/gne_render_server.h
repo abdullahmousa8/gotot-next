@@ -228,6 +228,9 @@ class GneRenderServer : public Object {
 	// GNE-018 cluster math inputs (captured in set_camera for cull + frag).
 	float cam_near_v = 300.0f;
 	float cam_tan_v = 1.0f;
+	// GNE-019: camera basis for shadow VP math (captured in set_camera,
+	// unconditional like the meshlet capture; right/up/forward column-major).
+	float shadow_cam_basis[9] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f };
 	// GNE-018 light raster path (separate pipeline; the 016 mat pipeline and
 	// its set are frozen). Set 0 is SHARED with the mat pipeline (identical
 	// layout by construction: shared vert + same set-0 declarations); set 1
@@ -243,6 +246,67 @@ class GneRenderServer : public Object {
 	int light_clusters_touched = 0;
 	int light_assignments = 0;
 	int light_overflows = 0;
+
+	// GNE-019: shadow maps + binds (D7-1..D7-7). Fixed pools per type
+	// (CSM x1 unit of 4x2048, cube x2 units of 6x1024, spot x2 units of 2048);
+	// max 64 bound shadow lights (D7-1). All additive: legacy paths never
+	// consult these members, and legacy signatures stay literal.
+	static constexpr int GNE_SHADOW_MAX_BINDS = 64;
+	static constexpr int GNE_SHADOW_CSM_RES = 2048;
+	static constexpr int GNE_SHADOW_CUBE_RES = 1024;
+	static constexpr int GNE_SHADOW_SPOT_RES = 2048;
+	static constexpr int GNE_SHADOW_DIR_LIGHT = 0x7FFFFFFE; // pseudo-id: hardcoded push dir
+	struct GneShadowBind {
+		int32_t light_id;
+		int32_t type; // 0 = CSM(dir), 1 = cube(point), 2 = spot
+		int32_t slot; // unit index within type
+		int32_t enabled;
+		float splits[4]; // CSM view-depth splits s1..s4 (s0 = near implicit); cube/spot: light pos xyz + far
+		float vps[6][16]; // column-major VP per cascade/face (CSM uses 4, cube 6, spot 1)
+		float ortho_bounds[6]; // CSM: minx,maxx,miny,maxy,minz,maxz (cube/spot: unused)
+	};
+	bool gpu_shadow_valid = false;
+	bool hzb_real_depth_enabled = true; // D7-4 (019-scoped; legacy 012 path untouched)
+	uint32_t hzb_depth_proof_count = 0; // cached probe pcount from last depth feed
+	GneShadowBind shadow_binds[GNE_SHADOW_MAX_BINDS];
+	int shadow_bind_count = 0; // sm: bound shadow lights
+	int shadow_caster_total = 0; // cs: unique casters across binds
+	int shadow_bind_casters[GNE_SHADOW_MAX_BINDS]; // per-bind caster count
+	bool shadow_csm_taken = false;
+	bool shadow_cube_taken[2] = { false, false };
+	bool shadow_spot_taken[2] = { false, false };
+	RID shadow_record_buffer; // 64 x 416 B shadow records (set 2, binding 5)
+	RID shadow_lut_buffer; // 1024 x uint light_id -> bind index (set 2, binding 6)
+	RID shadow_csm_render[4]; // 2048 R32F render targets
+	RID shadow_csm_fb[4];
+	RID shadow_csm_array; // 4-layer sampling array
+	RID shadow_cube_render[2][6]; // 1024 R32F render targets
+	RID shadow_cube_fb[2][6];
+	RID shadow_cube_array[2]; // 6-layer sampling arrays
+	RID shadow_spot_render[2]; // 2048 R32F (sampled directly)
+	RID shadow_spot_fb[2];
+	RID shadow_depth_big; // shared 2048 D32 depth attachment
+	RID shadow_depth_small; // shared 1024 D32 depth attachment
+	int shadow_fb_format = -1; // R32 color + D32 depth (size-independent)
+	RID shadow_depth_shader;
+	RID shadow_depth_pipeline; // batch vert + R32 depth frag
+	RID shadow_view_ubo; // dedicated ViewBlock (light VP), never aliases view_ubo
+	RID shadow_depth_set; // set 0 for depth draws (batch/transform/shadowview/meshid)
+	RID shadow_sampler; // nearest sampler for texelFetch sampling
+	RID shadow_dummy_tex; // 1x1 R32F (set-2 placeholder)
+	RID shadow_dummy_arr; // 1-layer R32F array (set-2 placeholder)
+	RID shadow_dummy_buf; // 4 B storage (set-2 placeholder)
+	RID shadow_set2; // frag set 2: always valid once light geo exists (dummy until maps exist)
+	RID shadow_cull_shader;
+	RID shadow_cull_pipeline;
+	RID shadow_cull_set;
+	RID shadow_pack_shader;
+	RID shadow_pack_pipeline;
+	RID shadow_pack_set;
+	RID shadow_cull_planes_buffer; // 64 binds x 6 planes (vec4)
+	RID shadow_cull_aux_buffer; // 64 vec4: (type, range, 0, 0)
+	RID shadow_cull_pos_buffer; // 64 vec4: light pos xyz + 0
+	RID shadow_cull_mask_buffer; // 64 uint caster bitmasks
 
 	// GNE-011: multi-batch grouping + dynamic indirect count. ADDS (over 010,
 	// additive only) a batch strategy toggle (PER_MESH / GROUPED / REORDERED), a
@@ -471,6 +535,15 @@ class GneRenderServer : public Object {
 	bool _light_read_params(const Dictionary &p_params, GneLight &r_out);
 	bool _light_ensure_geo();
 	bool _light_build_set0();
+	bool _shadow_ensure_set2(); // (re)build frag set 2 (dummy until maps exist)
+	bool _shadow_upload_binds(); // upload records + LUT mirrors
+	bool _shadow_pack(RID p_src, RID p_dst_array, int p_layer, int p_size);
+	RID _shadow_make_r32(int p_w, int p_h, bool p_array, int p_layers, bool p_attach);
+	void _destroy_shadow(); // ORDER: sets, pipelines/shaders, buffers, textures
+	void _shadow_vp_csm(float *r_vps, float *r_splits, float *r_bounds); // 4 VPs + s1..s4 (hybrid 0.5) + ortho bounds
+	void _shadow_vp_cube(const float *p_pos, float *r_vps); // 6 VPs
+	void _shadow_vp_spot(const float *p_pos, const float *p_dir, float p_outer, float *r_vp);
+	void _shadow_planes_from_vp(const float *p_vp, float *r_planes); // 6 normalized planes
 	bool _create_hzb_passes();
 	bool _create_raster_pipeline();
 	bool _create_mesh_pipeline();
@@ -645,6 +718,22 @@ public:
 	bool gpu_light_update(int p_id, const Dictionary &p_params);
 	bool gpu_light_destroy(int p_id);
 	Dictionary gpu_light_get_stats();
+
+	// GNE-019: shadow maps + real-depth HZB flag (TEST-ONLY). p_type: 0 = CSM
+	// (res must be 2048), 1 = cube (1024), 2 = spot (2048). Returns a handle
+	// (type<<8|unit) or -1. gpu_shadow_light_bind links a light id (or
+	// GNE_SHADOW_DIR_LIGHT for the hardcoded push dir) to a handle; -1 unbinds
+	// (removes, never disables silently).
+	int gpu_shadow_map_create(int p_type, int p_resolution);
+	bool gpu_shadow_light_bind(int p_light_id, int p_shadow_id);
+	bool gpu_shadow_cull_dispatch();
+	bool gpu_shadow_render_maps();
+	Dictionary gpu_shadow_get_stats();
+	PackedInt32Array gpu_shadow_dbg_map(int p_type, int p_slot, int p_face); // [non_far, minx, miny, maxx, maxy, center*1000]
+	PackedFloat32Array gpu_shadow_dbg_vp(int p_bind, int p_cas); // 16 floats VP + 4 splits
+	bool gpu_shadow_dbg_dump(int p_layer, const String &p_path); // GNE-019 DIAG: raw R32F CSM layer dump
+	void gpu_hzb_set_real_depth(bool p_enabled);
+	bool gpu_hzb_depth_feed(); // dispatch dead-code 012 depth-source pass + cache probe
 
 	// GNE-011: batch strategy + multi-batch evidence API (TEST-ONLY). All of
 	// the 011 extra getters below are pure readback bridges of the GPU state
