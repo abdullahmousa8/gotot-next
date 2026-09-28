@@ -304,3 +304,26 @@ KI-013 / the S1 closed-form). Two companion tests are required:
 convergence/stability -> cross-frame determinism -> GI naming gate -> shading
 integration + normalization (with the recorded 17.6x-preservation condition, section
 8.3).
+### 9.3.1 Pre-registered failure branch for test (b) - frozen BEFORE the run (Architect, 2026-09-28)
+
+The propagation mechanism has no per-sample occlusion; test (b) failing is therefore a
+REAL possibility by design, not an accident. The response decision is recorded now, in
+advance, so it cannot be biased by knowing the result:
+
+**If (b) shows a leak (deep-B > 0 through the cut):**
+- The leak is recorded as a new KI (structural: field diffusion has no per-sample
+  occlusion), with the measured numbers;
+- S2 closes with the honest status: "bounce works mathematically (9.1/9.2 green) but
+  does not respect spatial occlusion (light leaks through the barrier)";
+- The "GI" label stays CLOSED; adding real occlusion (per-sample visibility or a cut
+  aligned with the sampling lattice) becomes a candidate S2.5;
+- NO full stop: the milestone proceeds to shading integration under the honest label,
+  leak documented and bounded (no "GI" naming, no physical-correctness claims beyond
+  the measured model).
+
+(The "STOP / DECISION REQUIRED on failure" option was considered and rejected as the
+pre-registered path: the prototype's DIRECT term already shares the same
+no-visibility characteristic - range-plus-first-hit approximation - so a bounce-layer
+leak is consistent with the model's declared tier rather than an unexpected
+regression. A full stop would be disproportionate; the KI plus the honest status
+preserves both momentum and accuracy.)
