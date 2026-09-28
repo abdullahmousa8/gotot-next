@@ -118,3 +118,14 @@ the complementary tiers of GneLumen.
 
 No denoiser in S1; no specular GI; no engine edits; no changes to existing gates'
 visuals when the flag is off; no Lumen-parity claims.
+
+## 7. R0-RT - RD ray-tracing isolation test (mandate, runs before/parallel to S1)
+
+Scope (deliberately minimal - NOT a GI implementation):
+- Create the simplest acceleration structure chain via RenderingDevice (one primitive),
+  trace ONE ray, read the result back, and verify it analytically (F1/F2 style).
+- Evidence: build log, run log with the analytic comparison, and the exact API surface
+  found in the fork (functions/stages actually exercised).
+- Outcomes: PASS => S3 (RT backend) has a verified path; FAIL / partial => S3 becomes
+  an architectural decision to re-evaluate with full knowledge (recorded in this file).
+- Constraint: module-only test code (additive, gated, unset in every existing gate).
