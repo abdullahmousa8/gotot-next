@@ -189,7 +189,7 @@
 ## KI-013: gt_regress FAILED Flag Reset By The XFAIL Scene (Harness, Pre-Existing)
 
 **Date:** 2026-09-28
-**Status:** Open - masking defect FIXED; main_008b failure CONFIRMED ISOLATED (scene criterion threshold, not a critical path); disposition choice pending (see Updates)
+**Status:** Resolved 2026-09-28 - masking defect fixed; 008b criterion recalibrated (0.35 -> 1.0, physical rationale in-scene); battery green with honest accounting. Onset note (pre-019 HZB candidate) left informational.
 **Severity:** Medium (masked failures - any scene failing BEFORE the main_012 XFAIL call is forgiven)
 **Owner:** GNE Architecture
 
@@ -218,6 +218,8 @@
 - Onset (rc=0 at the rename sweep, pre-017/018/019 engine): candidates only, not proven - (i) pre-019 AABB-occluder HZB may have (falsely) occluded part of the small far cubes; (ii) run-environment state. Recorded as open.
 - Implication for 018-rev: none found - the rev path rides the fixed 1920x1080 cluster grid and the mat_light flow; 008b's criterion does not gate it.
 - Disposition (Owner): fix the scene criterion (~1.0 threshold / coverage-aware) or mark 008b deliberately as XFAIL (visible, by design). No engine change proposed.
+
+**Update 2026-09-28 (disposition executed - RESOLVED):** Owner decision: raise the criterion, not XFAIL. Applied in `main_008b.gd`: `SUBPIXEL_R_PX` 0.35 -> 1.0 with an in-body physical rationale (1x point sampling: a silhouette below the half-diagonal bound sqrt(2)/2 ~= 0.7071 can cover zero samples by phase; the analytic r_px estimate carries orientation/scale scatter - a 0.77 px cube still missed at 0.75 - so the round full-pixel bound 1.0 is used, matching main.gd's "< 1 projected px may legitimately rasterize zero pixels" note). Validation: scene rc=0 / miss=0 (checked=533, subpixel=260); full battery re-run: all EIGHT harnesses rc=0 with honest accounting (GT_REGRESS: PASS; 012 XFAIL reported, not masking); cross-run classification audit: no other scene changed (reg_main_011/013/014/015.txt and gt015/016/017/018/019 sigs byte-identical; other consoles identical after timing/handle normalization). Retained instrument: `demo/gpu_smoke/main_008b_dbg.gd|.tscn` (documented mirror + per-miss coverage diagnostics; keep in sync with main_008b.gd).
 
 ## 015.5 C6 status (closed in 015.6)
 

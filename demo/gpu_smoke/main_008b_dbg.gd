@@ -1,4 +1,10 @@
 extends Node
+# GNE-008B diagnostic instrument (retained tool, KI-013 context).
+# Mirror of main_008b.gd plus per-miss coverage diagnostics: records the first
+# misses of the best projection convention with the projected radius, the center
+# pixel color, and a wide (+-24 px) nearest-green search - used to separate
+# coverage vanish (sub-pixel silhouettes vs the criterion threshold) from real
+# draw/cull defects. Keep in sync with main_008b.gd when its checks change.
 
 # GNE-008B - Multi-Instance Mesh Rendering Proof
 #
@@ -24,16 +30,7 @@ const ORBIT_RADIUS := 420.0
 const ORBIT_HEIGHT := 160.0
 const SAMPLE_CENTERS := 800   # final-frame projected-center spot checks
 const MIN_GREEN := 2000       # far above one cube -> multi-instance pixels
-# Coverage guard (KI-013): under 1x point sampling a projected silhouette whose
-# radius sits below the sample grid's half-diagonal (sqrt(2)/2 ~= 0.7071 px) can
-# cover ZERO pixel samples depending on sub-pixel phase, however correct the
-# pipeline is. r_px is an analytic estimate with orientation/scale scatter (a
-# 0.77 px cube still missed at a 0.75 threshold), so we require a full pixel.
-# 1.0 matches the subpixel convention noted in main.gd ("< 1 projected px may
-# legitimately rasterize zero pixels") and is the smallest round bound at which
-# a center-hit expectation is not a sub-pixel question. Was 0.35 (below the
-# vanish regime - masking the band as failures; see KI-013).
-const SUBPIXEL_R_PX := 1.0
+const SUBPIXEL_R_PX := 1.0   # below this projected radius a cube may be 0 px
 
 var server: GneRenderServer
 var camera: Camera3D
@@ -43,6 +40,7 @@ var image_tex: ImageTexture
 var frame := 0
 var want_shot := false
 var shot_done := false
+var dbg_miss := []
 
 var visible_min := -1
 var visible_max := -1
@@ -323,6 +321,9 @@ func _finalize(pixels: PackedByteArray, visible: int, compact: PackedInt32Array)
 			" compact=", compact.size(), " set_ok=", set_ok)
 	print("GNE 008B: FINAL center_spot checked=", spot[0], " subpixel=", spot[1],
 			" matched=", spot[2], " miss=", spot[3])
+	print("DBG008B miss_lines=", dbg_miss.size())
+	for dl in dbg_miss:
+		print("DBG008B ", dl)
 	print("GNE 008B: FINAL determinism drawargs_repeat=", deter_args_ok,
 			" full_frame_repeat=", deter_repeat_ok, " ok=", det_ok)
 
@@ -484,6 +485,28 @@ func _projection_spot_checks(pixels: PackedByteArray, compact: PackedInt32Array)
 					matched += 1
 				else:
 					miss += 1
+					if miss <= 40 and dbg_miss.size() < 60:
+						var cxp: int = clampi(int(floor(px)), 0, RASTER_W - 1)
+						var cyp: int = clampi(int(floor(py)), 0, RASTER_H - 1)
+						var co: int = (cyp * RASTER_W + cxp) * 4
+						var wfound := false
+						var wox := 0
+						var woy := 0
+						var wx0: int = maxi(int(floor(px)) - 24, 0)
+						var wx1: int = mini(int(ceil(px)) + 24, RASTER_W - 1)
+						var wy0: int = maxi(int(floor(py)) - 24, 0)
+						var wy1: int = mini(int(ceil(py)) + 24, RASTER_H - 1)
+						for wy in range(wy0, wy1 + 1):
+							for wxx in range(wx0, wx1 + 1):
+								var wo: int = (wy * RASTER_W + wxx) * 4
+								if pixels[wo + 1] > 150 and pixels[wo] < 120 and pixels[wo + 2] < 150:
+									wfound = true
+									wox = wxx - int(px)
+									woy = wy - int(py)
+									break
+							if wfound:
+								break
+						dbg_miss.append("miss idx=" + str(orig) + " r=" + str(snappedf(r_px, 0.01)) + " px=" + str(px) + " py=" + str(py) + " d=" + str(int(dist)) + " col=(" + str(pixels[co]) + "," + str(pixels[co + 1]) + "," + str(pixels[co + 2]) + ") wide=" + str(wfound) + " off=(" + str(wox) + "," + str(woy) + ") sg=(" + str(cx_sign) + "," + str(cy_sign) + ")")
 			if miss < best_miss:
 				best_miss = miss
 				best_checked = checked
