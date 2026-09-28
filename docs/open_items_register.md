@@ -31,4 +31,4 @@ closed as measured: 0.48%; default stays OFF). Every milestone closed with liter
 signatures, honest accounting, and its own recorded decision set; lessons 1-6 live in
 docs/lessons.md.
 
-**Next:** GI (022+) - pending the initial scope draft and Architect scheduling.
+**Next:** GI (022+) - scoping draft delivered (`docs/spec_022_gi_scoping.md`); awaiting the Architect decision set D10 before any implementation.
