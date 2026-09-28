@@ -11,6 +11,8 @@ set GODOT=C:\Users\opc\Documents\AI_ENGINE\godot-master\bin\godot.windows.editor
 set PROJ=C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\demo\gpu_smoke
 set SIGF=C:\Users\opc\AppData\Local\Temp\opencode\gt020_sig.txt
 set OUT=C:\Users\opc\AppData\Local\Temp\opencode\gt020_full.txt
+REM Optional: pass "lowres" as arg 1 to run the reduced-resolution present path.
+if "%~1"=="lowres" set GNE_PRESENT_LOWRES=1
 
 if not exist "%GODOT%" (
   echo [FATAL] engine exe missing: %GODOT%

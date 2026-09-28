@@ -186,6 +186,34 @@ func _finish() -> void:
 	print("GNE 020: present_tw=", present_w, " present_th=", present_h, " rb_bytes_per_frame=", present_w * present_h * 4, " lowres=", present_lowres)
 	print("GNE 020: rb_total_bytes=", reads * present_w * present_h * 4, " reads=", reads)
 	print("GNE 020: run_wall_ms=", run_wall)
+	# Low-res verification (only runs in lowres mode): the GPU blit must be
+	# the exact 2x2 box average of the full raster. Compares GPU output vs a
+	# CPU-side box average of a fresh full read; tolerance <= 1 LSB (UNORM
+	# round-to-nearest ties). Any pixel off by more than 1 fails the run.
+	if present_lowres:
+		var full_px: PackedByteArray = server.gpu_raster_read_pixels()
+		var low_px: PackedByteArray = server.call("gpu_present_read_pixels")
+		var bad := 0
+		var maxdiff := 0
+		if full_px.size() == RASTER_W * RASTER_H * 4 and low_px.size() == present_w * present_h * 4:
+			for y in range(present_h):
+				for x in range(present_w):
+					var si := (y * 2 * RASTER_W + x * 2) * 4
+					var di := (y * present_w + x) * 4
+					for ch in range(4):
+						var avg: int = int(full_px[si + ch]) + int(full_px[si + 4 + ch]) + int(full_px[si + RASTER_W * 4 + ch]) + int(full_px[si + RASTER_W * 4 + 4 + ch])
+						var expect: int = int(round(avg / 4.0))
+						var d := absi(expect - int(low_px[di + ch]))
+						if d > maxdiff:
+							maxdiff = d
+						if d > 1:
+							bad += 1
+		else:
+			bad = -1
+		print("GNE 020: blit_verify bad_over1=", bad, " maxdiff=", maxdiff)
+		if bad != 0:
+			_fail(421, "blit verify failed bad=" + str(bad) + " maxdiff=" + str(maxdiff))
+			return
 	var sig := "v20|tw=%d|th=%d|rb=%d|rf=%d|d1" % [present_w, present_h, present_w * present_h * 4, MEASURE_FRAMES]
 	print("GNE 020: sig=" + sig)
 	if sig_file != "":

@@ -119,3 +119,33 @@ Baseline (unit 1: `main_020` + `tools/gt_020a.bat`, this build; wall-clock, evid
 - p50 per run: 14644 / 14800 us; wall_avg: 15108 / 15878 us; p95: 18422 / 17866 us; run wall: 1452 / 1565 ms.
 - Readback accounting: 70 reads x 8,294,400 B = 580,608,000 B per run (scene-side count; the module pool `bytes_copied` counter is currently never incremented - observed; not used for this measurement).
 - Note: vsync clamps frames at ~16.6 ms unless disabled; the scene disables it for the measurement loop.
+## 12. Unit 2 results (measured, 2026-09-28)
+
+**Implementation (flag-gated, additive):** `gpu_present_lowres_set` / `gpu_present_info` /
+`gpu_present_read_pixels` + a deterministic 2x2 box blit (raster_color_texture -> 960x540 RGBA8
+storage texture; texelFetch taps only, no filtering/atomics) + readback of the reduced texture.
+Existing paths byte-identical: full sweep green (gt_regress, 011, 015a, 015.5p4, 016a, 017a,
+018a, 019a, 018a_rev) with every literal signature intact; the full-raster read path is untouched.
+
+**Correctness:** in-scene blit verification (lowres mode only): GPU output vs CPU-side 2x2 box
+average of a fresh full read - `bad_over1=0, maxdiff=1` (<=1 LSB, UNORM tie rounding; zero pixels
+off by more than 1).
+
+**Before / after (same harness, warm cache, vsync off, same-session runs):**
+
+| Metric (per run) | Full 1920x1080 | Reduced 960x540 | Delta |
+|---|---|---|---|
+| p50 us | 15460 / 15948 | 8822 / 7410 | -43% / -54% |
+| wall_avg us | 16085 / 16120 | 9680 / 8327 | -40% / -48% |
+| run wall ms | 1519 / 1564 | 1030 / 1002 | -32% / -36% |
+| readback bytes/frame | 8,294,400 | 2,073,600 | exactly 4.00x fewer |
+
+Signatures: `v20|tw=1920|th=1080|rb=8294400|rf=60|d1` vs `v20|tw=960|th=540|rb=2073600|rf=60|d1`
+(both d1==d2).
+
+- P2 check (>= 2x bytes): PASS - measured exactly 4.00x (by construction of the 2x2 blit).
+- P1 (works): PASS - both harness modes PASS, rc 0/0, zero ERROR / RID lines.
+- Timings are evidence-only (KI-001 wall-clock). Session-level drift ~5% observed between
+  sessions; the load-bearing comparison is same-session full vs reduced.
+- Not yet covered (remaining units): staging / double-buffering (D9-2 item), KI-003 + C6
+  status updates, closure docs.

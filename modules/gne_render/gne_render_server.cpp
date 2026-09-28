@@ -1346,6 +1346,24 @@ void main() {
 // source lives in gpu_cluster_index_glsl / gpu_cone_math_glsl; shaders consume
 // it via this replace so no consumer carries a private copy (besides the
 // selftest's explicitly-labelled pre-refactor reference).
+// GNE-020: reduced-resolution presentation blit (exact 2x2 box average).
+// Deterministic: texelFetch taps, no filtering, no atomics. DST dims are
+// compile-time (keep in sync with GNE_PRESENT_LOW_* in the header).
+static const char *gpu_present_blit_glsl = R"(
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D src_tex;
+layout(set = 0, binding = 1, rgba8) uniform image2D dst_img;
+void main() {
+	ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+	if (px.x >= 960 || px.y >= 540) {
+		return;
+	}
+	ivec2 s = px * 2;
+	vec4 c = (texelFetch(src_tex, s + ivec2(0, 0), 0) + texelFetch(src_tex, s + ivec2(1, 0), 0) + texelFetch(src_tex, s + ivec2(0, 1), 0) + texelFetch(src_tex, s + ivec2(1, 1), 0)) * 0.25;
+	imageStore(dst_img, px, c);
+}
+)";
 static String _gne_glsl_with_shared(const char *p_src, bool p_with_cone_math) {
 	String s = String(p_src);
 	String shared = String(gpu_cluster_index_glsl);
@@ -2641,6 +2659,9 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_normal", "x", "y"), &GneRenderServer::gpu_raster_read_normal);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz_all"), &GneRenderServer::gpu_raster_read_viewz_all);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_normal_all"), &GneRenderServer::gpu_raster_read_normal_all);
+	ClassDB::bind_method(D_METHOD("gpu_present_lowres_set", "enabled"), &GneRenderServer::gpu_present_lowres_set);
+	ClassDB::bind_method(D_METHOD("gpu_present_info"), &GneRenderServer::gpu_present_info);
+	ClassDB::bind_method(D_METHOD("gpu_present_read_pixels"), &GneRenderServer::gpu_present_read_pixels);
 	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_format"), &GneRenderServer::gpu_raster_get_depth_format);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_depth_enabled"), &GneRenderServer::gpu_mesh_get_depth_enabled);
 	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_enabled"), &GneRenderServer::gpu_raster_get_depth_enabled);
@@ -3208,6 +3229,26 @@ void GneRenderServer::_destroy_gpu_scene() {
 	if (raster_framebuffer.is_valid()) {
 		rendering_device->free_rid(raster_framebuffer);
 		raster_framebuffer = RID();
+	}
+	if (present_blit_set.is_valid()) {
+		rendering_device->free_rid(present_blit_set);
+		present_blit_set = RID();
+	}
+	if (present_blit_sampler.is_valid()) {
+		rendering_device->free_rid(present_blit_sampler);
+		present_blit_sampler = RID();
+	}
+	if (present_blit_pipeline.is_valid()) {
+		rendering_device->free_rid(present_blit_pipeline);
+		present_blit_pipeline = RID();
+	}
+	if (present_blit_shader.is_valid()) {
+		rendering_device->free_rid(present_blit_shader);
+		present_blit_shader = RID();
+	}
+	if (present_lowres_texture.is_valid()) {
+		rendering_device->free_rid(present_lowres_texture);
+		present_lowres_texture = RID();
 	}
 	if (raster_color_texture.is_valid()) {
 		rendering_device->free_rid(raster_color_texture);
@@ -9041,6 +9082,102 @@ PackedFloat32Array GneRenderServer::gpu_raster_read_normal_all() {
 		w[i] = gne_half_to_float(hb);
 	}
 	return out;
+}
+// GNE-020: toggle the reduced-resolution presentation path (default off). The
+// full-raster presentation path is untouched while disabled.
+bool GneRenderServer::gpu_present_lowres_set(bool p_enabled) {
+	gne_present_lowres = p_enabled;
+	return true;
+}
+
+// GNE-020: active presentation target description for the measuring scenes.
+Dictionary GneRenderServer::gpu_present_info() const {
+	Dictionary d;
+	int w = gne_present_lowres ? GNE_PRESENT_LOW_W : RASTER_TARGET_W;
+	int h = gne_present_lowres ? GNE_PRESENT_LOW_H : RASTER_TARGET_H;
+	d["lowres"] = gne_present_lowres;
+	d["w"] = w;
+	d["h"] = h;
+	d["bytes_per_frame"] = (int64_t)w * (int64_t)h * 4;
+	return d;
+}
+
+// GNE-020: presentation readback through the ACTIVE target. Low-res mode runs
+// the deterministic 2x2 box blit (raster_color_texture -> present texture) and
+// reads that back (4x fewer bytes); default mode is the existing full read.
+PackedByteArray GneRenderServer::gpu_present_read_pixels() {
+	if (!gne_present_lowres) {
+		return gpu_raster_read_pixels();
+	}
+	PackedByteArray ret;
+	if (!gpu_scene_valid || !gpu_raster_valid) {
+		return ret;
+	}
+	if (present_blit_pipeline.is_null()) {
+		String error;
+		Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_COMPUTE, String(gpu_present_blit_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (spirv.is_empty()) {
+			print_error("[GNE] present blit shader compile failed:");
+			print_error(error);
+			return ret;
+		}
+		Vector<RD::ShaderStageSPIRVData> stages;
+		RD::ShaderStageSPIRVData cs;
+		cs.shader_stage = RD::SHADER_STAGE_COMPUTE;
+		cs.spirv = spirv;
+		stages.push_back(cs);
+		present_blit_shader = rendering_device->shader_create_from_spirv(stages, "gne_present_blit");
+		if (present_blit_shader.is_null()) {
+			print_error("[GNE] present blit shader_create failed.");
+			return ret;
+		}
+		present_blit_pipeline = rendering_device->compute_pipeline_create(present_blit_shader);
+		if (present_blit_pipeline.is_null()) {
+			print_error("[GNE] present blit pipeline_create failed.");
+			return ret;
+		}
+		RD::TextureFormat pf;
+		pf.format = RD::DATA_FORMAT_R8G8B8A8_UNORM;
+		pf.width = GNE_PRESENT_LOW_W;
+		pf.height = GNE_PRESENT_LOW_H;
+		pf.depth = 1;
+		pf.texture_type = RD::TEXTURE_TYPE_2D;
+		pf.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		present_lowres_texture = rendering_device->texture_create(pf, RD::TextureView());
+		if (present_lowres_texture.is_null()) {
+			print_error("[GNE] present texture_create failed.");
+			return ret;
+		}
+		RD::SamplerState pss;
+		present_blit_sampler = rendering_device->sampler_create(pss);
+		if (present_blit_sampler.is_null()) {
+			print_error("[GNE] present sampler_create failed.");
+			return ret;
+		}
+		Vector<RD::Uniform> cu;
+		RD::Uniform u0;
+		u0.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+		u0.binding = 0;
+		u0.append_id(present_blit_sampler);
+		u0.append_id(raster_color_texture);
+		cu.push_back(u0);
+		RD::Uniform u1;
+		u1.uniform_type = RD::UNIFORM_TYPE_IMAGE;
+		u1.binding = 1;
+		u1.append_id(present_lowres_texture);
+		cu.push_back(u1);
+		present_blit_set = rendering_device->uniform_set_create(cu, present_blit_shader, 0);
+		if (present_blit_set.is_null()) {
+			print_error("[GNE] present uniform_set_create failed.");
+			return ret;
+		}
+	}
+	_run_compute_pass(present_blit_pipeline, present_blit_set, nullptr, 0, (GNE_PRESENT_LOW_W + 7) / 8, (GNE_PRESENT_LOW_H + 7) / 8, 1);
+	Vector<uint8_t> data = rendering_device->texture_get_data(present_lowres_texture, 0);
+	ret.resize(data.size());
+	memcpy(ret.ptrw(), data.ptr(), data.size());
+	return ret;
 }
 // GNE-009: overwrite a single instance's transform (position_scale) in the
 // SoA transform buffer. Pure fill helper for the 009 overlay demo; the fill/

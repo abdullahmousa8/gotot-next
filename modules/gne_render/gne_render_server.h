@@ -76,6 +76,10 @@ class GneRenderServer : public Object {
 	bool gpu_raster_valid = false;
 	static constexpr int RASTER_TARGET_W = 1920;
 	static constexpr int RASTER_TARGET_H = 1080;
+// GNE-020: reduced presentation target (half each axis = 4x fewer readback
+// bytes). Additive: RASTER_TARGET_* stay the render resolution.
+static constexpr int GNE_PRESENT_LOW_W = 960;
+static constexpr int GNE_PRESENT_LOW_H = 540;
 	int64_t raster_framebuffer_format = -1;
 	RID raster_color_texture;
 	RID raster_framebuffer;
@@ -84,6 +88,14 @@ class GneRenderServer : public Object {
 	RID raster_uniform_set;
 	RID quad_index_buffer;
 	RID quad_index_array;
+// GNE-020: reduced-resolution presentation target + present blit resources
+// (lazy, flag-gated; freed with the raster block in the destroy path).
+RID present_lowres_texture;
+RID present_blit_shader;
+RID present_blit_pipeline;
+RID present_blit_sampler;
+RID present_blit_set;
+bool gne_present_lowres = false;
 
 	// GNE-009: real depth buffer (D32_SFLOAT) attached to the raster
 	// framebuffer. The billboard path keeps depth disabled (unchanged
@@ -642,6 +654,12 @@ public:
 	PackedFloat32Array gpu_raster_read_normal(int p_x, int p_y);
 	PackedFloat32Array gpu_raster_read_viewz_all(); // GNE-018-rev R1 tooling
 	PackedFloat32Array gpu_raster_read_normal_all(); // GNE-018-rev R1 tooling
+// GNE-020: presentation path - reduced-resolution present target + readback.
+// Feature-detected by the measuring scenes; the full-raster path is untouched
+// while disabled (default).
+bool gpu_present_lowres_set(bool p_enabled);
+Dictionary gpu_present_info() const;
+PackedByteArray gpu_present_read_pixels();
 	//
 	// --- TEST-ONLY GETTERS --- (probe the 009 wiring from GDScript).
 	// Returns the depth attachment format enum value (125 == D32_SFLOAT) or -1
