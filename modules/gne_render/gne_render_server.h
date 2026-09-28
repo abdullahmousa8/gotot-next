@@ -174,6 +174,26 @@ class GneRenderServer : public Object {
 	Vector3 mat_light_dir = Vector3(-0.40824829f, -0.81649661f, -0.40824829f);
 	int mat_dispatches = 0;
 
+	// GNE-017: textures. Texture store (up to 256 RGBA8 mipmapped uploads from
+	// .gtex files) + mat_tex bindings (64 materials x 5 slots, -1 = unbound).
+	// Zero Basis/KTX linkage in this module: the offline tool transcodes, the
+	// runtime only parses the GNET header and uploads raw mip bytes.
+	struct GneTexture {
+		RID tex;
+		int w = 0, h = 0, mips = 0;
+		size_t bytes = 0;
+	};
+	static constexpr int GNE_TEX_MAX = 256;
+	static constexpr int GNE_MAT_TEX_SLOTS = 5;
+	static constexpr int GNE_TEX_ARRAY = 8;
+	GneTexture tex_store[GNE_TEX_MAX];
+	int tex_count = 0;
+	int32_t mat_tex_cpu[GNE_MESH_TABLE_SIZE * GNE_MAT_TEX_SLOTS];
+	RID mat_tex_buffer; // int32[64*5] (1280 B)
+	RID tex_sampler;    // shared trilinear/repeat sampler
+	RID tex_dummy;      // 1x1 white texture for unbound array slots
+	RID tex_array[GNE_TEX_ARRAY]; // CPU mirror of the sampler-array entries
+
 	// GNE-011: multi-batch grouping + dynamic indirect count. ADDS (over 010,
 	// additive only) a batch strategy toggle (PER_MESH / GROUPED / REORDERED), a
 	// workgroup-parallel prefix-sum batch assembly pass, <=5 batched draw
@@ -397,6 +417,7 @@ class GneRenderServer : public Object {
 	void _destroy_mesh_batch();
 	bool _mat_check_id(int p_id, const char *p_what) const;
 	void _mat_upload(int p_id);
+	bool _mat_tex_refresh_set();
 	bool _create_hzb_passes();
 	bool _create_raster_pipeline();
 	bool _create_mesh_pipeline();
@@ -547,6 +568,14 @@ public:
 	// NEW mat pipeline. Requires PER_MESH strategy (uses batch_args from the
 	// last gpu_mesh_batch_dispatch) + frustum/camera set.
 	bool gpu_material_draw();
+
+	// GNE-017: texture API (TEST-ONLY, additive). Textures upload RGBA8 mip
+	// chains parsed from .gtex files; binds live in mat_tex (verified by
+	// readback, never by mirror alone).
+	int gpu_texture_load(const String &p_path);
+	bool gpu_texture_bind(int p_mat, int p_slot, int p_tex);
+	PackedInt32Array gpu_texture_get_stats();
+	int gpu_texture_get_binding(int p_mat, int p_slot);
 
 	// GNE-011: batch strategy + multi-batch evidence API (TEST-ONLY). All of
 	// the 011 extra getters below are pure readback bridges of the GPU state

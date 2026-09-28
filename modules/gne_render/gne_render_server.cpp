@@ -922,10 +922,21 @@ layout(std430, set = 0, binding = 4) buffer MaterialBuffer {
 }
 materials;
 
+// GNE-017: fixed sampler array (no descriptor indexing in this RD fork) +
+// mat_tex bindings. The array index comes from the mat_tex SSBO per fragment;
+// the driver requires shaderSampledImageArrayNonUniformIndexing (hard
+// requirement at device creation), so direct indexing is legal.
+layout(set = 0, binding = 5) uniform sampler2D tex_arr[8];
+layout(std430, set = 0, binding = 6) buffer MatTexBuffer {
+	int tex_ids[];
+}
+mattex;
+
 layout(push_constant, std430) uniform MatParams {
 	vec4 light_dir_ambient;
 	vec4 cam_pos;
 	vec4 light_color;
+	vec4 tex_slot_pad;
 }
 params;
 
@@ -944,6 +955,23 @@ void main() {
 	vec3 N = normalize(cross(dFdx(v_world), dFdy(v_world)));
 	vec3 Vv = normalize(params.cam_pos.xyz - v_world);
 	vec3 emi = (flags.x > 0.5) ? emissive * flags.y : vec3(0.0);
+	// GNE-017: albedo-slot sampling (triplanar, hard axis switch). Unbound
+	// (tid < 0) or out-of-range tid falls back to the flat albedo.
+	int tid = mattex.tex_ids[int(v_mesh_id) * 5 + int(params.tex_slot_pad.x)];
+	vec3 texel = vec3(1.0);
+	if (tid >= 0 && tid < 8) {
+		vec3 an = abs(N);
+		vec2 tuv;
+		if (an.x >= an.y && an.x >= an.z) {
+			tuv = fract(vec2(v_world.z, v_world.y) * 0.01);
+		} else if (an.y >= an.x && an.y >= an.z) {
+			tuv = fract(vec2(v_world.x, v_world.z) * 0.01);
+		} else {
+			tuv = fract(vec2(v_world.x, v_world.y) * 0.01);
+		}
+		texel = texture(tex_arr[tid], tuv).rgb;
+	}
+	vec3 alb = albedo * texel;
 	if (dot(N, Vv) < 0.0) {
 		vec3 bem = (flags.z > 0.5) ? emi : vec3(0.0);
 		out_color = vec4(bem, 1.0);
@@ -953,13 +981,13 @@ void main() {
 	vec3 L = params.light_dir_ambient.xyz;
 	float AMB = params.light_dir_ambient.w;
 	float ndl = max(dot(N, L), 0.0);
-	vec3 diff = albedo * ndl * params.light_color.rgb;
+	vec3 diff = alb * ndl * params.light_color.rgb;
 	vec3 H = normalize(L + Vv);
 	float shiny_eff = max(shiny * (1.2 - rough), 1.0);
 	float spec = pow(max(dot(N, H), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
-	vec3 sc = mix(spec_col, albedo, metal);
+	vec3 sc = mix(spec_col, alb, metal);
 	vec3 specular = spec * sc * params.light_color.rgb;
-	out_color = vec4(AMB * albedo + diff + specular + emi, 1.0);
+	out_color = vec4(AMB * alb + diff + specular + emi, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
 }
 )";
@@ -1618,6 +1646,10 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_material_set_light", "dir"), &GneRenderServer::gpu_material_set_light);
 	ClassDB::bind_method(D_METHOD("gpu_material_stats"), &GneRenderServer::gpu_material_stats);
 	ClassDB::bind_method(D_METHOD("gpu_material_draw"), &GneRenderServer::gpu_material_draw);
+	ClassDB::bind_method(D_METHOD("gpu_texture_load", "path"), &GneRenderServer::gpu_texture_load);
+	ClassDB::bind_method(D_METHOD("gpu_texture_bind", "material_id", "slot", "texture_id"), &GneRenderServer::gpu_texture_bind);
+	ClassDB::bind_method(D_METHOD("gpu_texture_get_stats"), &GneRenderServer::gpu_texture_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_texture_get_binding", "material_id", "slot"), &GneRenderServer::gpu_texture_get_binding);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_PER_MESH", GNE_BATCH_STRATEGY_PER_MESH);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_GROUPED", GNE_BATCH_STRATEGY_GROUPED);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_REORDERED", GNE_BATCH_STRATEGY_REORDERED);
@@ -1815,6 +1847,38 @@ void GneRenderServer::_destroy_mesh() {
 	}
 	gpu_material_valid = false;
 	mat_dispatches = 0;
+	// GNE-017: texture store teardown (textures + sampler + bindings).
+	if (rendering_device != nullptr) {
+		for (int i = 0; i < GNE_TEX_MAX; i++) {
+			if (tex_store[i].tex.is_valid()) {
+				rendering_device->free_rid(tex_store[i].tex);
+				tex_store[i].tex = RID();
+			}
+			tex_store[i].w = 0;
+			tex_store[i].h = 0;
+			tex_store[i].mips = 0;
+			tex_store[i].bytes = 0;
+		}
+		if (tex_sampler.is_valid()) {
+			rendering_device->free_rid(tex_sampler);
+			tex_sampler = RID();
+		}
+		if (tex_dummy.is_valid()) {
+			rendering_device->free_rid(tex_dummy);
+			tex_dummy = RID();
+		}
+		if (mat_tex_buffer.is_valid()) {
+			rendering_device->free_rid(mat_tex_buffer);
+			mat_tex_buffer = RID();
+		}
+	}
+	tex_count = 0;
+	for (int i = 0; i < GNE_MESH_TABLE_SIZE * GNE_MAT_TEX_SLOTS; i++) {
+		mat_tex_cpu[i] = -1;
+	}
+	for (int i = 0; i < GNE_TEX_ARRAY; i++) {
+		tex_array[i] = RID();
+	}
 	// GNE-010: the batch path's 010 vertex/index arrays reference the shared
 	// mesh vertex/index buffers below, so they must be released first.
 	_destroy_mesh_batch();
@@ -2444,9 +2508,39 @@ void GneRenderServer::gpu_scene_destroy() {
 }
 
 void GneRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transform, const Projection &p_projection) {
-	Vector<Plane> planes = p_projection.get_projection_planes(p_camera_transform);
+	// Frustum planes are extracted from the VP matrix rows (exact by
+	// construction: the same matrix that projects and renders defines the
+	// half-spaces). Projection::get_projection_planes() is NOT used: it was
+	// measured to disagree with its own projection matrix for rotated cameras
+	// (GNE-017: NDC math + Godot's is_position_in_frustum said inside while
+	// get_projection_planes said outside by hundreds of units; its planes
+	// miss even their defining points, e.g. near-center gave 3719 instead of
+	// ~0). Godot plane order kept: near, far, left, top, right, bottom.
+	Projection cam_view0(p_camera_transform.inverse());
+	Projection vp0 = p_projection * cam_view0;
+	float r[4][4];
+	for (int c = 0; c < 4; c++) {
+		for (int rr = 0; rr < 4; rr++) {
+			r[rr][c] = vp0.columns[c][rr];
+		}
+	}
+	// {rowA, sign} pairs: near=r3+r2, far=r3-r2, left=r3+r0,
+	// top=r3-r1, right=r3-r0, bottom=r3+r1.
+	const int ra[6] = { 3, 3, 3, 3, 3, 3 };
+	const int rb[6] = { 2, 2, 0, 1, 0, 1 };
+	const float rs[6] = { 1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f };
 	for (int i = 0; i < 6; i++) {
-		frustum_planes[i] = planes[i];
+		Vector3 n(
+				r[ra[i]][0] + rs[i] * r[rb[i]][0],
+				r[ra[i]][1] + rs[i] * r[rb[i]][1],
+				r[ra[i]][2] + rs[i] * r[rb[i]][2]);
+		float d = r[ra[i]][3] + rs[i] * r[rb[i]][3];
+		float l = n.length();
+		if (l > 1e-9f) {
+			frustum_planes[i] = Plane(n / l, d / l);
+		} else {
+			frustum_planes[i] = Plane(Vector3(0, 0, 0), 0); // degenerate: fail-open
+		}
 	}
 	frustum_valid = true;
 
@@ -4717,9 +4811,51 @@ bool GneRenderServer::gpu_material_create() {
 		u.append_id(draw_buffers[b]);
 		uniforms.push_back(u);
 	}
-	mat_batch_uniform_set = rendering_device->uniform_set_create(uniforms, mat_batch_shader, 0);
-	if (mat_batch_uniform_set.is_null()) {
-		print_error("[GNE] material uniform_set_create failed.");
+	// GNE-017: mat_tex bindings + sampler array (dummy texture everywhere
+	// until real binds arrive). The set is rebuilt by _mat_tex_refresh_set()
+	// on every bind; this initial build uses the same path.
+	for (int i = 0; i < GNE_MESH_TABLE_SIZE * GNE_MAT_TEX_SLOTS; i++) {
+		mat_tex_cpu[i] = -1;
+	}
+	{
+		Vector<uint8_t> blank;
+		blank.resize(1280);
+		blank.fill(0xFF); // -1 = unbound, int32 view
+		mat_tex_buffer = rendering_device->storage_buffer_create(1280, blank);
+	}
+	RD::SamplerState tss;
+	tss.mag_filter = RD::SAMPLER_FILTER_LINEAR;
+	tss.min_filter = RD::SAMPLER_FILTER_LINEAR;
+	tss.mip_filter = RD::SAMPLER_FILTER_LINEAR;
+	tss.repeat_u = RD::SAMPLER_REPEAT_MODE_REPEAT;
+	tss.repeat_v = RD::SAMPLER_REPEAT_MODE_REPEAT;
+	tex_sampler = rendering_device->sampler_create(tss);
+	{
+		RD::TextureFormat dtf;
+		dtf.format = RD::DATA_FORMAT_R8G8B8A8_UNORM;
+		dtf.texture_type = RD::TEXTURE_TYPE_2D;
+		dtf.width = 1;
+		dtf.height = 1;
+		dtf.depth = 1;
+		dtf.array_layers = 1;
+		dtf.mipmaps = 1;
+		dtf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_UPDATE_BIT;
+		RD::TextureView dtv;
+		Vector<Vector<uint8_t>> dd;
+		Vector<uint8_t> white;
+		white.resize(4);
+		white.fill(255);
+		dd.push_back(white);
+		tex_dummy = rendering_device->texture_create(dtf, dtv, dd);
+	}
+	for (int i = 0; i < GNE_TEX_ARRAY; i++) {
+		tex_array[i] = tex_dummy;
+	}
+	if (mat_tex_buffer.is_null() || tex_sampler.is_null() || tex_dummy.is_null()) {
+		print_error("[GNE] gpu_material_create: texture plumbing create failed.");
+		return false;
+	}
+	if (!_mat_tex_refresh_set()) {
 		return false;
 	}
 
@@ -4874,6 +5010,7 @@ bool GneRenderServer::gpu_material_draw() {
 		float light_xyz_amb[4];
 		float cam_xyz[4];
 		float light_rgb[4];
+		float tex_slot_pad[4]; // [0] = albedo slot to sample (Phase 2: 0)
 	};
 	MatPush push;
 	push.light_xyz_amb[0] = mat_light_dir.x;
@@ -4888,6 +5025,10 @@ bool GneRenderServer::gpu_material_draw() {
 	push.light_rgb[1] = 1.0f;
 	push.light_rgb[2] = 1.0f;
 	push.light_rgb[3] = 0.0f;
+	push.tex_slot_pad[0] = 0.0f;
+	push.tex_slot_pad[1] = 0.0f;
+	push.tex_slot_pad[2] = 0.0f;
+	push.tex_slot_pad[3] = 0.0f;
 
 	Vector<Color> clear_colors;
 	clear_colors.push_back(Color(0, 0, 0, 0));
@@ -4912,6 +5053,224 @@ bool GneRenderServer::gpu_material_draw() {
 
 	mat_dispatches++;
 	return true;
+}
+
+// GNE-017: texture store + mat_tex bindings (additive; zero Basis/KTX linkage
+// here - the offline tool transcodes, this code only parses + uploads).
+bool GneRenderServer::_mat_tex_refresh_set() {
+	if (mat_batch_uniform_set.is_valid()) {
+		rendering_device->free_rid(mat_batch_uniform_set);
+		mat_batch_uniform_set = RID();
+	}
+	Vector<RD::Uniform> uniforms;
+	const RID draw_buffers[5] = {
+		batch_instances_buffer, transform_buffer, view_ubo, mesh_id_buffer, mat_buffer
+	};
+	for (uint32_t b = 0; b < 5; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		if (b == 2) {
+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		}
+		u.append_id(draw_buffers[b]);
+		uniforms.push_back(u);
+	}
+	RD::Uniform u5;
+	u5.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+	u5.binding = 5;
+	for (int i = 0; i < GNE_TEX_ARRAY; i++) {
+		u5.append_id(tex_sampler);
+		u5.append_id(tex_array[i].is_valid() ? tex_array[i] : tex_dummy);
+	}
+	uniforms.push_back(u5);
+	RD::Uniform u6;
+	u6.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	u6.binding = 6;
+	u6.append_id(mat_tex_buffer);
+	uniforms.push_back(u6);
+	mat_batch_uniform_set = rendering_device->uniform_set_create(uniforms, mat_batch_shader, 0);
+	if (mat_batch_uniform_set.is_null()) {
+		print_error("[GNE] _mat_tex_refresh_set: uniform_set_create failed.");
+		return false;
+	}
+	return true;
+}
+
+struct GneGtexSlot {
+	uint32_t width, height, mips;
+	uint32_t basis_offset, basis_size;
+	uint32_t rgba_offset, rgba_size;
+	uint32_t flags;
+};
+
+int GneRenderServer::gpu_texture_load(const String &p_path) {
+	if (rendering_device == nullptr) {
+		print_error("[GNE] gpu_texture_load: no RenderingDevice.");
+		return -1;
+	}
+	if (tex_count >= GNE_TEX_MAX) {
+		print_error("[GNE] gpu_texture_load: texture store full (256).");
+		return -1;
+	}
+	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);
+	if (f.is_null()) {
+		print_error("[GNE] gpu_texture_load: cannot open " + p_path + ".");
+		return -1;
+	}
+	if (f->get_length() < 64) {
+		print_error("[GNE] gpu_texture_load: file too small for GNET header.");
+		return -1;
+	}
+	uint32_t magic = f->get_32();
+	uint32_t version = f->get_32();
+	uint32_t w = f->get_32();
+	uint32_t h = f->get_32();
+	uint32_t mips = f->get_32();
+	uint32_t format = f->get_32();
+	uint32_t slots = f->get_32();
+	uint32_t flags = f->get_32();
+	(void)flags;
+	if (magic != 0x474E4554u || version != 1u || slots < 1 || mips < 1) {
+		print_error("[GNE] gpu_texture_load: bad GNET header.");
+		return -1;
+	}
+	if (format != 0) {
+		print_error("[GNE] gpu_texture_load: unsupported format (want 0=UASTC).");
+		return -1;
+	}
+	// Slot 0 descriptor (Phase 2 loads single-slot assets).
+	uint32_t sw = f->get_32();
+	uint32_t sh = f->get_32();
+	uint32_t smips = f->get_32();
+	uint32_t basis_off = f->get_32();
+	uint32_t basis_size = f->get_32();
+	uint32_t rgba_off = f->get_32();
+	uint32_t rgba_size = f->get_32();
+	uint32_t sflags = f->get_32();
+	(void)sflags;
+	if (sw != w || sh != h || smips != mips || rgba_size == 0) {
+		print_error("[GNE] gpu_texture_load: slot descriptor mismatch.");
+		return -1;
+	}
+	// Expected RGBA8 chain size (exact, no padding for uncompressed).
+	uint32_t expect = 0, tw = w, th = h;
+	for (uint32_t l = 0; l < mips; l++) {
+		expect += tw * th * 4;
+		tw = tw > 1 ? tw / 2 : 1;
+		th = th > 1 ? th / 2 : 1;
+	}
+	if (rgba_size != expect) {
+		print_error("[GNE] gpu_texture_load: RGBA8 section size mismatch.");
+		return -1;
+	}
+	f->seek(rgba_off);
+	PackedByteArray blob = f->get_buffer(rgba_size);
+	if ((uint32_t)blob.size() != rgba_size) {
+		print_error("[GNE] gpu_texture_load: short read of RGBA8 section.");
+		return -1;
+	}
+	RD::TextureFormat tf;
+	tf.format = RD::DATA_FORMAT_R8G8B8A8_UNORM;
+	tf.texture_type = RD::TEXTURE_TYPE_2D;
+	tf.width = w;
+	tf.height = h;
+	tf.depth = 1;
+	tf.array_layers = 1;
+	tf.mipmaps = mips;
+	tf.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_UPDATE_BIT;
+	RD::TextureView tv;
+	Vector<Vector<uint8_t>> data;
+	Vector<uint8_t> packed;
+	packed.resize(rgba_size);
+	memcpy(packed.ptrw(), blob.ptr(), rgba_size);
+	data.push_back(packed);
+	RID tex = rendering_device->texture_create(tf, tv, data);
+	if (tex.is_null()) {
+		print_error("[GNE] gpu_texture_load: texture_create failed.");
+		return -1;
+	}
+	int id = tex_count;
+	tex_store[id].tex = tex;
+	tex_store[id].w = (int)w;
+	tex_store[id].h = (int)h;
+	tex_store[id].mips = (int)mips;
+	tex_store[id].bytes = rgba_size;
+	tex_count++;
+	return id;
+}
+
+bool GneRenderServer::gpu_texture_bind(int p_mat, int p_slot, int p_tex) {
+	if (!gpu_material_valid) {
+		print_error("[GNE] gpu_texture_bind: no material store. Call gpu_material_create first.");
+		return false;
+	}
+	if (p_mat < 0 || p_mat >= GNE_MESH_TABLE_SIZE || p_slot < 0 || p_slot >= GNE_MAT_TEX_SLOTS) {
+		print_error("[GNE] gpu_texture_bind: material/slot out of range.");
+		return false;
+	}
+	if (p_tex < 0 || p_tex >= tex_count || tex_store[p_tex].tex.is_null()) {
+		print_error("[GNE] gpu_texture_bind: texture id not loaded.");
+		return false;
+	}
+	mat_tex_cpu[p_mat * GNE_MAT_TEX_SLOTS + p_slot] = -1;
+	// Publish into the sampler array. mat_tex stores ARRAY positions (what
+	// the shader indexes), not texture ids: position = id % 8. A second
+	// texture colliding on an occupied position is rejected loudly (no
+	// silent aliasing); the 8-entry array is the Phase-2 ceiling per the
+	// bindless contract (no descriptor indexing in this RD fork).
+	int arr = p_tex % GNE_TEX_ARRAY;
+	if (tex_array[arr].is_valid() && tex_array[arr] != tex_dummy
+			&& tex_array[arr] != tex_store[p_tex].tex) {
+		print_error("[GNE] gpu_texture_bind: sampler-array collision (use one texture per demo in Phase 2).");
+		return false;
+	}
+	tex_array[arr] = tex_store[p_tex].tex;
+	mat_tex_cpu[p_mat * GNE_MAT_TEX_SLOTS + p_slot] = (int32_t)arr;
+	rendering_device->buffer_update(mat_tex_buffer,
+			(uint32_t)((p_mat * GNE_MAT_TEX_SLOTS + p_slot) * 4), 4,
+			&mat_tex_cpu[p_mat * GNE_MAT_TEX_SLOTS + p_slot]);
+	if (!_mat_tex_refresh_set()) {
+		return false;
+	}
+	return true;
+}
+
+PackedInt32Array GneRenderServer::gpu_texture_get_stats() {
+	PackedInt32Array ret;
+	int bound = 0;
+	if (gpu_material_valid) {
+		for (int i = 0; i < GNE_MESH_TABLE_SIZE * GNE_MAT_TEX_SLOTS; i++) {
+			if (mat_tex_cpu[i] >= 0) {
+				bound++;
+			}
+		}
+	}
+	ret.push_back(tex_count);
+	ret.push_back(bound);
+	ret.push_back(GNE_MESH_TABLE_SIZE * GNE_MAT_TEX_SLOTS - bound);
+	return ret;
+}
+
+int GneRenderServer::gpu_texture_get_binding(int p_mat, int p_slot) {
+	if (!gpu_material_valid) {
+		print_error("[GNE] gpu_texture_get_binding: no material store.");
+		return -2;
+	}
+	if (p_mat < 0 || p_mat >= GNE_MESH_TABLE_SIZE || p_slot < 0 || p_slot >= GNE_MAT_TEX_SLOTS) {
+		print_error("[GNE] gpu_texture_get_binding: material/slot out of range.");
+		return -2;
+	}
+	// Real GPU readback (mirror alone is not evidence).
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(mat_tex_buffer, 0,
+			(uint32_t)(GNE_MESH_TABLE_SIZE * GNE_MAT_TEX_SLOTS * 4));
+	if (bytes.size() != (int)(GNE_MESH_TABLE_SIZE * GNE_MAT_TEX_SLOTS * 4)) {
+		print_error("[GNE] gpu_texture_get_binding: buffer_get_data failed.");
+		return -2;
+	}
+	int32_t v = 0;
+	memcpy(&v, bytes.ptr() + (p_mat * GNE_MAT_TEX_SLOTS + p_slot) * 4, 4);
+	return (int)v;
 }
 
 int GneRenderServer::gpu_mesh_get_mesh_id_count() const {
