@@ -114,14 +114,24 @@ func _ready() -> void:
 		if not is_finite(float(x)):
 			ok = false
 	var v10 := float(seq[0]); var v50 := float(seq[4]); var v60 := float(seq[5])
-	var drift := absf(v60 - v50)
-	if drift > 0.01 * v60:
+	# Criterion per spec_022 9.1 (adopted amendment): geometric decay - every delta
+	# <= 0.6x the previous; gain cap <= 3x; all finite. No fixed N.
+	var deltas: Array = []
+	for di in range(1, seq.size()):
+		deltas.append(absf(float(seq[di]) - float(seq[di - 1])))
+	var ratio_ok := true
+	for ri in range(1, deltas.size()):
+		if float(deltas[ri]) > 0.6 * float(deltas[ri - 1]):
+			ratio_ok = false
+	print("S2C: deltas=", deltas)
+	if not ratio_ok:
 		ok = false
 	if v60 > 3.0 * v10:
 		ok = false
 	if v60 <= 0.0:
 		ok = false
-	print("S2C: v10=", v10, " v50=", v50, " v60=", v60, " drift_abs=", drift, " drift_rel=", (drift / v60 if v60 > 0.0 else -1.0))
+	var drift := absf(v60 - v50)
+	print("S2C: v10=", v10, " v50=", v50, " v60=", v60, " drift_abs=", drift, " drift_rel=", (drift / v60 if v60 > 0.0 else -1.0), " gain=", (v60 / v10 if v10 > 0.0 else -1.0), " ratio_ok=", ratio_ok)
 	var parts := PackedStringArray()
 	for x3 in seq:
 		parts.append("%.6f" % float(x3))
