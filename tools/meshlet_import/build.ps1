@@ -1,4 +1,4 @@
-# Builds the GOTOT meshlet import tool.
+# Builds the GNE meshlet import tool.
 # Usage: powershell -ExecutionPolicy Bypass -File build.ps1
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot

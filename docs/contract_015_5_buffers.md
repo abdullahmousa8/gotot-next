@@ -1,6 +1,6 @@
 # Contract 015.5 — Buffers
 
-كل مخزن/نسيج يملكه الـpool، بأرقام **مُقيسة** من الكود (`RASTER_TARGET_W/H = 1920/1080` عند `gotot_render_server.h:77-78`، `HZB_PROD_TEXEL_COUNT = 2048` و`HZB_PROD_LEVELS = 12` عند 207-208).
+كل مخزن/نسيج يملكه الـpool، بأرقام **مُقيسة** من الكود (`RASTER_TARGET_W/H = 1920/1080` عند `gne_render_server.h:77-78`، `HZB_PROD_TEXEL_COUNT = 2048` و`HZB_PROD_LEVELS = 12` عند 207-208).
 
 ## 1. المخازن المقترحة (Phase 2/3)
 

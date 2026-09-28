@@ -1,11 +1,11 @@
 extends Node
-# GOTOT-NEXT 015.5 Phase 4 — frame-time drift DIAGNOSIS (measurement only)
+# GNE 015.5 Phase 4 — frame-time drift DIAGNOSIS (measurement only)
 #
 # Purpose: produce the BASELINE that Phase 5 (async readback) is compared
 # against. This scene MEASURES; it does not optimise and claims no improvement.
 #
 # Method (API verified against this 4.8.dev tree, see the Phase-4 block in
-# gotot_render_server.cpp): RD::capture_timestamp() marks a point on the GPU
+# gne_render_server.cpp): RD::capture_timestamp() marks a point on the GPU
 # timeline; get_captured_timestamp_gpu_time() returns NANOSECONDS for the
 # PREVIOUS completed frame; get_captured_timestamp_cpu_time() returns
 # MICROSECONDS. Per-pass numbers are CPU-side microsecond deltas between markers.
@@ -25,7 +25,7 @@ const RASTER_H := 1080
 
 const PROBE_FRAMES := [1, 100, 200, 300]
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
@@ -39,7 +39,7 @@ var pass_count_ok := 0
 
 
 func _ready() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(400, "server singleton is null")
 		return
@@ -52,7 +52,7 @@ func _ready() -> void:
 	# columns are therefore reported as NA, never as zero cost. The wall-clock
 	# measurement below is the load-bearing one.
 	ProjectSettings.set_setting("debug/settings/profiler/max_timestamp_query_elements", 512)
-	print("GOTOT-NEXT 015.5 p5: timestamp_query_elements=", int(ProjectSettings.get_setting("debug/settings/profiler/max_timestamp_query_elements")), " (GPU results unavailable on Vulkan - see progress_report §29)")
+	print("GNE 015.5 p5: timestamp_query_elements=", int(ProjectSettings.get_setting("debug/settings/profiler/max_timestamp_query_elements")), " (GPU results unavailable on Vulkan - see progress_report §29)")
 	if not server.ensure_gpu_device():
 		_fail(401, "local RenderingDevice not available")
 		return
@@ -86,7 +86,7 @@ func _ready() -> void:
 	# Set the warm-up prefix explicitly (Phase 4 uses 100); per-pass samples are
 	# cleared at that boundary so averages cover the MEASURED window only.
 	server.gpu_frame_set_warmup(WARMUP_FRAMES)
-	print("GOTOT-NEXT 015.5 p4: warmup=", WARMUP_FRAMES, " measure=", MEASURE_FRAMES)
+	print("GNE 015.5 p4: warmup=", WARMUP_FRAMES, " measure=", MEASURE_FRAMES)
 
 
 func _process(_delta: float) -> void:
@@ -153,7 +153,7 @@ func _process(_delta: float) -> void:
 		probe_wall[frame] = int(st["wall_last_us"])
 		probe_gpu[frame] = int(st["gpu_last_ns"])
 	if frame == 1 or frame == 50 or frame == WARMUP_FRAMES or frame == WARMUP_FRAMES + MEASURE_FRAMES:
-		print("GOTOT-NEXT 015.5 p4: dbg frame=", frame, " wall_last_us=", st["wall_last_us"], " gpu_last_ns=", st["gpu_last_ns"], " frames=", st["frames"])
+		print("GNE 015.5 p4: dbg frame=", frame, " wall_last_us=", st["wall_last_us"], " gpu_last_ns=", st["gpu_last_ns"], " frames=", st["frames"])
 
 
 
@@ -162,37 +162,37 @@ func _finish() -> void:
 	pass_count_ok = int(server.gpu_frame_stats()["measured_frames"])
 	_report(server.gpu_frame_stats())
 	server.gpu_scene_destroy()
-	print("GOTOT-NEXT 015.5 p4: PASS")
+	print("GNE 015.5 p4: PASS")
 	get_tree().quit(0)
 
 
 func _report(st: Dictionary) -> void:
-	print("GOTOT-NEXT 015.5 p4: frames=", st["frames"], " warmup=", st["warmup"], " measured=", st["measured_frames"])
+	print("GNE 015.5 p4: frames=", st["frames"], " warmup=", st["warmup"], " measured=", st["measured_frames"])
 	var names: PackedStringArray = st["pass_names"]
 	var per: PackedFloat64Array = st["pass_cpu_us"]
-	var line := "GOTOT-NEXT 015.5 p4: per-pass wall(us)"
+	var line := "GNE 015.5 p4: per-pass wall(us)"
 	for i in range(mini(names.size(), per.size())):
 		line += " " + names[i] + "=" + str(int(per[i]))
 	print(line)
-	print("GOTOT-NEXT 015.5 p4: pass_sum_us=", st["pass_sum_us"], " pass_share_pct=", int(st["pass_share_pct"]), " frame_total_wall_us=", st["frame_total_wall_us"])
-	print("GOTOT-NEXT 015.5 p4: wall_avg_us=", st["wall_avg_us"], " wall_peak_us=", st["wall_peak_us"], " wall_first_us=", st["wall_first_us"], " warmup_peak_us=", st["warmup_wall_peak_us"])
+	print("GNE 015.5 p4: pass_sum_us=", st["pass_sum_us"], " pass_share_pct=", int(st["pass_share_pct"]), " frame_total_wall_us=", st["frame_total_wall_us"])
+	print("GNE 015.5 p4: wall_avg_us=", st["wall_avg_us"], " wall_peak_us=", st["wall_peak_us"], " wall_first_us=", st["wall_first_us"], " warmup_peak_us=", st["warmup_wall_peak_us"])
 	# GPU nanoseconds are UNAVAILABLE, not zero, when the engine's query pool is
 	# disabled (debug/settings/profiler/max_timestamp_query_elements = 0). The
 	# flag makes that explicit so no reader mistakes "not measured" for "free".
 	if bool(st["gpu_timestamps_available"]):
-		print("GOTOT-NEXT 015.5 p4: gpu_avg_ns=", st["gpu_avg_ns"], " gpu_avg_us=", st["gpu_avg_us"], " gpu_first_ns=", st["gpu_first_ns"])
+		print("GNE 015.5 p4: gpu_avg_ns=", st["gpu_avg_ns"], " gpu_avg_us=", st["gpu_avg_us"], " gpu_first_ns=", st["gpu_first_ns"])
 	else:
-		print("GOTOT-NEXT 015.5 p4: gpu UNAVAILABLE (query pool disabled) - gpu_avg_ns=NA gpu_first_ns=NA")
+		print("GNE 015.5 p4: gpu UNAVAILABLE (query pool disabled) - gpu_avg_ns=NA gpu_first_ns=NA")
 	for f in PROBE_FRAMES:
 		if probe_wall.has(f):
-			print("GOTOT-NEXT 015.5 p4: probe frame=", f, " wall_us=", probe_wall[f], " gpu_ns=", probe_gpu[f])
+			print("GNE 015.5 p4: probe frame=", f, " wall_us=", probe_wall[f], " gpu_ns=", probe_gpu[f])
 	_report_drift()
 
 
 func _report_drift() -> void:
 	var n: int = wall_series.size()
 	if n < 10:
-		print("GOTOT-NEXT 015.5 p4: drift NOT REPORTED (only ", n, " samples; need >= 10)")
+		print("GNE 015.5 p4: drift NOT REPORTED (only ", n, " samples; need >= 10)")
 		return
 	# Compare the first half of the MEASURED window with the second half. The
 	# comparison is made on the ordered series, never on two hand-picked frames.
@@ -205,18 +205,18 @@ func _report_drift() -> void:
 		last_sum += float(wall_series[i])
 	var first_avg: float = first_sum / float(half)
 	var last_avg: float = last_sum / float(maxi(1, n - half))
-	print("GOTOT-NEXT 015.5 p4: drift first_half_avg_us=", int(first_avg), " last_half_avg_us=", int(last_avg), " delta_us=", int(last_avg - first_avg), " samples=", n)
+	print("GNE 015.5 p4: drift first_half_avg_us=", int(first_avg), " last_half_avg_us=", int(last_avg), " delta_us=", int(last_avg - first_avg), " samples=", n)
 	# DET-SAFE SIGNATURE: contains ONLY content that must be reproducible.
 	# Timings (wall_avg_us, drift_us) are MEASUREMENTS, not content, and they
 	# vary run to run - including the SIGN of the drift. A previous revision
 	# folded them into the signature, which made a 2-run DET comparison fail by
 	# construction (this is the same class of bug as the 011 dispatch_us/draw_us
 	# pair, fixed in commit 2). So: content-only sig + a separate timing line.
-	print("GOTOT-NEXT 015.5 p4: timings wall_avg_us=", int(first_avg), " drift_us=", int(last_avg - first_avg), " samples=", n)
-	print("GOTOT-NEXT 015.5 p4: sig=v15.5-p4 warm=", WARMUP_FRAMES, " meas=", MEASURE_FRAMES, " passes=", pass_count_ok)
+	print("GNE 015.5 p4: timings wall_avg_us=", int(first_avg), " drift_us=", int(last_avg - first_avg), " samples=", n)
+	print("GNE 015.5 p4: sig=v15.5-p4 warm=", WARMUP_FRAMES, " meas=", MEASURE_FRAMES, " passes=", pass_count_ok)
 
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 015.5 p4: FAIL code=", code, " ", msg)
+	print("GNE 015.5 p4: FAIL code=", code, " ", msg)
 	get_tree().quit(code)
 

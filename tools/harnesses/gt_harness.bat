@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  gt_harness.bat - GOTOT-NEXT reproduction harness   (ADDITIVE / new file)
+REM  gt_harness.bat - GNE reproduction harness   (ADDITIVE / new file)
 REM
 REM  Why this exists: the per-milestone evidence runners quoted in
 REM  docs/progress_report.md (gt_smoke, gt_007, gt_008, gt_008b, gt_009,
@@ -30,7 +30,7 @@ REM ============================================================================
 setlocal EnableDelayedExpansion
 
 set "GODOT=C:\Users\opc\Documents\AI_ENGINE\godot-master\bin\godot.windows.editor.dev.x86_64.console.exe"
-set "PROJ=C:\Users\opc\Documents\AI_ENGINE\gotot-next\demo\gpu_smoke"
+set "PROJ=C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\demo\gpu_smoke"
 if "%GT_HARNESS_TMP%"=="" (set "TMPC=%TEMP%\gt_harness") else (set "TMPC=%GT_HARNESS_TMP%")
 if "%GT_HARNESS_MAXSEC%"=="" (set "MAXSEC=240") else (set "MAXSEC=%GT_HARNESS_MAXSEC%")
 REM  Optional positional overrides:  gt_harness.bat <scene> [XFAIL] [tmpdir] [maxsec]

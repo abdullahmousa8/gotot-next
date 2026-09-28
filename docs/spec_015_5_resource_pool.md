@@ -1,7 +1,7 @@
-# GOTOT-015.5 — Resource Pool (SPEC DRAFT)
+# GNE-015.5 — Resource Pool (SPEC DRAFT)
 
 **الحالة:** SPEC 015.5 v0.1 DRAFT — بانتظار مراجعة المعماري وتثبيت النهائي.
-**المرجع:** docs/progress_report.md (§26=015، §27=014) + docs/spec_014_gpu_scene_manager.md (نمط الصياغة) + modules/gotot_render/gotot_render_server.* (مبنى 015 عند `56849fa`).
+**المرجع:** docs/progress_report.md (§26=015، §27=014) + docs/spec_014_gpu_scene_manager.md (نمط الصياغة) + modules/gne_render/gne_render_server.* (مبنى 015 عند `56849fa`).
 **قرار المالك:** 2026-09-27 — 015.5 = Resource Pool **APPROVED** (أولوية قصوى). VMA Strategy = **Resource Pool** (بناء داخلي، لا استيراد).
 **المرحلة السابقة:** 6 commits مدفوعة إلى `origin/main` عند `56849fa`، `GT_REGRESS: PASS`.
 
@@ -151,7 +151,7 @@
 | D3-D4 | Signature | ✅ **داخل `v15` + راية `pr`** ⇒ `v15-…-pr1` — §3.9 |
 
 **قرارات نطاق من Owner (2026-09-27):**
-- بادئة السجل `[GOTOT-NEXT]` في C++ (164 موضعاً) ⇒ **مؤجَّلة إلى Phase 2** (ليست نصوصاً تعليقية؛ `gt_015a.bat` يعتمد عليها حرفياً).
+- بادئة السجل `[GNE]` في C++ (164 موضعاً) ⇒ **مؤجَّلة إلى Phase 2** (ليست نصوصاً تعليقية؛ `gt_015a.bat` يعتمد عليها حرفياً).
 - الملفات المحمية الثلاثة (SPEC 014 §7) ⇒ **لا تُلمس**.
 
 **ما لم يُحسم بعد (يُقاس في Phase 1 ثم يُثبَّت، ولا يُخمَّن):** سقف الـVRAM بالبايت، وقياس التحسين (تحسين 30–50% فرضية).

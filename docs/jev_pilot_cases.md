@@ -97,7 +97,7 @@ GNE milestone 011 verifies a scene three ways (strategy 0, 1, 2). The scene
 prints one signature line per run.
 
 The printed line is:
-  GOTOT-NEXT 011-DET sig=v128|st0|m64|gc64|dc64|ic64|cc64|dF0.92076|dB0.95204|cb1|dt1|347/112
+  GNE 011-DET sig=v128|st0|m64|gc64|dc64|ic64|cc64|dF0.92076|dB0.95204|cb1|dt1|347/112
                     ^ everything before this is content                ^ these two are timings
 
 The harness compares the whole line between two runs. It reports det=DIFF on a

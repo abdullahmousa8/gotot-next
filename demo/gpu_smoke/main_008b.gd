@@ -1,8 +1,8 @@
 extends Node
 
-# GOTOT-008B - Multi-Instance Mesh Rendering Proof
+# GNE-008B - Multi-Instance Mesh Rendering Proof
 #
-# Uses the ENTIRE GOTOT-008A real-mesh path unchanged (no API/C++ changes):
+# Uses the ENTIRE GNE-008A real-mesh path unchanged (no API/C++ changes):
 #   gpu_scene_create -> gpu_scene_dispatch -> cull -> compact ->
 #   gpu_mesh_drawargs_finalize -> gpu_mesh_indirect_draw
 #
@@ -26,7 +26,7 @@ const SAMPLE_CENTERS := 800   # final-frame projected-center spot checks
 const MIN_GREEN := 2000       # far above one cube -> multi-instance pixels
 const SUBPIXEL_R_PX := 0.35   # below this projected radius a cube may be 0 px
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
@@ -55,7 +55,7 @@ var _last_cpu_count := 0
 
 
 func _ready() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(50, "server singleton is null")
 		return
@@ -108,8 +108,8 @@ func _ready() -> void:
 		return
 
 	RenderingServer.frame_post_draw.connect(_on_frame_post_draw)
-	print("GOTOT-NEXT 008B: scene ready instances=", INSTANCE_COUNT, " spread=", SPREAD)
-	print("GOTOT-NEXT 008B: camera orbit R=", ORBIT_RADIUS, " H=", ORBIT_HEIGHT)
+	print("GNE 008B: scene ready instances=", INSTANCE_COUNT, " spread=", SPREAD)
+	print("GNE 008B: camera orbit R=", ORBIT_RADIUS, " H=", ORBIT_HEIGHT)
 
 
 func _process(_delta: float) -> void:
@@ -241,7 +241,7 @@ func _process(_delta: float) -> void:
 			green_min = covered
 		if green_max == -1 or covered > green_max:
 			green_max = covered
-		print("GOTOT-NEXT 008B: frame=", frame, " visible=", visible,
+		print("GNE 008B: frame=", frame, " visible=", visible,
 				" cpu=", cpu[0], " args=", last_args, " green_px=", covered)
 
 	if frame == FRAME_LIMIT:
@@ -304,17 +304,17 @@ func _finalize(pixels: PackedByteArray, visible: int, compact: PackedInt32Array)
 	# Determinism intra-run report.
 	var det_ok := deter_args_ok and deter_repeat_ok
 
-	print("GOTOT-NEXT 008B: FINAL visible=", visible, " range=", visible_min, "..", visible_max,
+	print("GNE 008B: FINAL visible=", visible, " range=", visible_min, "..", visible_max,
 			" dynamic=", dynamic_ok)
-	print("GOTOT-NEXT 008B: FINAL args=", last_args)
-	print("GOTOT-NEXT 008B: FINAL green_px=", green_exact, " green_range=", green_min, "..", green_max)
-	print("GOTOT-NEXT 008B: FINAL cpu_reference gpu=", visible, " cpu=", cpu2[0],
+	print("GNE 008B: FINAL args=", last_args)
+	print("GNE 008B: FINAL green_px=", green_exact, " green_range=", green_min, "..", green_max)
+	print("GNE 008B: FINAL cpu_reference gpu=", visible, " cpu=", cpu2[0],
 			" boundary=", cpu2[1], " delta=", absi(visible - cpu2[0]),
 			" certain=", cpu_certain_sorted.size(), " possible=", cpu_possible_sorted.size(),
 			" compact=", compact.size(), " set_ok=", set_ok)
-	print("GOTOT-NEXT 008B: FINAL center_spot checked=", spot[0], " subpixel=", spot[1],
+	print("GNE 008B: FINAL center_spot checked=", spot[0], " subpixel=", spot[1],
 			" matched=", spot[2], " miss=", spot[3])
-	print("GOTOT-NEXT 008B: FINAL determinism drawargs_repeat=", deter_args_ok,
+	print("GNE 008B: FINAL determinism drawargs_repeat=", deter_args_ok,
 			" full_frame_repeat=", deter_repeat_ok, " ok=", det_ok)
 
 	# ---- PASS/FAIL summary ----
@@ -336,10 +336,10 @@ func _finalize(pixels: PackedByteArray, visible: int, compact: PackedInt32Array)
 		return
 
 	var sig := _det_signature(visible, compact, green_exact, spot)
-	print("GOTOT-NEXT 008B-DET ", sig)
+	print("GNE 008B-DET ", sig)
 
 	want_shot = true
-	print("GOTOT-NEXT 008B: EVIDENCE OK")
+	print("GNE 008B: EVIDENCE OK")
 
 
 func _on_frame_post_draw() -> void:
@@ -350,13 +350,13 @@ func _on_frame_post_draw() -> void:
 
 	var shot := get_viewport().get_texture().get_image()
 	if shot.is_empty():
-		print("GOTOT-NEXT 008B: window screenshot NOT EXECUTED (empty image)")
+		print("GNE 008B: window screenshot NOT EXECUTED (empty image)")
 	else:
 		var err := shot.save_png("C:/Users/opc/AppData/Local/Temp/opencode/gt_008b_window.png")
-		print("GOTOT-NEXT 008B: window screenshot saved=", err == OK)
+		print("GNE 008B: window screenshot saved=", err == OK)
 
 	server.gpu_scene_destroy()
-	print("GOTOT-NEXT 008B: PASS")
+	print("GNE 008B: PASS")
 	get_tree().quit(0)
 
 
@@ -499,7 +499,7 @@ func _det_signature(visible: int, compact: PackedInt32Array, green: int, spot: A
 
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 008B: FAIL code=", code, " ", msg)
+	print("GNE 008B: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_scene_destroy()
 	get_tree().quit(code)

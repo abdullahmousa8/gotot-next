@@ -1,7 +1,7 @@
-#ifndef GOTOT_RENDER_H
-#define GOTOT_RENDER_H
+#ifndef GNE_RENDER_H
+#define GNE_RENDER_H
 
-class GototRender {
+class GneRender {
 public:
     static void initialize();
     static void shutdown();

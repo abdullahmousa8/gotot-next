@@ -1,6 +1,6 @@
 # Contract 014 — Buffers
 
-**GOTOT-014 — PASS (2026-09-23).** One shader / one compute pipeline / one uniform set
+**GNE-014 — PASS (2026-09-23).** One shader / one compute pipeline / one uniform set
 (set 0, storage buffers, bindings 0..6). All buffers Vulkan SSBO via the local `RenderingDevice`.
 
 | binding | buffer | size (alloc 1,048,576) | role |

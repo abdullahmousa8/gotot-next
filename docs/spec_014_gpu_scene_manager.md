@@ -1,8 +1,8 @@
-# GOTOT-014 — GPU Scene Manager (SPEC DRAFT)
+# GNE-014 — GPU Scene Manager (SPEC DRAFT)
 
 **الحالة:** SPEC 014 v0.1 DRAFT — بانتظار مراجعة المعماري وتثبيت النهائي.
-**المرجع:** docs/progress_report.md (قسم 24 — 013) + docs/spec_012_production_hzb.md (نمط صياغة SPEC) + modules/gotot_render/gotot_render_server.* (مبنى 013).
-**المرحلة السابقة:** GOTOT-013 — Meshlets + LOD + Cluster Culling (FINAL PASS، commit `7958742` على GitHub).
+**المرجع:** docs/progress_report.md (قسم 24 — 013) + docs/spec_012_production_hzb.md (نمط صياغة SPEC) + modules/gne_render/gne_render_server.* (مبنى 013).
+**المرحلة السابقة:** GNE-013 — Meshlets + LOD + Cluster Culling (FINAL PASS، commit `7958742` على GitHub).
 **قرار المالك:** 2026-09-23 — SPICE 014 = **A: GPU Scene Manager** (توصية Architect).
 
 ---

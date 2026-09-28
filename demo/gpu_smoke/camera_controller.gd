@@ -1,6 +1,6 @@
 extends Camera3D
 
-# FPS-style free camera for the GOTOT demo.
+# FPS-style free camera for the GNE demo.
 # WASD move, Shift up, Ctrl/space-down, mouse look (click to capture/release).
 
 var move_speed := 900.0

@@ -1,6 +1,6 @@
 # Contract 014 — Data Semantics (GPU Scene Manager)
 
-**GOTOT-014 — PASS (2026-09-23).** Additive TEST-ONLY evidence bridge in `modules/gotot_render`.
+**GNE-014 — PASS (2026-09-23).** Additive TEST-ONLY evidence bridge in `modules/gne_render`.
 
 ## Instance record (64 bytes / 16 floats / 4 vec4), unified ID space
 

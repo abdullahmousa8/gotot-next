@@ -1,5 +1,5 @@
-#ifndef GOTOT_RENDER_SERVER_H
-#define GOTOT_RENDER_SERVER_H
+#ifndef GNE_RENDER_SERVER_H
+#define GNE_RENDER_SERVER_H
 
 #include "core/math/color.h"
 #include "core/math/plane.h"
@@ -11,14 +11,14 @@
 #include "core/variant/variant.h"
 #include "servers/rendering/rendering_device.h"
 
-class GototRenderServer : public Object {
-	GDCLASS(GototRenderServer, Object);
+class GneRenderServer : public Object {
+	GDCLASS(GneRenderServer, Object);
 
-	static GototRenderServer *server_singleton;
+	static GneRenderServer *server_singleton;
 
 	RenderingDevice *rendering_device = nullptr;
 
-	// GOTOT-001B: GPU Scene (SoA instance buffers + compute fill).
+	// GNE-001B: GPU Scene (SoA instance buffers + compute fill).
 	int gpu_instance_count = 0;
 	float gpu_scene_spread = 200.0f;
 	bool gpu_scene_valid = false;
@@ -29,7 +29,7 @@ class GototRenderServer : public Object {
 	RID compute_pipeline;
 	RID uniform_set;
 
-	// GOTOT-002: GPU frustum culling.
+	// GNE-002: GPU frustum culling.
 	bool gpu_cull_valid = false;
 	bool frustum_valid = false;
 	Plane frustum_planes[6];
@@ -40,14 +40,14 @@ class GototRenderServer : public Object {
 	RID cull_pipeline;
 	RID cull_uniform_set;
 
-	// GOTOT-003: GPU indirect draw args.
+	// GNE-003: GPU indirect draw args.
 	bool gpu_drawargs_valid = false;
 	RID indirect_args_buffer;
 	RID drawargs_shader;
 	RID drawargs_pipeline;
 	RID drawargs_uniform_set;
 
-	// GOTOT-004: Hierarchical Z occlusion.
+	// GNE-004: Hierarchical Z occlusion.
 	bool gpu_hzb_valid = false;
 	bool camera_view_valid = false;
 	static constexpr int HZB_TEXEL_COUNT = 512;
@@ -72,7 +72,7 @@ class GototRenderServer : public Object {
 	RID hzb_down_uniform_set;
 	float last_vp[16];
 
-	// GOTOT-005: GPU indirect raster draw (VkDrawIndexedIndirect on the compacted list).
+	// GNE-005: GPU indirect raster draw (VkDrawIndexedIndirect on the compacted list).
 	bool gpu_raster_valid = false;
 	static constexpr int RASTER_TARGET_W = 1920;
 	static constexpr int RASTER_TARGET_H = 1080;
@@ -85,19 +85,19 @@ class GototRenderServer : public Object {
 	RID quad_index_buffer;
 	RID quad_index_array;
 
-	// GOTOT-009: real depth buffer (D32_SFLOAT) attached to the raster
+	// GNE-009: real depth buffer (D32_SFLOAT) attached to the raster
 	// framebuffer. The billboard path keeps depth disabled (unchanged
 	// behavior); the real-mesh path tests/writes depth.
 	bool raster_depth_attached = false;
 	int raster_depth_format_value = -1;
 	RID raster_depth_texture;
-	RID raster_viewz_texture; // R32_SFLOAT view-space depth (GOTOT-012 pyramid source).
+	RID raster_viewz_texture; // R32_SFLOAT view-space depth (GNE-012 pyramid source).
 	bool mesh_depth_enabled = false;
 	bool raster_depth_enabled = false;
 
-	// GOTOT-008A: independent REAL MESH path (real vertex buffer + real index
+	// GNE-008A: independent REAL MESH path (real vertex buffer + real index
 	// buffer + real vertex format + indexed indirect draw). Additive only: the
-	// GOTOT-005 billboard path above is never replaced or modified.
+	// GNE-005 billboard path above is never replaced or modified.
 	bool gpu_mesh_valid = false;
 	int mesh_vertex_count = 0;
 	int mesh_index_count = 0;
@@ -113,23 +113,23 @@ class GototRenderServer : public Object {
 	RID mesh_drawargs_pipeline;
 	RID mesh_drawargs_uniform_set;
 
-	// GOTOT-010: multi-mesh batch instance rendering. Adds (ADDITIVE ONLY, never
-	// replaces) a per-instance mesh_id buffer, a 64-slot mesh table (GototMeshDesc),
+	// GNE-010: multi-mesh batch instance rendering. Adds (ADDITIVE ONLY, never
+	// replaces) a per-instance mesh_id buffer, a 64-slot mesh table (GneMeshDesc),
 	// a prefix-sum batch assembly compute path and a multi-draw indirect path.
 	// The 008A/008B/009 mesh path, the 005 billboard path and the 004 culling/HZB/
 	// compaction structure are all untouched.
-	static constexpr int GOTOT_MESH_TABLE_SIZE = 64;
-	static constexpr int GOTOT_MAX_MESH_VERTS = 32768;
-	static constexpr int GOTOT_MAX_MESH_INDICES = 65536;
+	static constexpr int GNE_MESH_TABLE_SIZE = 64;
+	static constexpr int GNE_MAX_MESH_VERTS = 32768;
+	static constexpr int GNE_MAX_MESH_INDICES = 65536;
 	bool gpu_mesh_batch_valid = false;
 	bool gpu_mesh_table_valid = false;
 	int mesh_table_count = 0;
 	int mesh_next_vertex_offset = 0;
 	int mesh_next_index_offset = 0;
 	int last_batch_count = 0;
-	Color mesh_colors[GOTOT_MESH_TABLE_SIZE];
+	Color mesh_colors[GNE_MESH_TABLE_SIZE];
 	RID mesh_id_buffer;              // uint per instance (per-instance mesh_id)
-	RID mesh_table_buffer;           // GototMeshDesc[64] (32 bytes each)
+	RID mesh_table_buffer;           // GneMeshDesc[64] (32 bytes each)
 	RID mesh_color_buffer;           // vec4[64] per-mesh flat color
 	RID batch_count_buffer;          // uint[64] per-mesh visible instance counts
 	RID batch_offset_buffer;         // uint[64] prefix-sum batch offsets
@@ -149,7 +149,7 @@ class GototRenderServer : public Object {
 	RID mesh_010_vertex_array;
 	RID mesh_010_index_array;
 
-	// GOTOT-011: multi-batch grouping + dynamic indirect count. ADDS (over 010,
+	// GNE-011: multi-batch grouping + dynamic indirect count. ADDS (over 010,
 	// additive only) a batch strategy toggle (PER_MESH / GROUPED / REORDERED), a
 	// workgroup-parallel prefix-sum batch assembly pass, <=5 batched draw
 	// commands via a procedural (non-indexed) indirect path, and a dynamic
@@ -169,12 +169,12 @@ class GototRenderServer : public Object {
 	// i.e. group_count == active) the assembler falls back to the 010 indexed
 	// per-mesh multi-draw so every pre-011 scene (incl. main_010) renders
 	// byte-identically regardless of the configured strategy.
-	enum GototBatchStrategy {
-		GOTOT_BATCH_STRATEGY_PER_MESH = 0,
-		GOTOT_BATCH_STRATEGY_GROUPED = 1,
-		GOTOT_BATCH_STRATEGY_REORDERED = 2,
+	enum GneBatchStrategy {
+		GNE_BATCH_STRATEGY_PER_MESH = 0,
+		GNE_BATCH_STRATEGY_GROUPED = 1,
+		GNE_BATCH_STRATEGY_REORDERED = 2,
 	};
-	int mesh_batch_strategy = GOTOT_BATCH_STRATEGY_REORDERED;
+	int mesh_batch_strategy = GNE_BATCH_STRATEGY_REORDERED;
 	bool last_used_group_draw = false;
 	int last_group_count = 0;
 	RID mesh_vertex_storage_buffer; // storage mirror of the shared vertex buffer
@@ -188,7 +188,7 @@ class GototRenderServer : public Object {
 	RID group_batch_pipeline;
 	RID group_batch_uniform_set;
 
-	// GOTOT-012: production HZB (SPEC 012, additive over 004/010/011).
+	// GNE-012: production HZB (SPEC 012, additive over 004/010/011).
 	// A 2048x2048 R32UI 2D-array pyramid (12 levels = log2(2048)+1, the SPEC
 	// minimum) is built EVERY frame from the PREVIOUS frame's actual D32_SFLOAT
 	// raster depth (the production occluder source) plus the optional 004 box
@@ -234,7 +234,7 @@ class GototRenderServer : public Object {
 	RID hzb_prod_occ_set;
 	RID hzb_prod_down_set;
 	RID hzb_depth_sampler;
-	RID hzb_dbg_probe_buffer; // GOTOT-012 diagnostics (count_gt0 / max_inv / probe d / probe ndc).
+	RID hzb_dbg_probe_buffer; // GNE-012 diagnostics (count_gt0 / max_inv / probe d / probe ndc).
 	RID hzb_depth_source_shader;
 	RID hzb_depth_source_pipeline;
 	RID hzb_depth_source_uniform_set;
@@ -251,7 +251,7 @@ class GototRenderServer : public Object {
 	RID phase1_count_buffer;
 	RID hzb_pyramid_data_buffer;
 
-	// GOTOT-013: Meshlets / LOD / cluster culling (SPEC 013). meshoptimizer is
+	// GNE-013: Meshlets / LOD / cluster culling (SPEC 013). meshoptimizer is
 	// used OFFLINE ONLY (tools/meshlet_import builds the .gomlet asset); the
 	// runtime NEVER links meshoptimizer. Outcome is fully additive: loading a
 	// .gomlet mesh uploads storage buffers, a cluster-cull compute pass picks
@@ -293,7 +293,7 @@ class GototRenderServer : public Object {
 	RID ml_raster_pipeline;
 	RID ml_raster_uniform_set;
 
-	// GOTOT-014: GPU Scene Manager (SPEC 014, additive TEST-ONLY evidence
+	// GNE-014: GPU Scene Manager (SPEC 014, additive TEST-ONLY evidence
 	// bridge). A GPU-resident scene database over a unified id space:
 	//   64-byte AoS record per id (transform, bounds, meshlet_ordinal +
 	//   mesh_ref + flags, per-instance LOD config);
@@ -316,7 +316,7 @@ class GototRenderServer : public Object {
 	};
 	bool gpu_scene_mgr_valid = false;
 	int gms_capacity = 0;
-	// --- GOTOT-015.5 Resource Pool state (SPEC 015.5 v0.2) ---
+	// --- GNE-015.5 Resource Pool state (SPEC 015.5 v0.2) ---
 	// Persistent cap per D3-D2. Overflow = hard error, never silent growth.
 	static constexpr int GNE_POOL_PERSISTENT_CAP = 256;
 	// Growth per D3-D3: double up to the cap (64 -> 128 -> 256).
@@ -381,11 +381,11 @@ protected:
 	static void _bind_methods();
 
 public:
-	GototRenderServer();
-	~GototRenderServer();
+	GneRenderServer();
+	~GneRenderServer();
 
-	static void set_server_singleton(GototRenderServer *p_server);
-	static GototRenderServer *get_server_singleton();
+	static void set_server_singleton(GneRenderServer *p_server);
+	static GneRenderServer *get_server_singleton();
 
 	void initialize();
 	void shutdown();
@@ -394,7 +394,7 @@ public:
 	bool ensure_gpu_device();
 	bool is_gpu_ready() const;
 
-	// GOTOT-001B: GPU Scene API.
+	// GNE-001B: GPU Scene API.
 	bool gpu_scene_create(int p_instance_count, float p_spread);
 	bool gpu_scene_dispatch(int p_seed);
 	PackedVector3Array gpu_scene_readback_positions(int p_index, int p_count);
@@ -403,29 +403,29 @@ public:
 	int gpu_scene_get_instance_count() const;
 	void gpu_scene_destroy();
 
-	// GOTOT-002: GPU frustum culling API.
+	// GNE-002: GPU frustum culling API.
 	void gpu_scene_set_camera(const Transform3D &p_camera_transform, const Projection &p_projection);
 	bool gpu_cull_dispatch();
 	int gpu_cull_get_visible_count();
 	PackedInt32Array gpu_cull_get_visibility();
 	PackedVector4Array gpu_scene_get_frustum_planes();
 
-	// GOTOT-003: GPU indirect draw args API.
+	// GNE-003: GPU indirect draw args API.
 	bool gpu_drawargs_finalize();
 	PackedInt32Array gpu_drawargs_read();
 	PackedInt32Array gpu_compact_read();
 
-	// GOTOT-004: HZB occlusion API.
+	// GNE-004: HZB occlusion API.
 	void gpu_scene_set_viewport(float p_viewport_w, float p_viewport_h);
 	void gpu_scene_set_occluders(const Vector<Vector4> &p_occluders);
 	bool gpu_visibility_dispatch();
 
-	// GOTOT-005: GPU indirect raster draw API.
+	// GNE-005: GPU indirect raster draw API.
 	bool gpu_raster_indirect_draw();
 	PackedByteArray gpu_raster_read_pixels();
 	PackedFloat32Array gpu_scene_get_vp();
 
-	// GOTOT-009: real depth buffer API.
+	// GNE-009: real depth buffer API.
 	// The raster framebuffer carries a 1920x1080 D32_SFLOAT depth attachment
 	// cleared to 1.0 (far) every frame; the REAL MESH pipeline (008A) is the
 	// only depth consumer (depth test + write, COMPARE_OP_LESS_OR_EQUAL); the
@@ -460,14 +460,14 @@ public:
 	// may merge into a single capabilities/introspection query in a later
 	// milestone (no change in 009, recorded only).
 
-	// GOTOT-008A: independent real-mesh (indexed indirect) API.
+	// GNE-008A: independent real-mesh (indexed indirect) API.
 	bool gpu_mesh_create();
 	bool gpu_mesh_drawargs_finalize();
 	bool gpu_mesh_indirect_draw();
 	int gpu_mesh_get_index_count() const;
 	int gpu_mesh_get_vertex_count() const;
 
-	// GOTOT-010: batch instance rendering API (TEST-ONLY evidence bridge; not a
+	// GNE-010: batch instance rendering API (TEST-ONLY evidence bridge; not a
 	// shipping frame-data path - the authoritative instance transform source
 	// remains the GPU scene dispatch from 001B).
 	//
@@ -504,9 +504,9 @@ public:
 	// The flat color the batch fragment shader uses for the given mesh.
 	Color gpu_mesh_get_mesh_color(int p_mesh_id) const;
 
-	// GOTOT-011: batch strategy + multi-batch evidence API (TEST-ONLY). All of
+	// GNE-011: batch strategy + multi-batch evidence API (TEST-ONLY). All of
 	// the 011 extra getters below are pure readback bridges of the GPU state
-	// produced by the previous gpu_mesh_batch_dispatch. See GototBatchStrategy.
+	// produced by the previous gpu_mesh_batch_dispatch. See GneBatchStrategy.
 	// Sets the batch strategy for the NEXT dispatch. Returns false when invalid.
 	bool gpu_mesh_set_batch_strategy(int p_strategy);
 	// The strategy currently configured (default REORDERED).
@@ -525,7 +525,7 @@ public:
 	// (64 under PER_MESH with 64 visible meshes; <=5 under GROUPED/REORDERED).
 	int gpu_mesh_get_draw_call_count() const;
 
-	// GOTOT-012: production HZB API (TEST-ONLY evidence bridge, additive over
+	// GNE-012: production HZB API (TEST-ONLY evidence bridge, additive over
 	// the 004/010/011 paths - when not created the pre-012 dispatch behavior is
 	// byte-identical, which keeps every 001A..011 signature unchanged).
 	// Creates the 2048^2 x 12-level R32UI pyramid, the phase-1/phase-2 shaders
@@ -539,7 +539,7 @@ public:
 	bool gpu_hzb_build();
 	// TWO-PHASE production dispatch: phase 1 = frustum-only cull into a phase-1
 	// list, phase 2 = HZB occlusion over that list writing the FINAL
-	// compact[]/visible_count[] consumed by gpu_mesh_batch_dispatch (GOTOT-011).
+	// compact[]/visible_count[] consumed by gpu_mesh_batch_dispatch (GNE-011).
 	// Returns false when the production resources are not available.
 	bool gpu_visibility_prod_dispatch();
 	// Enables/disables the temporal-coherence reuse of the previous-frame pyramid
@@ -558,7 +558,7 @@ public:
 	// (static camera + static geometry => exact pyramid reuse).
 	bool gpu_hzb_get_coherent() const;
 
-	// Verify-bridge probes (GOTOT-012 debug): read the UBO hzb_valid the phase-2
+	// Verify-bridge probes (GNE-012 debug): read the UBO hzb_valid the phase-2
 	// test sees, and one pyramid level-0 texel (inverted depth, far - z_view).
 	int gpu_hzb_dbg_valid();
 	int gpu_hzb_dbg_level0(int p_x, int p_y);
@@ -568,7 +568,7 @@ public:
 	PackedInt32Array gpu_hzb_dbg_scan_buffer(int p_level);
 	PackedInt32Array gpu_hzb_dbg_sim2();
 
-	// GOTOT-013: meshlet API (TEST-ONLY evidence bridge; additive - until
+	// GNE-013: meshlet API (TEST-ONLY evidence bridge; additive - until
 	// gpu_meshlet_load runs every earlier signature is byte-identical).
 	// Loads a GOTOML11 ".gomlet" mesh (cf. tools/meshlet_import/main.cpp),
 	// builds the GPU buffers/shader/uniform sets and bakes in the current GPU
@@ -598,7 +598,7 @@ public:
 	PackedFloat32Array gpu_meshlet_raster_evidence();
 	void gpu_meshlet_destroy();
 
-	// GOTOT-014: GPU Scene Manager API (TEST-ONLY evidence bridge; additive -
+	// GNE-014: GPU Scene Manager API (TEST-ONLY evidence bridge; additive -
 	// every pre-014 signature is byte-identical until a manager alloc runs).
 	// Allocates a GPU scene database of p_max_instances unified ids (record
 	// buffer + active list + snapshot + 16 MB update ring). Returns false when
@@ -633,7 +633,7 @@ public:
 	Dictionary gpu_scene_manager_get_wave_stats() const;
 	void gpu_scene_manager_destroy();
 
-	// --- GOTOT-015.5: Resource Pool (SPEC 015.5 v0.2, D3-D1..D4 resolved) ---
+	// --- GNE-015.5: Resource Pool (SPEC 015.5 v0.2, D3-D1..D4 resolved) ---
 	// A REAL transient pool: one backing buffer, bump cursor + free-list, with
 	// lifetime-based aliasing (SPEC §3.1/§3.9). This is the first milestone in
 	// the module that allocates pool memory at all - the 015 "pool" was CPU
@@ -656,7 +656,7 @@ public:
 	// after their buffers yields "Attempted to free invalid ID").
 	void gpu_pool_destroy();
 
-	// --- GOTOT-015.5 Phase 4: frame-time drift measurement (Test-only) ---
+	// --- GNE-015.5 Phase 4: frame-time drift measurement (Test-only) ---
 	// Additive measurement API wrapping the engine's REAL timestamp API
 	// (RD::capture_timestamp / get_captured_timestamp_gpu_time, nanoseconds)
 	// plus CPU-side per-pass deltas. No existing API or signature changes.
@@ -687,7 +687,7 @@ public:
 	void gpu_frame_end();
 	Dictionary gpu_frame_stats() const;
 
-	// GOTOT-015: Render Graph (SPEC 015, additive TEST-ONLY evidence bridge;
+	// GNE-015: Render Graph (SPEC 015, additive TEST-ONLY evidence bridge;
 	// pure ADD over every pre-015 signature - before gpu_rg_create runs every
 	// earlier path is byte-identical). Brings declarative DAG pass management
 	// to the existing GPU passes: nodes = passes, edges = resources. Compile

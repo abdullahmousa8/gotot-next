@@ -1,4 +1,4 @@
-#include "gotot_render_server.h"
+#include "gne_render_server.h"
 
 #include "core/os/memory.h"
 #include "core/io/file_access.h"
@@ -6,13 +6,13 @@
 #include "core/os/os.h"
 #include "servers/rendering/rendering_server.h"
 
-GototRenderServer *GototRenderServer::server_singleton = nullptr;
+GneRenderServer *GneRenderServer::server_singleton = nullptr;
 
 namespace {
-// GOTOT-004: uniform/UBO data filled on every gpu_scene_set_camera and uploaded to view_ubo.
+// GNE-004: uniform/UBO data filled on every gpu_scene_set_camera and uploaded to view_ubo.
 // Mirrors the GLSL ViewBlock (std140): mat4 vp + mat4 view + vec4 planes[6] + vec4 viewport
 // + uint occ_count + float far_plane + 2 pads = 256 bytes, column-major matrices.
-struct GototViewData {
+struct GneViewData {
 	float vp[16];
 	float view[16];
 	float planes[6][4];
@@ -30,7 +30,7 @@ const char *gpu_scene_compute_glsl = R"(
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(push_constant, std430) uniform GototSceneParams {
+layout(push_constant, std430) uniform GneSceneParams {
 	uint instance_count;
 	uint seed;
 	float spread;
@@ -89,7 +89,7 @@ void main() {
 }
 )";
 
-// GOTOT-002 + GOTOT-004: frustum + HZB occlusion in one pass. Planes and view
+// GNE-002 + GNE-004: frustum + HZB occlusion in one pass. Planes and view
 // data come from the ViewData UBO (set 0 binding 5); only instance_count is pushed.
 const char *gpu_cull_compute_glsl = R"(
 #version 450
@@ -196,7 +196,7 @@ void main() {
 }
 )";
 
-// GOTOT-004: clear HZB layer 0.
+// GNE-004: clear HZB layer 0.
 const char *gpu_hzb_clear_compute_glsl = R"(
 #version 450
 
@@ -220,7 +220,7 @@ void main() {
 }
 )";
 
-// GOTOT-004: rasterize occluder boxes (projected to the square HZB grid) into layer 0.
+// GNE-004: rasterize occluder boxes (projected to the square HZB grid) into layer 0.
 // Depth is inverted (far - view_z); imageAtomicMax keeps the nearest depth.
 const char *gpu_hzb_occ_compute_glsl = R"(
 #version 450
@@ -299,7 +299,7 @@ void main() {
 }
 )";
 
-// GOTOT-004: downsample one HZB level (2x2 max) into the next.
+// GNE-004: downsample one HZB level (2x2 max) into the next.
 const char *gpu_hzb_down_compute_glsl = R"(
 #version 450
 #extension GL_EXT_samplerless_texture_functions : enable
@@ -332,7 +332,7 @@ void main() {
 }
 )";
 
-// GOTOT-003: single-thread pass that fills a VkDrawIndexedIndirectCommand.
+// GNE-003: single-thread pass that fills a VkDrawIndexedIndirectCommand.
 const char *gpu_drawargs_compute_glsl = R"(
 #version 450
 #extension GL_EXT_samplerless_texture_functions : enable
@@ -362,7 +362,7 @@ void main() {
 }
 )";
 
-// GOTOT-005: vertex shader that expands one billboard quad per visible instance.
+// GNE-005: vertex shader that expands one billboard quad per visible instance.
 // The original scene index is fetched from the compacted list (binding 0); the
 // instance transform comes from the GPU Scene transform buffer (binding 1).
 const char *gpu_raster_vert_glsl = R"(
@@ -408,12 +408,12 @@ void main() {
 }
 )";
 
-// GOTOT-005: magenta billboards, no blending, no depth.
+// GNE-005: magenta billboards, no blending, no depth.
 const char *gpu_raster_frag_glsl = R"(
 #version 450
 
 layout(location = 0) out vec4 out_color;
-// GOTOT-012: view-space depth copy for the production pyramid (z_view).
+// GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
 
 void main() {
@@ -422,7 +422,7 @@ void main() {
 }
 )";
 
-// GOTOT-008A: real-mesh draw args. Reuses the exact GOTOT-003 indirect argument
+// GNE-008A: real-mesh draw args. Reuses the exact GNE-003 indirect argument
 // system/buffer (set 0 binding 0 = args, binding 1 = visible count), but the
 // index_count is supplied at dispatch time instead of being hardcoded, so the
 // mesh path can generalize later without introducing a mesh table now.
@@ -459,7 +459,7 @@ void main() {
 }
 )";
 
-// GOTOT-008A: real geometry vertex transform. The original scene index comes
+// GNE-008A: real geometry vertex transform. The original scene index comes
 // from the existing compacted list; the position is a REAL vertex attribute
 // fetched from a REAL vertex buffer (not a procedural gl_VertexIndex expansion).
 const char *gpu_mesh_vert_glsl = R"(
@@ -497,13 +497,13 @@ void main() {
 }
 )";
 
-// GOTOT-008A: flat green real geometry (visually distinct from the magenta
+// GNE-008A: flat green real geometry (visually distinct from the magenta
 // billboard path). No lighting, no materials, no textures.
 const char *gpu_mesh_frag_glsl = R"(
 #version 450
 
 layout(location = 0) out vec4 out_color;
-// GOTOT-012: view-space depth copy for the production pyramid (z_view).
+// GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
 
 void main() {
@@ -512,10 +512,10 @@ void main() {
 }
 )";
 
-// GOTOT-010: CPU<->GPU mesh table descriptor. Mirrors GototMeshDesc (32 bytes,
+// GNE-010: CPU<->GPU mesh table descriptor. Mirrors GneMeshDesc (32 bytes,
 // std430-compatible: 6x uint32/int32 then 2 reserved uint32). The batch assembly
 // compute shader reads it (set 0 binding 1, array of this struct).
-struct GototMeshDesc {
+struct GneMeshDesc {
 	uint32_t index_buffer_slot;
 	uint32_t vertex_buffer_slot;
 	uint32_t index_count;
@@ -525,9 +525,9 @@ struct GototMeshDesc {
 	uint32_t reserved[2];
 };
 
-// GOTOT-010: palette-based flat colors per mesh. mesh 0 keeps the 008A/009 green
+// GNE-010: palette-based flat colors per mesh. mesh 0 keeps the 008A/009 green
 // so the cube evidence matches earlier milestones; meshes 1..3 use distinct hues.
-Color gotot_mesh_palette(int p_mesh_id) {
+Color gne_mesh_palette(int p_mesh_id) {
 	switch (p_mesh_id) {
 		case 0:
 			return Color(0.15f, 0.85f, 0.35f);
@@ -540,7 +540,7 @@ Color gotot_mesh_palette(int p_mesh_id) {
 	}
 }
 
-// GOTOT-010 pass 1: per-mesh counting. One thread per VISIBLE instance reads its
+// GNE-010 pass 1: per-mesh counting. One thread per VISIBLE instance reads its
 // mesh_id (from the per-instance mesh_id buffer) and atoms the count for that
 // mesh into batch_count[mesh], while staging the original scene index into the
 // per-mesh scratch chunk. Ordering within a mesh is irrelevant (7.2: prefix sum
@@ -591,7 +591,7 @@ void main() {
 }
 )";
 
-// GOTOT-011 pass 2: workgroup-parallel prefix sum + batch assembly + grouping.
+// GNE-011 pass 2: workgroup-parallel prefix sum + batch assembly + grouping.
 // One workgroup (64 threads = one per mesh table slot) computes:
 //   1. exClusive batch offsets via a Hillis-Steele inclusive scan (the 011
 //      replacement for the 010 single-thread loop) - fully deterministic, same
@@ -619,7 +619,7 @@ layout(push_constant, std430) uniform BatchAssembleParams {
 }
 params;
 
-struct GototMeshDescStd430 {
+struct GneMeshDescStd430 {
 	uint index_buffer_slot;
 	uint vertex_buffer_slot;
 	uint index_count;
@@ -636,7 +636,7 @@ layout(std430, set = 0, binding = 0) buffer BatchCountBuffer {
 batch_count;
 
 layout(std430, set = 0, binding = 1) buffer MeshTableBlock {
-	GototMeshDescStd430 table[64];
+	GneMeshDescStd430 table[64];
 }
 mesh_table;
 
@@ -722,7 +722,7 @@ void main() {
 				batch_instances.instances[excl + k] = scratch.data[tid * params.scratch_stride + k];
 			}
 			uint base = actexcl * 5u;
-			GototMeshDescStd430 d = mesh_table.table[tid];
+			GneMeshDescStd430 d = mesh_table.table[tid];
 			batch_args.args[base + 0u] = d.index_count;
 			batch_args.args[base + 1u] = c;
 			batch_args.args[base + 2u] = d.first_index;
@@ -779,7 +779,7 @@ void main() {
 }
 )";
 
-// GOTOT-010: multi-mesh batch vertex shader. gl_InstanceIndex includes the
+// GNE-010: multi-mesh batch vertex shader. gl_InstanceIndex includes the
 // VkDrawIndexedIndirectCommand.first_instance base, so batch_instances[]
 // (concatenated compact reordered list) maps the instance straight back to its
 // original scene index -> transform. The mesh_id is forwarded flat per-instance
@@ -828,7 +828,7 @@ void main() {
 }
 )";
 
-// GOTOT-010: per-mesh flat color (mesh color table binding 4). GOTOT-011 adds
+// GNE-010: per-mesh flat color (mesh color table binding 4). GNE-011 adds
 // early-Z: layout(early_fragment_tests) lets the fixed-function depth/stencil
 // reject occluded fragments BEFORE shading (the depth test/write pipeline state
 // is unchanged - surviving pixels keep the exact same output/depth, so the 010
@@ -846,7 +846,7 @@ layout(std430, set = 0, binding = 4) buffer MeshColorBuffer {
 mesh_colors;
 
 layout(location = 0) out vec4 out_color;
-// GOTOT-012: view-space depth copy for the production pyramid (z_view).
+// GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
 
 void main() {
@@ -855,7 +855,7 @@ void main() {
 }
 )";
 
-// GOTOT-011: procedural (non-indexed) batch vertex shader used by the GROUPED /
+// GNE-011: procedural (non-indexed) batch vertex shader used by the GROUPED /
 // REORDERED multi-batch draw. One VkDrawIndirectCommand covers every instance of
 // every member mesh of a group: command.vertexCount == the largest member
 // index_count and each instance picks its OWN sub-range through the mesh table;
@@ -865,7 +865,7 @@ void main() {
 const char *gpu_mesh_group_batch_vert_glsl = R"(
 #version 450
 
-struct GototMeshDescStd430 {
+struct GneMeshDescStd430 {
 	uint index_buffer_slot;
 	uint vertex_buffer_slot;
 	uint index_count;
@@ -904,7 +904,7 @@ layout(std430, set = 0, binding = 3) buffer MeshIdBuffer {
 meshids;
 
 layout(std430, set = 0, binding = 5) buffer MeshTableBlock {
-	GototMeshDescStd430 table[64];
+	GneMeshDescStd430 table[64];
 }
 mesh_table;
 
@@ -923,7 +923,7 @@ layout(location = 1) flat out uint v_mesh_id;
 void main() {
 	uint orig = batch_instances.instances[gl_InstanceIndex];
 	uint m = meshids.mesh_id[orig];
-	GototMeshDescStd430 d = mesh_table.table[m];
+	GneMeshDescStd430 d = mesh_table.table[m];
 	if (gl_VertexIndex >= d.index_count) {
 		gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
 		v_mesh_id = m;
@@ -939,7 +939,7 @@ void main() {
 }
 )";
 
-// GOTOT-012: build HZB base layer by sampling the PREVIOUS frame's D32_SFLOAT
+// GNE-012: build HZB base layer by sampling the PREVIOUS frame's D32_SFLOAT
 // depth. Given A = projection.columns[2][2], B = projection.columns[3][2] the
 // Godot 4 perspective maps clip.z = A*z_cam + B, clip.w = -z_cam, so
 // ndc_z = -A + B/z_view -> z_view = B / (A + ndc_z) (device depth d -> ndc
@@ -1044,7 +1044,7 @@ void main() {
 }
 )";
 
-// GOTOT-012 (FINAL pyramid source): OCCLUDER-BOX rasterization. The pyramid is
+// GNE-012 (FINAL pyramid source): OCCLUDER-BOX rasterization. The pyramid is
 // built by projecting each registered occluder's world-space AABB into the
 // view (matching exactly what 004 proved reliable) and writing its near-face
 // inverted depth over every texel of every level that the projected box
@@ -1154,7 +1154,7 @@ void main() {
 }
 )";
 
-// GOTOT-012 phase 1: FRUSTUM-ONLY cull. Every instance is tested against the 6
+// GNE-012 phase 1: FRUSTUM-ONLY cull. Every instance is tested against the 6
 // frustum planes (no HZB here - the pyramid is consumed by phase 2 only); each
 // survivor is appended to the phase-1 list and every instance's visibility flag
 // is written. phase2 (running over this list) later decides true survivors.
@@ -1227,7 +1227,7 @@ void main() {
 }
 )";
 
-// GOTOT-012 phase 2: HZB occlusion over ALL instances (run inside the same
+// GNE-012 phase 2: HZB occlusion over ALL instances (run inside the same
 // submission as the pyramid build). Each instance frustum-checks itself too
 // (phase 1 remains as the frustum-only EVIDENCE count). The bounding sphere of
 // each instance is projected and tested against the 12-level pyramid exactly
@@ -1350,7 +1350,7 @@ void main() {
 				vis = 0;
 			}
 
-			// GOTOT-012 debug: dump instance 91's occlusion math into the probe
+			// GNE-012 debug: dump instance 91's occlusion math into the probe
 			// buffer (level, pyramid max_inv, sphere_inv, texel x*2048+y).
 			if (j == 91u) {
 				dprobe.pcount = uint(level);
@@ -1369,165 +1369,165 @@ void main() {
 )";
 } // namespace
 
-void GototRenderServer::_bind_methods() {
-	ClassDB::bind_static_method("GototRenderServer", D_METHOD("get_server_singleton"), &GototRenderServer::get_server_singleton);
-	ClassDB::bind_method(D_METHOD("initialize"), &GototRenderServer::initialize);
-	ClassDB::bind_method(D_METHOD("shutdown"), &GototRenderServer::shutdown);
-	ClassDB::bind_method(D_METHOD("is_initialized"), &GototRenderServer::is_initialized);
-	ClassDB::bind_method(D_METHOD("ensure_gpu_device"), &GototRenderServer::ensure_gpu_device);
-	ClassDB::bind_method(D_METHOD("is_gpu_ready"), &GototRenderServer::is_gpu_ready);
+void GneRenderServer::_bind_methods() {
+	ClassDB::bind_static_method("GneRenderServer", D_METHOD("get_server_singleton"), &GneRenderServer::get_server_singleton);
+	ClassDB::bind_method(D_METHOD("initialize"), &GneRenderServer::initialize);
+	ClassDB::bind_method(D_METHOD("shutdown"), &GneRenderServer::shutdown);
+	ClassDB::bind_method(D_METHOD("is_initialized"), &GneRenderServer::is_initialized);
+	ClassDB::bind_method(D_METHOD("ensure_gpu_device"), &GneRenderServer::ensure_gpu_device);
+	ClassDB::bind_method(D_METHOD("is_gpu_ready"), &GneRenderServer::is_gpu_ready);
 
-	ClassDB::bind_method(D_METHOD("gpu_scene_create", "instance_count", "spread"), &GototRenderServer::gpu_scene_create);
-	ClassDB::bind_method(D_METHOD("gpu_scene_dispatch", "seed"), &GototRenderServer::gpu_scene_dispatch);
-	ClassDB::bind_method(D_METHOD("gpu_scene_readback_positions", "index", "count"), &GototRenderServer::gpu_scene_readback_positions);
-	ClassDB::bind_method(D_METHOD("gpu_scene_readback_scales", "index", "count"), &GototRenderServer::gpu_scene_readback_scales);
-	ClassDB::bind_method(D_METHOD("gpu_scene_stats"), &GototRenderServer::gpu_scene_stats);
-	ClassDB::bind_method(D_METHOD("gpu_scene_get_instance_count"), &GototRenderServer::gpu_scene_get_instance_count);
-	ClassDB::bind_method(D_METHOD("gpu_scene_destroy"), &GototRenderServer::gpu_scene_destroy);
+	ClassDB::bind_method(D_METHOD("gpu_scene_create", "instance_count", "spread"), &GneRenderServer::gpu_scene_create);
+	ClassDB::bind_method(D_METHOD("gpu_scene_dispatch", "seed"), &GneRenderServer::gpu_scene_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_scene_readback_positions", "index", "count"), &GneRenderServer::gpu_scene_readback_positions);
+	ClassDB::bind_method(D_METHOD("gpu_scene_readback_scales", "index", "count"), &GneRenderServer::gpu_scene_readback_scales);
+	ClassDB::bind_method(D_METHOD("gpu_scene_stats"), &GneRenderServer::gpu_scene_stats);
+	ClassDB::bind_method(D_METHOD("gpu_scene_get_instance_count"), &GneRenderServer::gpu_scene_get_instance_count);
+	ClassDB::bind_method(D_METHOD("gpu_scene_destroy"), &GneRenderServer::gpu_scene_destroy);
 
-	ClassDB::bind_method(D_METHOD("gpu_scene_set_camera", "camera_transform", "projection"), &GototRenderServer::gpu_scene_set_camera);
-	ClassDB::bind_method(D_METHOD("gpu_cull_dispatch"), &GototRenderServer::gpu_cull_dispatch);
-	ClassDB::bind_method(D_METHOD("gpu_cull_get_visible_count"), &GototRenderServer::gpu_cull_get_visible_count);
-	ClassDB::bind_method(D_METHOD("gpu_cull_get_visibility"), &GototRenderServer::gpu_cull_get_visibility);
-	ClassDB::bind_method(D_METHOD("gpu_scene_get_frustum_planes"), &GototRenderServer::gpu_scene_get_frustum_planes);
+	ClassDB::bind_method(D_METHOD("gpu_scene_set_camera", "camera_transform", "projection"), &GneRenderServer::gpu_scene_set_camera);
+	ClassDB::bind_method(D_METHOD("gpu_cull_dispatch"), &GneRenderServer::gpu_cull_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_cull_get_visible_count"), &GneRenderServer::gpu_cull_get_visible_count);
+	ClassDB::bind_method(D_METHOD("gpu_cull_get_visibility"), &GneRenderServer::gpu_cull_get_visibility);
+	ClassDB::bind_method(D_METHOD("gpu_scene_get_frustum_planes"), &GneRenderServer::gpu_scene_get_frustum_planes);
 
-	ClassDB::bind_method(D_METHOD("gpu_drawargs_finalize"), &GototRenderServer::gpu_drawargs_finalize);
-	ClassDB::bind_method(D_METHOD("gpu_drawargs_read"), &GototRenderServer::gpu_drawargs_read);
-	ClassDB::bind_method(D_METHOD("gpu_compact_read"), &GototRenderServer::gpu_compact_read);
+	ClassDB::bind_method(D_METHOD("gpu_drawargs_finalize"), &GneRenderServer::gpu_drawargs_finalize);
+	ClassDB::bind_method(D_METHOD("gpu_drawargs_read"), &GneRenderServer::gpu_drawargs_read);
+	ClassDB::bind_method(D_METHOD("gpu_compact_read"), &GneRenderServer::gpu_compact_read);
 
-	ClassDB::bind_method(D_METHOD("gpu_scene_set_viewport", "viewport_w", "viewport_h"), &GototRenderServer::gpu_scene_set_viewport);
-	ClassDB::bind_method(D_METHOD("gpu_scene_set_occluders", "occluders"), &GototRenderServer::gpu_scene_set_occluders);
-	ClassDB::bind_method(D_METHOD("gpu_visibility_dispatch"), &GototRenderServer::gpu_visibility_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_scene_set_viewport", "viewport_w", "viewport_h"), &GneRenderServer::gpu_scene_set_viewport);
+	ClassDB::bind_method(D_METHOD("gpu_scene_set_occluders", "occluders"), &GneRenderServer::gpu_scene_set_occluders);
+	ClassDB::bind_method(D_METHOD("gpu_visibility_dispatch"), &GneRenderServer::gpu_visibility_dispatch);
 
-	ClassDB::bind_method(D_METHOD("gpu_hzb_prod_create"), &GototRenderServer::gpu_hzb_prod_create);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_build"), &GototRenderServer::gpu_hzb_build);
-	ClassDB::bind_method(D_METHOD("gpu_visibility_prod_dispatch"), &GototRenderServer::gpu_visibility_prod_dispatch);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_enable_temporal", "enabled"), &GototRenderServer::gpu_hzb_enable_temporal);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_set_occluders", "occluders"), &GototRenderServer::gpu_hzb_set_occluders);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_get_level_count"), &GototRenderServer::gpu_hzb_get_level_count);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_get_phase_counts"), &GototRenderServer::gpu_hzb_get_phase_counts);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_get_coherent"), &GototRenderServer::gpu_hzb_get_coherent);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_valid"), &GototRenderServer::gpu_hzb_dbg_valid);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_level0", "x", "y"), &GototRenderServer::gpu_hzb_dbg_level0);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_probe"), &GototRenderServer::gpu_hzb_dbg_probe);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_level0"), &GototRenderServer::gpu_hzb_dbg_scan_level0);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_level1", "level"), &GototRenderServer::gpu_hzb_dbg_scan_level1);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_buffer", "level"), &GototRenderServer::gpu_hzb_dbg_scan_buffer);
-	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_sim2"), &GototRenderServer::gpu_hzb_dbg_sim2);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_prod_create"), &GneRenderServer::gpu_hzb_prod_create);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_build"), &GneRenderServer::gpu_hzb_build);
+	ClassDB::bind_method(D_METHOD("gpu_visibility_prod_dispatch"), &GneRenderServer::gpu_visibility_prod_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_enable_temporal", "enabled"), &GneRenderServer::gpu_hzb_enable_temporal);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_set_occluders", "occluders"), &GneRenderServer::gpu_hzb_set_occluders);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_get_level_count"), &GneRenderServer::gpu_hzb_get_level_count);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_get_phase_counts"), &GneRenderServer::gpu_hzb_get_phase_counts);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_get_coherent"), &GneRenderServer::gpu_hzb_get_coherent);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_valid"), &GneRenderServer::gpu_hzb_dbg_valid);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_level0", "x", "y"), &GneRenderServer::gpu_hzb_dbg_level0);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_probe"), &GneRenderServer::gpu_hzb_dbg_probe);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_level0"), &GneRenderServer::gpu_hzb_dbg_scan_level0);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_level1", "level"), &GneRenderServer::gpu_hzb_dbg_scan_level1);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_scan_buffer", "level"), &GneRenderServer::gpu_hzb_dbg_scan_buffer);
+	ClassDB::bind_method(D_METHOD("gpu_hzb_dbg_sim2"), &GneRenderServer::gpu_hzb_dbg_sim2);
 
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_alloc", "max_instances"), &GototRenderServer::gpu_scene_manager_alloc);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_set_instances", "instances"), &GototRenderServer::gpu_scene_manager_set_instances);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_update", "deltas"), &GototRenderServer::gpu_scene_manager_update);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_dispatch"), &GototRenderServer::gpu_scene_manager_dispatch);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_stats"), &GototRenderServer::gpu_scene_manager_get_stats);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_draw_counts"), &GototRenderServer::gpu_scene_manager_get_draw_counts);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_snapshot", "count"), &GototRenderServer::gpu_scene_manager_get_snapshot);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_active_ids", "count"), &GototRenderServer::gpu_scene_manager_get_active_ids);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_wave_stats"), &GototRenderServer::gpu_scene_manager_get_wave_stats);
-	ClassDB::bind_method(D_METHOD("gpu_scene_manager_destroy"), &GototRenderServer::gpu_scene_manager_destroy);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_alloc", "max_instances"), &GneRenderServer::gpu_scene_manager_alloc);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_set_instances", "instances"), &GneRenderServer::gpu_scene_manager_set_instances);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_update", "deltas"), &GneRenderServer::gpu_scene_manager_update);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_dispatch"), &GneRenderServer::gpu_scene_manager_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_stats"), &GneRenderServer::gpu_scene_manager_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_draw_counts"), &GneRenderServer::gpu_scene_manager_get_draw_counts);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_snapshot", "count"), &GneRenderServer::gpu_scene_manager_get_snapshot);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_active_ids", "count"), &GneRenderServer::gpu_scene_manager_get_active_ids);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_get_wave_stats"), &GneRenderServer::gpu_scene_manager_get_wave_stats);
+	ClassDB::bind_method(D_METHOD("gpu_scene_manager_destroy"), &GneRenderServer::gpu_scene_manager_destroy);
 
-	// GOTOT-015: Render Graph (additive TEST-ONLY bridge; see header @598).
-	ClassDB::bind_method(D_METHOD("gpu_rg_create"), &GototRenderServer::gpu_rg_create);
-	ClassDB::bind_method(D_METHOD("gpu_rg_add_pass", "name", "kind", "in_res", "out_res"), &GototRenderServer::gpu_rg_add_pass);
-	ClassDB::bind_method(D_METHOD("gpu_rg_add_edge", "from", "to", "resource", "bytes"), &GototRenderServer::gpu_rg_add_edge);
-	ClassDB::bind_method(D_METHOD("gpu_rg_compile"), &GototRenderServer::gpu_rg_compile);
-	ClassDB::bind_method(D_METHOD("gpu_rg_execute"), &GototRenderServer::gpu_rg_execute);
-	ClassDB::bind_method(D_METHOD("gpu_rg_get_stats"), &GototRenderServer::gpu_rg_get_stats);
-	ClassDB::bind_method(D_METHOD("gpu_rg_dump"), &GototRenderServer::gpu_rg_dump);
-	ClassDB::bind_method(D_METHOD("gpu_rg_destroy"), &GototRenderServer::gpu_rg_destroy);
-	// GOTOT-015.5: Resource Pool (SPEC 015.5 v0.2) - real allocation + aliasing.
-	ClassDB::bind_method(D_METHOD("gpu_pool_create", "bytes"), &GototRenderServer::gpu_pool_create);
-	ClassDB::bind_method(D_METHOD("gpu_pool_alloc", "bytes", "first_pass", "last_pass", "tag"), &GototRenderServer::gpu_pool_alloc);
-	ClassDB::bind_method(D_METHOD("gpu_pool_free", "index"), &GototRenderServer::gpu_pool_free);
-	ClassDB::bind_method(D_METHOD("gpu_pool_persistent_alloc", "bytes", "tag"), &GototRenderServer::gpu_pool_persistent_alloc);
-	ClassDB::bind_method(D_METHOD("gpu_pool_stats"), &GototRenderServer::gpu_pool_stats);
-	ClassDB::bind_method(D_METHOD("gpu_pool_verify", "tag", "value"), &GototRenderServer::gpu_pool_verify);
-	ClassDB::bind_method(D_METHOD("gpu_pool_destroy"), &GototRenderServer::gpu_pool_destroy);
-	// GOTOT-015.5 Phase 4: frame-time drift measurement (Test-only, additive).
-	ClassDB::bind_method(D_METHOD("gpu_frame_reset"), &GototRenderServer::gpu_frame_reset);
-	ClassDB::bind_method(D_METHOD("gpu_frame_set_warmup", "warmup"), &GototRenderServer::gpu_frame_set_warmup);
-	ClassDB::bind_method(D_METHOD("gpu_frame_begin"), &GototRenderServer::gpu_frame_begin);
-	ClassDB::bind_method(D_METHOD("gpu_frame_mark", "pass"), &GototRenderServer::gpu_frame_mark);
-	ClassDB::bind_method(D_METHOD("gpu_frame_end"), &GototRenderServer::gpu_frame_end);
-	ClassDB::bind_method(D_METHOD("gpu_frame_stats"), &GototRenderServer::gpu_frame_stats);
+	// GNE-015: Render Graph (additive TEST-ONLY bridge; see header @598).
+	ClassDB::bind_method(D_METHOD("gpu_rg_create"), &GneRenderServer::gpu_rg_create);
+	ClassDB::bind_method(D_METHOD("gpu_rg_add_pass", "name", "kind", "in_res", "out_res"), &GneRenderServer::gpu_rg_add_pass);
+	ClassDB::bind_method(D_METHOD("gpu_rg_add_edge", "from", "to", "resource", "bytes"), &GneRenderServer::gpu_rg_add_edge);
+	ClassDB::bind_method(D_METHOD("gpu_rg_compile"), &GneRenderServer::gpu_rg_compile);
+	ClassDB::bind_method(D_METHOD("gpu_rg_execute"), &GneRenderServer::gpu_rg_execute);
+	ClassDB::bind_method(D_METHOD("gpu_rg_get_stats"), &GneRenderServer::gpu_rg_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_rg_dump"), &GneRenderServer::gpu_rg_dump);
+	ClassDB::bind_method(D_METHOD("gpu_rg_destroy"), &GneRenderServer::gpu_rg_destroy);
+	// GNE-015.5: Resource Pool (SPEC 015.5 v0.2) - real allocation + aliasing.
+	ClassDB::bind_method(D_METHOD("gpu_pool_create", "bytes"), &GneRenderServer::gpu_pool_create);
+	ClassDB::bind_method(D_METHOD("gpu_pool_alloc", "bytes", "first_pass", "last_pass", "tag"), &GneRenderServer::gpu_pool_alloc);
+	ClassDB::bind_method(D_METHOD("gpu_pool_free", "index"), &GneRenderServer::gpu_pool_free);
+	ClassDB::bind_method(D_METHOD("gpu_pool_persistent_alloc", "bytes", "tag"), &GneRenderServer::gpu_pool_persistent_alloc);
+	ClassDB::bind_method(D_METHOD("gpu_pool_stats"), &GneRenderServer::gpu_pool_stats);
+	ClassDB::bind_method(D_METHOD("gpu_pool_verify", "tag", "value"), &GneRenderServer::gpu_pool_verify);
+	ClassDB::bind_method(D_METHOD("gpu_pool_destroy"), &GneRenderServer::gpu_pool_destroy);
+	// GNE-015.5 Phase 4: frame-time drift measurement (Test-only, additive).
+	ClassDB::bind_method(D_METHOD("gpu_frame_reset"), &GneRenderServer::gpu_frame_reset);
+	ClassDB::bind_method(D_METHOD("gpu_frame_set_warmup", "warmup"), &GneRenderServer::gpu_frame_set_warmup);
+	ClassDB::bind_method(D_METHOD("gpu_frame_begin"), &GneRenderServer::gpu_frame_begin);
+	ClassDB::bind_method(D_METHOD("gpu_frame_mark", "pass"), &GneRenderServer::gpu_frame_mark);
+	ClassDB::bind_method(D_METHOD("gpu_frame_end"), &GneRenderServer::gpu_frame_end);
+	ClassDB::bind_method(D_METHOD("gpu_frame_stats"), &GneRenderServer::gpu_frame_stats);
 
 
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_load", "data"), &GototRenderServer::gpu_meshlet_load);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_load_path", "path"), &GototRenderServer::gpu_meshlet_load_path);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_set_lod_thresholds", "t0", "t1"), &GototRenderServer::gpu_meshlet_set_lod_thresholds);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_cull_dispatch"), &GototRenderServer::gpu_meshlet_cull_dispatch);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_raster_dispatch"), &GototRenderServer::gpu_meshlet_raster_dispatch);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_total_meshlets"), &GototRenderServer::gpu_meshlet_get_total_meshlets);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_lod0_tri_count"), &GototRenderServer::gpu_meshlet_get_lod0_tri_count);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_lod0_meshlet_count"), &GototRenderServer::gpu_meshlet_get_lod0_meshlet_count);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_stats"), &GototRenderServer::gpu_meshlet_stats);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_cluster_counts"), &GototRenderServer::gpu_meshlet_get_cluster_counts);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_instance_lods"), &GototRenderServer::gpu_meshlet_get_instance_lods);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_cull_debug"), &GototRenderServer::gpu_meshlet_get_cull_debug);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_raster_evidence"), &GototRenderServer::gpu_meshlet_raster_evidence);
-	ClassDB::bind_method(D_METHOD("gpu_meshlet_destroy"), &GototRenderServer::gpu_meshlet_destroy);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_load", "data"), &GneRenderServer::gpu_meshlet_load);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_load_path", "path"), &GneRenderServer::gpu_meshlet_load_path);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_set_lod_thresholds", "t0", "t1"), &GneRenderServer::gpu_meshlet_set_lod_thresholds);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_cull_dispatch"), &GneRenderServer::gpu_meshlet_cull_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_raster_dispatch"), &GneRenderServer::gpu_meshlet_raster_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_total_meshlets"), &GneRenderServer::gpu_meshlet_get_total_meshlets);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_lod0_tri_count"), &GneRenderServer::gpu_meshlet_get_lod0_tri_count);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_lod0_meshlet_count"), &GneRenderServer::gpu_meshlet_get_lod0_meshlet_count);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_stats"), &GneRenderServer::gpu_meshlet_stats);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_cluster_counts"), &GneRenderServer::gpu_meshlet_get_cluster_counts);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_instance_lods"), &GneRenderServer::gpu_meshlet_get_instance_lods);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_get_cull_debug"), &GneRenderServer::gpu_meshlet_get_cull_debug);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_raster_evidence"), &GneRenderServer::gpu_meshlet_raster_evidence);
+	ClassDB::bind_method(D_METHOD("gpu_meshlet_destroy"), &GneRenderServer::gpu_meshlet_destroy);
 
-	ClassDB::bind_method(D_METHOD("gpu_raster_indirect_draw"), &GototRenderServer::gpu_raster_indirect_draw);
-	ClassDB::bind_method(D_METHOD("gpu_raster_read_pixels"), &GototRenderServer::gpu_raster_read_pixels);
-	ClassDB::bind_method(D_METHOD("gpu_scene_get_vp"), &GototRenderServer::gpu_scene_get_vp);
+	ClassDB::bind_method(D_METHOD("gpu_raster_indirect_draw"), &GneRenderServer::gpu_raster_indirect_draw);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_pixels"), &GneRenderServer::gpu_raster_read_pixels);
+	ClassDB::bind_method(D_METHOD("gpu_scene_get_vp"), &GneRenderServer::gpu_scene_get_vp);
 
-	ClassDB::bind_method(D_METHOD("gpu_scene_set_instance_transform", "index", "position", "scale"), &GototRenderServer::gpu_scene_set_instance_transform);
-	ClassDB::bind_method(D_METHOD("gpu_raster_read_depth"), &GototRenderServer::gpu_raster_read_depth);
-	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz", "x", "y"), &GototRenderServer::gpu_raster_read_viewz);
-	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_format"), &GototRenderServer::gpu_raster_get_depth_format);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_depth_enabled"), &GototRenderServer::gpu_mesh_get_depth_enabled);
-	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_enabled"), &GototRenderServer::gpu_raster_get_depth_enabled);
+	ClassDB::bind_method(D_METHOD("gpu_scene_set_instance_transform", "index", "position", "scale"), &GneRenderServer::gpu_scene_set_instance_transform);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_depth"), &GneRenderServer::gpu_raster_read_depth);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz", "x", "y"), &GneRenderServer::gpu_raster_read_viewz);
+	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_format"), &GneRenderServer::gpu_raster_get_depth_format);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_depth_enabled"), &GneRenderServer::gpu_mesh_get_depth_enabled);
+	ClassDB::bind_method(D_METHOD("gpu_raster_get_depth_enabled"), &GneRenderServer::gpu_raster_get_depth_enabled);
 
-	ClassDB::bind_method(D_METHOD("gpu_mesh_create"), &GototRenderServer::gpu_mesh_create);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_drawargs_finalize"), &GototRenderServer::gpu_mesh_drawargs_finalize);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_indirect_draw"), &GototRenderServer::gpu_mesh_indirect_draw);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_index_count"), &GototRenderServer::gpu_mesh_get_index_count);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_vertex_count"), &GototRenderServer::gpu_mesh_get_vertex_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_create"), &GneRenderServer::gpu_mesh_create);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_drawargs_finalize"), &GneRenderServer::gpu_mesh_drawargs_finalize);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_indirect_draw"), &GneRenderServer::gpu_mesh_indirect_draw);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_index_count"), &GneRenderServer::gpu_mesh_get_index_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_vertex_count"), &GneRenderServer::gpu_mesh_get_vertex_count);
 
-	ClassDB::bind_method(D_METHOD("gpu_scene_set_instance_mesh", "index", "mesh_id"), &GototRenderServer::gpu_scene_set_instance_mesh);
-	ClassDB::bind_method(D_METHOD("gpu_scene_get_instance_mesh", "index"), &GototRenderServer::gpu_scene_get_instance_mesh);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_create_from_arrays", "verts", "indices"), &GototRenderServer::gpu_mesh_create_from_arrays);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_batch_dispatch"), &GototRenderServer::gpu_mesh_batch_dispatch);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_batch_draw"), &GototRenderServer::gpu_mesh_batch_draw);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_mesh_id_count"), &GototRenderServer::gpu_mesh_get_mesh_id_count);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_count"), &GototRenderServer::gpu_mesh_get_batch_count);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_draw_counts"), &GototRenderServer::gpu_mesh_get_draw_counts);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_args", "batch_index"), &GototRenderServer::gpu_mesh_get_batch_args);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_mesh_color", "mesh_id"), &GototRenderServer::gpu_mesh_get_mesh_color);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_set_batch_strategy", "strategy"), &GototRenderServer::gpu_mesh_set_batch_strategy);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_strategy"), &GototRenderServer::gpu_mesh_get_batch_strategy);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_group_count"), &GototRenderServer::gpu_mesh_get_batch_group_count);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_order"), &GototRenderServer::gpu_mesh_get_batch_order);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_indirect_count"), &GototRenderServer::gpu_mesh_get_indirect_count);
-	ClassDB::bind_method(D_METHOD("gpu_mesh_get_draw_call_count"), &GototRenderServer::gpu_mesh_get_draw_call_count);
-	ClassDB::bind_integer_constant("GototRenderServer", "GototBatchStrategy", "GOTOT_BATCH_STRATEGY_PER_MESH", GOTOT_BATCH_STRATEGY_PER_MESH);
-	ClassDB::bind_integer_constant("GototRenderServer", "GototBatchStrategy", "GOTOT_BATCH_STRATEGY_GROUPED", GOTOT_BATCH_STRATEGY_GROUPED);
-	ClassDB::bind_integer_constant("GototRenderServer", "GototBatchStrategy", "GOTOT_BATCH_STRATEGY_REORDERED", GOTOT_BATCH_STRATEGY_REORDERED);
+	ClassDB::bind_method(D_METHOD("gpu_scene_set_instance_mesh", "index", "mesh_id"), &GneRenderServer::gpu_scene_set_instance_mesh);
+	ClassDB::bind_method(D_METHOD("gpu_scene_get_instance_mesh", "index"), &GneRenderServer::gpu_scene_get_instance_mesh);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_create_from_arrays", "verts", "indices"), &GneRenderServer::gpu_mesh_create_from_arrays);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_batch_dispatch"), &GneRenderServer::gpu_mesh_batch_dispatch);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_batch_draw"), &GneRenderServer::gpu_mesh_batch_draw);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_mesh_id_count"), &GneRenderServer::gpu_mesh_get_mesh_id_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_count"), &GneRenderServer::gpu_mesh_get_batch_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_draw_counts"), &GneRenderServer::gpu_mesh_get_draw_counts);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_args", "batch_index"), &GneRenderServer::gpu_mesh_get_batch_args);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_mesh_color", "mesh_id"), &GneRenderServer::gpu_mesh_get_mesh_color);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_set_batch_strategy", "strategy"), &GneRenderServer::gpu_mesh_set_batch_strategy);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_strategy"), &GneRenderServer::gpu_mesh_get_batch_strategy);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_group_count"), &GneRenderServer::gpu_mesh_get_batch_group_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_order"), &GneRenderServer::gpu_mesh_get_batch_order);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_indirect_count"), &GneRenderServer::gpu_mesh_get_indirect_count);
+	ClassDB::bind_method(D_METHOD("gpu_mesh_get_draw_call_count"), &GneRenderServer::gpu_mesh_get_draw_call_count);
+	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_PER_MESH", GNE_BATCH_STRATEGY_PER_MESH);
+	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_GROUPED", GNE_BATCH_STRATEGY_GROUPED);
+	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_REORDERED", GNE_BATCH_STRATEGY_REORDERED);
 }
 
-GototRenderServer::GototRenderServer() {
+GneRenderServer::GneRenderServer() {
 }
 
-GototRenderServer::~GototRenderServer() {
+GneRenderServer::~GneRenderServer() {
 	shutdown();
 }
 
-void GototRenderServer::set_server_singleton(GototRenderServer *p_server) {
+void GneRenderServer::set_server_singleton(GneRenderServer *p_server) {
 	server_singleton = p_server;
 }
 
-GototRenderServer *GototRenderServer::get_server_singleton() {
+GneRenderServer *GneRenderServer::get_server_singleton() {
 	return server_singleton;
 }
 
-void GototRenderServer::initialize() {
+void GneRenderServer::initialize() {
 	// The server object is ready from startup. The local RenderingDevice is
 	// created lazily (ensure_gpu_device) once the engine's renderer is up,
 	// matching how LightmapperRD acquires its device.
 	rendering_device = nullptr;
 }
 
-bool GototRenderServer::ensure_gpu_device() {
+bool GneRenderServer::ensure_gpu_device() {
 	if (rendering_device != nullptr) {
 		return true;
 	}
@@ -1535,16 +1535,16 @@ bool GototRenderServer::ensure_gpu_device() {
 	rendering_device = RenderingServer::get_singleton()->create_local_rendering_device();
 
 	if (rendering_device == nullptr) {
-		print_error("[GOTOT-NEXT] Failed to create local RenderingDevice. Requires an RD-based renderer (Forward+ / Mobile).");
+		print_error("[GNE] Failed to create local RenderingDevice. Requires an RD-based renderer (Forward+ / Mobile).");
 		return false;
 	}
 
-	print_line("[GOTOT-NEXT] Local RenderingDevice created.");
+	print_line("[GNE] Local RenderingDevice created.");
 
 	return true;
 }
 
-void GototRenderServer::_destroy_mesh_batch() {
+void GneRenderServer::_destroy_mesh_batch() {
 	if (rendering_device != nullptr) {
 		if (group_batch_uniform_set.is_valid()) {
 			rendering_device->free_rid(group_batch_uniform_set);
@@ -1673,8 +1673,8 @@ void GototRenderServer::_destroy_mesh_batch() {
 	gpu_mesh_table_valid = false;
 }
 
-void GototRenderServer::_destroy_mesh() {
-	// GOTOT-010: the batch path's 010 vertex/index arrays reference the shared
+void GneRenderServer::_destroy_mesh() {
+	// GNE-010: the batch path's 010 vertex/index arrays reference the shared
 	// mesh vertex/index buffers below, so they must be released first.
 	_destroy_mesh_batch();
 
@@ -1726,7 +1726,7 @@ void GototRenderServer::_destroy_mesh() {
 	gpu_mesh_valid = false;
 }
 
-void GototRenderServer::_destroy_hzb_prod() {
+void GneRenderServer::_destroy_hzb_prod() {
 	if (rendering_device == nullptr) {
 		gpu_hzb_prod_valid = false;
 		hzb_pyramid_fresh = false;
@@ -1772,7 +1772,7 @@ void GototRenderServer::_destroy_hzb_prod() {
 	hzb_phase2_count = 0;
 }
 
-void GototRenderServer::_destroy_gpu_scene() {
+void GneRenderServer::_destroy_gpu_scene() {
 	_destroy_mesh();
 	_destroy_hzb_prod();
 
@@ -1951,7 +1951,7 @@ void GototRenderServer::_destroy_gpu_scene() {
 	occluder_count = 0;
 }
 
-void GototRenderServer::shutdown() {
+void GneRenderServer::shutdown() {
 	if (rendering_device == nullptr) {
 		return;
 	}
@@ -1963,24 +1963,24 @@ void GototRenderServer::shutdown() {
 	memdelete(rendering_device);
 	rendering_device = nullptr;
 
-	print_line("[GOTOT-NEXT] Local RenderingDevice destroyed.");
+	print_line("[GNE] Local RenderingDevice destroyed.");
 }
 
-bool GototRenderServer::is_initialized() const {
+bool GneRenderServer::is_initialized() const {
 	return true;
 }
 
-bool GototRenderServer::is_gpu_ready() const {
+bool GneRenderServer::is_gpu_ready() const {
 	return rendering_device != nullptr;
 }
 
-bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
+bool GneRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 	if (!ensure_gpu_device()) {
 		return false;
 	}
 
 	if (p_instance_count <= 0 || p_instance_count > 100000000) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: instance count must be in (0, 100000000].");
+		print_error("[GNE] gpu_scene_create: instance count must be in (0, 100000000].");
 		return false;
 	}
 
@@ -1996,7 +1996,7 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 	Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_COMPUTE, String(gpu_scene_compute_glsl), RD::SHADER_LANGUAGE_GLSL, &compile_error);
 	if (spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: compute shader compile failed:");
+		print_error("[GNE] gpu_scene_create: compute shader compile failed:");
 		print_error(compile_error);
 		return false;
 	}
@@ -2007,9 +2007,9 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 	Vector<RD::ShaderStageSPIRVData> stages;
 	stages.push_back(stage);
 
-	compute_shader = rendering_device->shader_create_from_spirv(stages, "gotot_gpu_scene");
+	compute_shader = rendering_device->shader_create_from_spirv(stages, "gne_gpu_scene");
 	if (compute_shader.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: shader_create_from_spirv failed.");
+		print_error("[GNE] gpu_scene_create: shader_create_from_spirv failed.");
 		return false;
 	}
 
@@ -2031,17 +2031,17 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 
 	uniform_set = rendering_device->uniform_set_create(uniforms, compute_shader, 0);
 	if (uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: uniform_set_create failed.");
+		print_error("[GNE] gpu_scene_create: uniform_set_create failed.");
 		_destroy_gpu_scene();
 		return false;
 	}
 
-	// GOTOT-002: culling resources.
+	// GNE-002: culling resources.
 	String cull_error;
 	Vector<uint8_t> cull_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_COMPUTE, String(gpu_cull_compute_glsl), RD::SHADER_LANGUAGE_GLSL, &cull_error);
 	if (cull_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: cull shader compile failed:");
+		print_error("[GNE] gpu_scene_create: cull shader compile failed:");
 		print_error(cull_error);
 		_destroy_gpu_scene();
 		return false;
@@ -2053,9 +2053,9 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 	Vector<RD::ShaderStageSPIRVData> cull_stages;
 	cull_stages.push_back(cull_stage);
 
-	cull_shader = rendering_device->shader_create_from_spirv(cull_stages, "gotot_gpu_cull");
+	cull_shader = rendering_device->shader_create_from_spirv(cull_stages, "gne_gpu_cull");
 	if (cull_shader.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: cull shader_create_from_spirv failed.");
+		print_error("[GNE] gpu_scene_create: cull shader_create_from_spirv failed.");
 		_destroy_gpu_scene();
 		return false;
 	}
@@ -2066,7 +2066,7 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 
 	cull_pipeline = rendering_device->compute_pipeline_create(cull_shader);
 
-	// GOTOT-004: HZB resources (hierarchical depth pyramid of occluders).
+	// GNE-004: HZB resources (hierarchical depth pyramid of occluders).
 	RD::TextureFormat hzb_format;
 	hzb_format.format = RD::DATA_FORMAT_R32_UINT;
 	hzb_format.texture_type = RD::TEXTURE_TYPE_2D_ARRAY;
@@ -2082,7 +2082,7 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 	occluder_min_buffer = rendering_device->storage_buffer_create(64 * 16);
 	occluder_max_buffer = rendering_device->storage_buffer_create(64 * 16);
 
-	view_ubo = rendering_device->uniform_buffer_create(sizeof(GototViewData));
+	view_ubo = rendering_device->uniform_buffer_create(sizeof(GneViewData));
 
 	if (!_create_hzb_passes()) {
 		_destroy_gpu_scene();
@@ -2121,7 +2121,7 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 
 	cull_uniform_set = rendering_device->uniform_set_create(cull_uniforms, cull_shader, 0);
 	if (cull_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: cull uniform_set_create failed.");
+		print_error("[GNE] gpu_scene_create: cull uniform_set_create failed.");
 		_destroy_gpu_scene();
 		return false;
 	}
@@ -2129,12 +2129,12 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 	gpu_cull_valid = true;
 	gpu_hzb_valid = true;
 
-	// GOTOT-003: indirect draw args resources.
+	// GNE-003: indirect draw args resources.
 	String drawargs_error;
 	Vector<uint8_t> drawargs_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_COMPUTE, String(gpu_drawargs_compute_glsl), RD::SHADER_LANGUAGE_GLSL, &drawargs_error);
 	if (drawargs_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: drawargs shader compile failed:");
+		print_error("[GNE] gpu_scene_create: drawargs shader compile failed:");
 		print_error(drawargs_error);
 		_destroy_gpu_scene();
 		return false;
@@ -2146,14 +2146,14 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 	Vector<RD::ShaderStageSPIRVData> drawargs_stages;
 	drawargs_stages.push_back(drawargs_stage);
 
-	drawargs_shader = rendering_device->shader_create_from_spirv(drawargs_stages, "gotot_gpu_drawargs");
+	drawargs_shader = rendering_device->shader_create_from_spirv(drawargs_stages, "gne_gpu_drawargs");
 	if (drawargs_shader.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: drawargs shader_create_from_spirv failed.");
+		print_error("[GNE] gpu_scene_create: drawargs shader_create_from_spirv failed.");
 		_destroy_gpu_scene();
 		return false;
 	}
 
-	// GOTOT-005: same buffer also feeds VkDrawIndexedIndirect (needs INDIRECT usage).
+	// GNE-005: same buffer also feeds VkDrawIndexedIndirect (needs INDIRECT usage).
 	indirect_args_buffer = rendering_device->storage_buffer_create(
 			20, Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
 	drawargs_pipeline = rendering_device->compute_pipeline_create(drawargs_shader);
@@ -2174,12 +2174,12 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 
 	drawargs_uniform_set = rendering_device->uniform_set_create(drawargs_uniforms, drawargs_shader, 0);
 	if (drawargs_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_scene_create: drawargs uniform_set_create failed.");
+		print_error("[GNE] gpu_scene_create: drawargs uniform_set_create failed.");
 		_destroy_gpu_scene();
 		return false;
 	}
 
-	// GOTOT-005: indirect draw pipeline, quad index buffer, offscreen target, framebuffer.
+	// GNE-005: indirect draw pipeline, quad index buffer, offscreen target, framebuffer.
 	Vector<uint32_t> quad_indices;
 	quad_indices.push_back(0);
 	quad_indices.push_back(1);
@@ -2204,16 +2204,16 @@ bool GototRenderServer::gpu_scene_create(int p_instance_count, float p_spread) {
 	gpu_scene_spread = p_spread;
 	gpu_scene_valid = true;
 
-	print_line("[GOTOT-NEXT] GPU Scene created. instances=" + itos(count) +
+	print_line("[GNE] GPU Scene created. instances=" + itos(count) +
 			" spread=" + String::num(p_spread) +
 			" buffers=" + String::num((transform_bytes + bounds_bytes + id_bytes) / 1024.0 / 1024.0, 2) + " MB");
 
 	return true;
 }
 
-bool GototRenderServer::gpu_scene_dispatch(int p_seed) {
+bool GneRenderServer::gpu_scene_dispatch(int p_seed) {
 	if (!gpu_scene_valid) {
-		print_error("[GOTOT-NEXT] gpu_scene_dispatch: no scene. Call gpu_scene_create first.");
+		print_error("[GNE] gpu_scene_dispatch: no scene. Call gpu_scene_create first.");
 		return false;
 	}
 
@@ -2245,7 +2245,7 @@ bool GototRenderServer::gpu_scene_dispatch(int p_seed) {
 	return true;
 }
 
-PackedVector3Array GototRenderServer::gpu_scene_readback_positions(int p_index, int p_count) {
+PackedVector3Array GneRenderServer::gpu_scene_readback_positions(int p_index, int p_count) {
 	PackedVector3Array ret;
 	if (!gpu_scene_valid || p_index < 0 || p_count <= 0 || p_index + p_count > gpu_instance_count) {
 		return ret;
@@ -2263,7 +2263,7 @@ PackedVector3Array GototRenderServer::gpu_scene_readback_positions(int p_index, 
 	return ret;
 }
 
-PackedFloat32Array GototRenderServer::gpu_scene_readback_scales(int p_index, int p_count) {
+PackedFloat32Array GneRenderServer::gpu_scene_readback_scales(int p_index, int p_count) {
 	PackedFloat32Array ret;
 	if (!gpu_scene_valid || p_index < 0 || p_count <= 0 || p_index + p_count > gpu_instance_count) {
 		return ret;
@@ -2281,7 +2281,7 @@ PackedFloat32Array GototRenderServer::gpu_scene_readback_scales(int p_index, int
 	return ret;
 }
 
-Dictionary GototRenderServer::gpu_scene_stats() {
+Dictionary GneRenderServer::gpu_scene_stats() {
 	Dictionary d;
 	d["valid"] = gpu_scene_valid;
 	d["instance_count"] = gpu_instance_count;
@@ -2293,23 +2293,23 @@ Dictionary GototRenderServer::gpu_scene_stats() {
 	return d;
 }
 
-int GototRenderServer::gpu_scene_get_instance_count() const {
+int GneRenderServer::gpu_scene_get_instance_count() const {
 	return gpu_scene_valid ? gpu_instance_count : 0;
 }
 
-void GototRenderServer::gpu_scene_destroy() {
+void GneRenderServer::gpu_scene_destroy() {
 	_destroy_gpu_scene();
-	print_line("[GOTOT-NEXT] GPU Scene destroyed.");
+	print_line("[GNE] GPU Scene destroyed.");
 }
 
-void GototRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transform, const Projection &p_projection) {
+void GneRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transform, const Projection &p_projection) {
 	Vector<Plane> planes = p_projection.get_projection_planes(p_camera_transform);
 	for (int i = 0; i < 6; i++) {
 		frustum_planes[i] = planes[i];
 	}
 	frustum_valid = true;
 
-	// GOTOT-013: capture the camera data UNCONDITIONALLY (independent of the
+	// GNE-013: capture the camera data UNCONDITIONALLY (independent of the
 	// HZB path) so the meshlet pipeline - which has its OWN UBO, not view_ubo -
 	// always receives a fresh vp/planes/cam/far even when HZB is not active.
 	// last_vp keeps the same value the 004/009/012 paths compute, so nothing
@@ -2332,11 +2332,11 @@ void GototRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transfo
 		return;
 	}
 
-	// GOTOT-004: fill and upload the ViewData UBO (VP + view + planes + viewport + far).
+	// GNE-004: fill and upload the ViewData UBO (VP + view + planes + viewport + far).
 	Projection cam_view(p_camera_transform.inverse());
 	Projection vp = p_projection * cam_view;
 
-	GototViewData vd;
+	GneViewData vd;
 	memset(&vd, 0, sizeof(vd));
 	for (int c = 0; c < 4; c++) {
 		for (int r = 0; r < 4; r++) {
@@ -2359,7 +2359,7 @@ void GototRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transfo
 	vd.far_plane = p_projection.get_z_far();
 	vd.hzb_valid = 0;
 
-	// GOTOT-012: store the depth-reconstruction projection coefficients for the
+	// GNE-012: store the depth-reconstruction projection coefficients for the
 	// production pyramid (ndc_z = -A - B/z_view). Only the projection decides
 	// them (the view matrix cancels out), so the same camera/view space used to
 	// write the previous frame's D32 depth is recoverable exactly.
@@ -2367,17 +2367,17 @@ void GototRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transfo
 	hzb_proj_a = p_projection.columns[2][2];
 	hzb_proj_b = p_projection.columns[3][2];
 
-	rendering_device->buffer_update(view_ubo, 0, sizeof(GototViewData), &vd);
+	rendering_device->buffer_update(view_ubo, 0, sizeof(GneViewData), &vd);
 	camera_view_valid = true;
 }
 
-bool GototRenderServer::gpu_cull_dispatch() {
+bool GneRenderServer::gpu_cull_dispatch() {
 	if (!gpu_scene_valid || !gpu_cull_valid) {
-		print_error("[GOTOT-NEXT] gpu_cull_dispatch: no gpu scene. Call gpu_scene_create first.");
+		print_error("[GNE] gpu_cull_dispatch: no gpu scene. Call gpu_scene_create first.");
 		return false;
 	}
 	if (!frustum_valid) {
-		print_error("[GOTOT-NEXT] gpu_cull_dispatch: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_cull_dispatch: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 
@@ -2399,7 +2399,7 @@ bool GototRenderServer::gpu_cull_dispatch() {
 	// Frustum-only mode: disable the HZB occlusion test for this dispatch.
 	if (gpu_hzb_valid) {
 		uint32_t zero = 0;
-		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &zero);
+		rendering_device->buffer_update(view_ubo, offsetof(GneViewData, hzb_valid), 4, &zero);
 	}
 
 	uint32_t groups = (uint32_t)(((gpu_instance_count - 1) / 64) + 1);
@@ -2409,7 +2409,7 @@ bool GototRenderServer::gpu_cull_dispatch() {
 	return true;
 }
 
-int GototRenderServer::gpu_cull_get_visible_count() {
+int GneRenderServer::gpu_cull_get_visible_count() {
 	if (!gpu_scene_valid || !gpu_cull_valid) {
 		return -1;
 	}
@@ -2422,7 +2422,7 @@ int GototRenderServer::gpu_cull_get_visible_count() {
 	return (int)count;
 }
 
-PackedInt32Array GototRenderServer::gpu_cull_get_visibility() {
+PackedInt32Array GneRenderServer::gpu_cull_get_visibility() {
 	PackedInt32Array ret;
 	if (!gpu_scene_valid || !gpu_cull_valid) {
 		return ret;
@@ -2437,7 +2437,7 @@ PackedInt32Array GototRenderServer::gpu_cull_get_visibility() {
 	return ret;
 }
 
-PackedVector4Array GototRenderServer::gpu_scene_get_frustum_planes() {
+PackedVector4Array GneRenderServer::gpu_scene_get_frustum_planes() {
 	PackedVector4Array ret;
 	if (!frustum_valid) {
 		return ret;
@@ -2449,9 +2449,9 @@ PackedVector4Array GototRenderServer::gpu_scene_get_frustum_planes() {
 	return ret;
 }
 
-bool GototRenderServer::gpu_drawargs_finalize() {
+bool GneRenderServer::gpu_drawargs_finalize() {
 	if (!gpu_scene_valid || !gpu_drawargs_valid) {
-		print_error("[GOTOT-NEXT] gpu_drawargs_finalize: no gpu scene. Call gpu_scene_create first.");
+		print_error("[GNE] gpu_drawargs_finalize: no gpu scene. Call gpu_scene_create first.");
 		return false;
 	}
 
@@ -2467,7 +2467,7 @@ bool GototRenderServer::gpu_drawargs_finalize() {
 	return true;
 }
 
-PackedInt32Array GototRenderServer::gpu_drawargs_read() {
+PackedInt32Array GneRenderServer::gpu_drawargs_read() {
 	PackedInt32Array ret;
 	if (!gpu_scene_valid || !gpu_drawargs_valid) {
 		return ret;
@@ -2484,7 +2484,7 @@ PackedInt32Array GototRenderServer::gpu_drawargs_read() {
 	return ret;
 }
 
-PackedInt32Array GototRenderServer::gpu_compact_read() {
+PackedInt32Array GneRenderServer::gpu_compact_read() {
 	PackedInt32Array ret;
 	if (!gpu_scene_valid || !gpu_cull_valid) {
 		return ret;
@@ -2503,12 +2503,12 @@ PackedInt32Array GototRenderServer::gpu_compact_read() {
 	return ret;
 }
 
-void GototRenderServer::gpu_scene_set_viewport(float p_viewport_w, float p_viewport_h) {
+void GneRenderServer::gpu_scene_set_viewport(float p_viewport_w, float p_viewport_h) {
 	hzb_viewport_w = p_viewport_w;
 	hzb_viewport_h = p_viewport_h;
 }
 
-void GototRenderServer::gpu_scene_set_occluders(const Vector<Vector4> &p_occluders) {
+void GneRenderServer::gpu_scene_set_occluders(const Vector<Vector4> &p_occluders) {
 	if (!gpu_hzb_valid || p_occluders.is_empty()) {
 		occluder_count = 0;
 		return;
@@ -2530,14 +2530,14 @@ void GototRenderServer::gpu_scene_set_occluders(const Vector<Vector4> &p_occlude
 	occluder_count = pairs;
 }
 
-bool GototRenderServer::_create_hzb_passes() {
+bool GneRenderServer::_create_hzb_passes() {
 	String error;
 
 	auto compile_pass = [&](const char *p_glsl, const char *p_name, RID &r_shader) -> bool {
 		Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
 				RD::SHADER_STAGE_COMPUTE, String(p_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 		if (spirv.is_empty()) {
-			print_error(String("[GOTOT-NEXT] ") + p_name + " shader compile failed:");
+			print_error(String("[GNE] ") + p_name + " shader compile failed:");
 			print_error(error);
 			return false;
 		}
@@ -2551,7 +2551,7 @@ bool GototRenderServer::_create_hzb_passes() {
 	};
 
 	// Clear pass: uimage2DArray binding 0.
-	if (!compile_pass(gpu_hzb_clear_compute_glsl, "gotot_hzb_clear", hzb_clear_shader)) {
+	if (!compile_pass(gpu_hzb_clear_compute_glsl, "gne_hzb_clear", hzb_clear_shader)) {
 		return false;
 	}
 	hzb_clear_pipeline = rendering_device->compute_pipeline_create(hzb_clear_shader);
@@ -2563,12 +2563,12 @@ bool GototRenderServer::_create_hzb_passes() {
 	clear_uniforms.push_back(cu_img);
 	hzb_clear_uniform_set = rendering_device->uniform_set_create(clear_uniforms, hzb_clear_shader, 0);
 	if (hzb_clear_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] hzb_clear uniform_set_create failed.");
+		print_error("[GNE] hzb_clear uniform_set_create failed.");
 		return false;
 	}
 
 	// Occluder pass: image binding 0, occ min/max storage buffers 1/2, view UBO 5.
-	if (!compile_pass(gpu_hzb_occ_compute_glsl, "gotot_hzb_occ", hzb_occ_shader)) {
+	if (!compile_pass(gpu_hzb_occ_compute_glsl, "gne_hzb_occ", hzb_occ_shader)) {
 		return false;
 	}
 	hzb_occ_pipeline = rendering_device->compute_pipeline_create(hzb_occ_shader);
@@ -2595,12 +2595,12 @@ bool GototRenderServer::_create_hzb_passes() {
 	occ_uniforms.push_back(o_u5);
 	hzb_occ_uniform_set = rendering_device->uniform_set_create(occ_uniforms, hzb_occ_shader, 0);
 	if (hzb_occ_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] hzb_occ uniform_set_create failed.");
+		print_error("[GNE] hzb_occ uniform_set_create failed.");
 		return false;
 	}
 
 	// Downsample pass: image binding 0.
-	if (!compile_pass(gpu_hzb_down_compute_glsl, "gotot_hzb_down", hzb_down_shader)) {
+	if (!compile_pass(gpu_hzb_down_compute_glsl, "gne_hzb_down", hzb_down_shader)) {
 		return false;
 	}
 	hzb_down_pipeline = rendering_device->compute_pipeline_create(hzb_down_shader);
@@ -2612,14 +2612,14 @@ bool GototRenderServer::_create_hzb_passes() {
 	down_uniforms.push_back(d_u0);
 	hzb_down_uniform_set = rendering_device->uniform_set_create(down_uniforms, hzb_down_shader, 0);
 	if (hzb_down_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] hzb_down uniform_set_create failed.");
+		print_error("[GNE] hzb_down uniform_set_create failed.");
 		return false;
 	}
 
 	return true;
 }
 
-void GototRenderServer::_run_compute_pass(RID p_pipeline, RID p_uniform_set, const void *p_push_data, uint32_t p_push_size, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z) {
+void GneRenderServer::_run_compute_pass(RID p_pipeline, RID p_uniform_set, const void *p_push_data, uint32_t p_push_size, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z) {
 	RD::ComputeListID list = rendering_device->compute_list_begin();
 	rendering_device->compute_list_bind_compute_pipeline(list, p_pipeline);
 	rendering_device->compute_list_bind_uniform_set(list, p_uniform_set, 0);
@@ -2632,7 +2632,7 @@ void GototRenderServer::_run_compute_pass(RID p_pipeline, RID p_uniform_set, con
 	rendering_device->sync();
 }
 
-float GototRenderServer::_projection_tan_half_fov_v(const Projection &p_projection) {
+float GneRenderServer::_projection_tan_half_fov_v(const Projection &p_projection) {
 	// For a perspective matrix, column[1].y == cotangent(v_fov / 2).
 	float f = p_projection.columns[1][1];
 	if (fabsf(f) < 1e-6f) {
@@ -2641,13 +2641,13 @@ float GototRenderServer::_projection_tan_half_fov_v(const Projection &p_projecti
 	return 1.0f / f;
 }
 
-bool GototRenderServer::gpu_visibility_dispatch() {
+bool GneRenderServer::gpu_visibility_dispatch() {
 	if (!gpu_scene_valid || !gpu_cull_valid || !gpu_hzb_valid) {
-		print_error("[GOTOT-NEXT] gpu_visibility_dispatch: no gpu scene. Call gpu_scene_create first.");
+		print_error("[GNE] gpu_visibility_dispatch: no gpu scene. Call gpu_scene_create first.");
 		return false;
 	}
 	if (!frustum_valid || !camera_view_valid) {
-		print_error("[GOTOT-NEXT] gpu_visibility_dispatch: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_visibility_dispatch: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 
@@ -2675,9 +2675,9 @@ bool GototRenderServer::gpu_visibility_dispatch() {
 	// Refresh UBO fields that are set outside gpu_scene_set_camera: HZB freshness
 	// flag and the current occluder count.
 	uint32_t hzb_one = 1;
-	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &hzb_one);
+	rendering_device->buffer_update(view_ubo, offsetof(GneViewData, hzb_valid), 4, &hzb_one);
 	int32_t occ_count = occluder_count;
-	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &occ_count);
+	rendering_device->buffer_update(view_ubo, offsetof(GneViewData, occ_count), 4, &occ_count);
 	rendering_device->buffer_clear(visible_count_buffer, 0, 4);
 
 	// 1) Clear HZB layer 0.
@@ -2715,16 +2715,16 @@ bool GototRenderServer::gpu_visibility_dispatch() {
 	return true;
 }
 
-// GOTOT-012: build the production pyramid resources. Reuses the 004 clear/occ/
+// GNE-012: build the production pyramid resources. Reuses the 004 clear/occ/
 // down SHADERS and PIPELINES with separate uniform sets bound to the 2048x2048
 // prod array (uniform-set reuse is valid as long as each set is created against
 // the matching shader). The depth-source and the two-phase cull passes are new.
-bool GototRenderServer::gpu_hzb_prod_create() {
+bool GneRenderServer::gpu_hzb_prod_create() {
 	if (!ensure_gpu_device()) {
 		return false;
 	}
 	if (!gpu_scene_valid || !gpu_hzb_valid || !raster_depth_attached) {
-		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: requires an existing GPU scene (gpu_scene_create) with the D32 raster depth attachment.");
+		print_error("[GNE] gpu_hzb_prod_create: requires an existing GPU scene (gpu_scene_create) with the D32 raster depth attachment.");
 		return false;
 	}
 	if (gpu_hzb_prod_valid) {
@@ -2736,7 +2736,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 		Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
 				RD::SHADER_STAGE_COMPUTE, String(p_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 		if (spirv.is_empty()) {
-			print_error(String("[GOTOT-NEXT] ") + p_name + " shader compile failed:");
+			print_error(String("[GNE] ") + p_name + " shader compile failed:");
 			print_error(error);
 			return false;
 		}
@@ -2762,7 +2762,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	tf.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	hzb_prod_array = rendering_device->texture_create(tf, RD::TextureView());
 	if (hzb_prod_array.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: prod pyramid texture_create failed.");
+		print_error("[GNE] gpu_hzb_prod_create: prod pyramid texture_create failed.");
 		return false;
 	}
 
@@ -2770,7 +2770,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	phase1_count_buffer = rendering_device->storage_buffer_create(4);
 	hzb_pyramid_data_buffer = rendering_device->storage_buffer_create(HZB_PYRAMID_DATA_UINTS * 4u);
 	if (hzb_pyramid_data_buffer.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: pyramid data buffer_create failed.");
+		print_error("[GNE] gpu_hzb_prod_create: pyramid data buffer_create failed.");
 		_destroy_hzb_prod();
 		return false;
 	}
@@ -2778,7 +2778,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	hzb_depth_sampler = rendering_device->sampler_create(RD::SamplerState());
 	hzb_dbg_probe_buffer = rendering_device->storage_buffer_create(16);
 	if (hzb_depth_sampler.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: depth sampler_create failed.");
+		print_error("[GNE] gpu_hzb_prod_create: depth sampler_create failed.");
 		_destroy_hzb_prod();
 		return false;
 	}
@@ -2793,7 +2793,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 		cu.push_back(u);
 		hzb_prod_clear_set = rendering_device->uniform_set_create(cu, hzb_clear_shader, 0);
 		if (hzb_prod_clear_set.is_null()) {
-			print_error("[GOTOT-NEXT] gpu_hzb_prod_create: prod clear uniform_set_create failed.");
+			print_error("[GNE] gpu_hzb_prod_create: prod clear uniform_set_create failed.");
 			_destroy_hzb_prod();
 			return false;
 		}
@@ -2822,7 +2822,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 		ou.push_back(u5);
 		hzb_prod_occ_set = rendering_device->uniform_set_create(ou, hzb_occ_shader, 0);
 		if (hzb_prod_occ_set.is_null()) {
-			print_error("[GOTOT-NEXT] gpu_hzb_prod_create: prod occ uniform_set_create failed.");
+			print_error("[GNE] gpu_hzb_prod_create: prod occ uniform_set_create failed.");
 			_destroy_hzb_prod();
 			return false;
 		}
@@ -2836,7 +2836,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 		du.push_back(u);
 		hzb_prod_down_set = rendering_device->uniform_set_create(du, hzb_down_shader, 0);
 		if (hzb_prod_down_set.is_null()) {
-			print_error("[GOTOT-NEXT] gpu_hzb_prod_create: prod down uniform_set_create failed.");
+			print_error("[GNE] gpu_hzb_prod_create: prod down uniform_set_create failed.");
 			_destroy_hzb_prod();
 			return false;
 		}
@@ -2845,7 +2845,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	// Depth-source pass: sampler2D (0) + image (1) + probe buffer (2) +
 	// pyramid-data storage buffer (3) - the buffer is the RELIABLE pyramid the
 	// phase-2 occlusion reads (storage buffers sync correctly in this fork).
-	if (!compile_compute(gpu_hzb_depth_source_glsl, "gotot_hzb_depth_source", hzb_depth_source_shader)) {
+	if (!compile_compute(gpu_hzb_depth_source_glsl, "gne_hzb_depth_source", hzb_depth_source_shader)) {
 		_destroy_hzb_prod();
 		return false;
 	}
@@ -2874,15 +2874,15 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	ds_uniforms.push_back(ds3);
 	hzb_depth_source_uniform_set = rendering_device->uniform_set_create(ds_uniforms, hzb_depth_source_shader, 0);
 	if (hzb_depth_source_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: depth-source uniform_set_create failed.");
+		print_error("[GNE] gpu_hzb_prod_create: depth-source uniform_set_create failed.");
 		_destroy_hzb_prod();
 		return false;
 	}
 
-	// GOTOT-012 final source: occluder-box pyramid (occmin(0)/occmax(1)/UBO(2)/
+	// GNE-012 final source: occluder-box pyramid (occmin(0)/occmax(1)/UBO(2)/
 	// pyramid-data(3)/evidence image(4)). Only the flat storage buffer is read
 	// by the phases - the image keeps a readback copy for evidence.
-	if (!compile_compute(gpu_hzb_occbuf_glsl, "gotot_hzb_occbuf", hzb_occbuf_shader)) {
+	if (!compile_compute(gpu_hzb_occbuf_glsl, "gne_hzb_occbuf", hzb_occbuf_shader)) {
 		_destroy_hzb_prod();
 		return false;
 	}
@@ -2915,14 +2915,14 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	ob_uniforms.push_back(ob4);
 	hzb_occbuf_uniform_set = rendering_device->uniform_set_create(ob_uniforms, hzb_occbuf_shader, 0);
 	if (hzb_occbuf_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: occbuf uniform_set_create failed.");
+		print_error("[GNE] gpu_hzb_prod_create: occbuf uniform_set_create failed.");
 		_destroy_hzb_prod();
 		return false;
 	}
 
 	// Phase 1 (frustum only): transforms(0), phase1 list(1), phase1 count(2),
 	// visibility(3), view UBO(5).
-	if (!compile_compute(gpu_hzb_phase1_glsl, "gotot_hzb_phase1", hzb_phase1_shader)) {
+	if (!compile_compute(gpu_hzb_phase1_glsl, "gne_hzb_phase1", hzb_phase1_shader)) {
 		_destroy_hzb_prod();
 		return false;
 	}
@@ -2955,14 +2955,14 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	p1_uniforms.push_back(p1u5);
 	hzb_phase1_uniform_set = rendering_device->uniform_set_create(p1_uniforms, hzb_phase1_shader, 0);
 	if (hzb_phase1_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: phase1 uniform_set_create failed.");
+		print_error("[GNE] gpu_hzb_prod_create: phase1 uniform_set_create failed.");
 		_destroy_hzb_prod();
 		return false;
 	}
 
 	// Phase 2 (HZB occlusion): phase1 list(0), transforms(1), count(2),
 	// compact(3), pyramid data buffer(4), view UBO(5).
-	if (!compile_compute(gpu_hzb_phase2_glsl, "gotot_hzb_phase2", hzb_phase2_shader)) {
+	if (!compile_compute(gpu_hzb_phase2_glsl, "gne_hzb_phase2", hzb_phase2_shader)) {
 		_destroy_hzb_prod();
 		return false;
 	}
@@ -3005,7 +3005,7 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	p2_uniforms.push_back(p2u6);
 	hzb_phase2_uniform_set = rendering_device->uniform_set_create(p2_uniforms, hzb_phase2_shader, 0);
 	if (hzb_phase2_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_hzb_prod_create: phase2 uniform_set_create failed.");
+		print_error("[GNE] gpu_hzb_prod_create: phase2 uniform_set_create failed.");
 		_destroy_hzb_prod();
 		return false;
 	}
@@ -3019,28 +3019,28 @@ bool GototRenderServer::gpu_hzb_prod_create() {
 	hzb_phase1_count = 0;
 	hzb_phase2_count = 0;
 
-	print_line("[GOTOT-NEXT] Production HZB created. levels=" + itos(HZB_PROD_LEVELS) +
+	print_line("[GNE] Production HZB created. levels=" + itos(HZB_PROD_LEVELS) +
 			" base=" + itos(HZB_PROD_TEXEL_COUNT) + "x" + itos(HZB_PROD_TEXEL_COUNT));
 
 	return true;
 }
 
-// GOTOT-012: rebuild the production pyramid from the PREVIOUS frame's depth and
+// GNE-012: rebuild the production pyramid from the PREVIOUS frame's depth and
 // run the temporal bookkeeping. The pyramid may only be used when the camera vp
 // that wrote that depth matches the CURRENT vp; otherwise hzb_valid is left 0
 // (frustum-only, conservative - no false dropout) and the pyramid is rebuilt
 // next frame from depth the settled camera just wrote.
-bool GototRenderServer::gpu_hzb_build() {
+bool GneRenderServer::gpu_hzb_build() {
 	if (!gpu_scene_valid || !gpu_hzb_prod_valid) {
-		print_error("[GOTOT-NEXT] gpu_hzb_build: production HZB not created.");
+		print_error("[GNE] gpu_hzb_build: production HZB not created.");
 		return false;
 	}
 	if (!camera_view_valid || !frustum_valid) {
-		print_error("[GOTOT-NEXT] gpu_hzb_build: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_hzb_build: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 
-	// GOTOT-012-revised (root A). The previous code treated `same_vp` as an
+	// GNE-012-revised (root A). The previous code treated `same_vp` as an
 	// ACTIVATION gate: when the camera had moved it wrote hzb_valid = 0 and
 	// returned WITHOUT building (and without patching the production grid into
 	// the view UBO). With hzb_valid = 0 the phase-2 occlusion test is skipped
@@ -3062,9 +3062,9 @@ bool GototRenderServer::gpu_hzb_build() {
 	// here stores 2.8e-42 (~0.0f), which collapses every level/texel computation
 	// in the phase-2 reader (observed: sim2 level=-138). Must write float.
 	float texel_count = (float)HZB_PROD_TEXEL_COUNT;
-	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
+	rendering_device->buffer_update(view_ubo, offsetof(GneViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
 	int32_t occ_count = occluder_count;
-	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &occ_count);
+	rendering_device->buffer_update(view_ubo, offsetof(GneViewData, occ_count), 4, &occ_count);
 
 	// Frame 1 only: no pyramid has been produced yet, so stay conservative
 	// (frustum-only). This is the single frame that is allowed to skip phase 2.
@@ -3074,13 +3074,13 @@ bool GototRenderServer::gpu_hzb_build() {
 		hzb_pyramid_fresh = true;
 		hzb_stable_frames = 1;
 		uint32_t zero = 0;
-		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &zero);
+		rendering_device->buffer_update(view_ubo, offsetof(GneViewData, hzb_valid), 4, &zero);
 		return true;
 	}
 	hzb_pyramid_fresh = true;
 	hzb_stable_frames++;
 	uint32_t hzb_one = 1;
-	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &hzb_one);
+	rendering_device->buffer_update(view_ubo, offsetof(GneViewData, hzb_valid), 4, &hzb_one);
 
 	// Queue the pyramid passes to run INSIDE the next gpu_mesh_batch_draw
 	// submission (clear, R32 depth-source sample, box occluders, downsample
@@ -3091,17 +3091,17 @@ bool GototRenderServer::gpu_hzb_build() {
 	return true;
 }
 
-// GOTOT-012: two-phase production visibility dispatch. Phase 1 produces the
+// GNE-012: two-phase production visibility dispatch. Phase 1 produces the
 // frustum survivors (phase-1 list + count + visibility flags), phase 2 applies
 // the HZB occlusion to that list and compacts the survivors into the FINAL
 // compact[]/visible_count[] consumed by the 011 batch assembler.
-bool GototRenderServer::gpu_visibility_prod_dispatch() {
+bool GneRenderServer::gpu_visibility_prod_dispatch() {
 	if (!gpu_scene_valid || !gpu_cull_valid || !gpu_hzb_valid || !gpu_hzb_prod_valid) {
-		print_error("[GOTOT-NEXT] gpu_visibility_prod_dispatch: no production HZB. Call gpu_hzb_prod_create first.");
+		print_error("[GNE] gpu_visibility_prod_dispatch: no production HZB. Call gpu_hzb_prod_create first.");
 		return false;
 	}
 	if (!frustum_valid || !camera_view_valid) {
-		print_error("[GOTOT-NEXT] gpu_visibility_prod_dispatch: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_visibility_prod_dispatch: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 
@@ -3110,9 +3110,9 @@ bool GototRenderServer::gpu_visibility_prod_dispatch() {
 	// Same type discipline as gpu_hzb_build: viewport[] is float.
 	{
 		float texel_count = (float)HZB_PROD_TEXEL_COUNT;
-		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
+		rendering_device->buffer_update(view_ubo, offsetof(GneViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
 		int32_t occ_count = occluder_count;
-		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &occ_count);
+		rendering_device->buffer_update(view_ubo, offsetof(GneViewData, occ_count), 4, &occ_count);
 	}
 
 	// Two-phase cull in THIS synced submission. First rebuild the pyramid from
@@ -3183,25 +3183,25 @@ bool GototRenderServer::gpu_visibility_prod_dispatch() {
 	return true;
 }
 
-void GototRenderServer::gpu_hzb_enable_temporal(bool p_enabled) {
+void GneRenderServer::gpu_hzb_enable_temporal(bool p_enabled) {
 	hzb_temporal_enabled = p_enabled;
 	if (!p_enabled) {
 		hzb_coherent = false;
 	}
 }
 
-void GototRenderServer::gpu_hzb_set_occluders(const Vector<Vector4> &p_occluders) {
+void GneRenderServer::gpu_hzb_set_occluders(const Vector<Vector4> &p_occluders) {
 	gpu_scene_set_occluders(p_occluders);
 }
 
-int GototRenderServer::gpu_hzb_get_level_count() {
+int GneRenderServer::gpu_hzb_get_level_count() {
 	if (gpu_hzb_prod_valid) {
 		return HZB_PROD_LEVELS;
 	}
 	return gpu_hzb_valid ? HZB_LEVELS : 0;
 }
 
-PackedInt32Array GototRenderServer::gpu_hzb_get_phase_counts() {
+PackedInt32Array GneRenderServer::gpu_hzb_get_phase_counts() {
 	PackedInt32Array ret;
 	ret.resize(2);
 	ret.set(0, hzb_phase1_count);
@@ -3209,7 +3209,7 @@ PackedInt32Array GototRenderServer::gpu_hzb_get_phase_counts() {
 	return ret;
 }
 
-bool GototRenderServer::gpu_hzb_get_coherent() const {
+bool GneRenderServer::gpu_hzb_get_coherent() const {
 	return hzb_coherent;
 }
 
@@ -3217,7 +3217,7 @@ bool GototRenderServer::gpu_hzb_get_coherent() const {
 // instances, using the REAL GPU buffers phase 2 reads (view UBO, transform
 // buffer, pyramid data buffer). Returns [level, t.x, t.y, max_inv, sphere_inv,
 // vis] rows. Validates the index mapping + pyramid content end-to-end.
-PackedInt32Array GototRenderServer::gpu_hzb_dbg_sim2() {
+PackedInt32Array GneRenderServer::gpu_hzb_dbg_sim2() {
 	PackedInt32Array out;
 	if (!gpu_hzb_prod_valid) {
 		return out;
@@ -3304,11 +3304,11 @@ PackedInt32Array GototRenderServer::gpu_hzb_dbg_sim2() {
 	return out;
 }
 
-int GototRenderServer::gpu_hzb_dbg_valid() {
+int GneRenderServer::gpu_hzb_dbg_valid() {
 	if (!gpu_hzb_prod_valid) {
 		return -1;
 	}
-	Vector<uint8_t> bytes = rendering_device->buffer_get_data(view_ubo, offsetof(GototViewData, hzb_valid), 4);
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(view_ubo, offsetof(GneViewData, hzb_valid), 4);
 	if (bytes.size() != 4) {
 		return -2;
 	}
@@ -3317,7 +3317,7 @@ int GototRenderServer::gpu_hzb_dbg_valid() {
 	return (int)v;
 }
 
-int GototRenderServer::gpu_hzb_dbg_level0(int p_x, int p_y) {
+int GneRenderServer::gpu_hzb_dbg_level0(int p_x, int p_y) {
 	if (!gpu_hzb_prod_valid) {
 		return -1;
 	}
@@ -3336,7 +3336,7 @@ int GototRenderServer::gpu_hzb_dbg_level0(int p_x, int p_y) {
 // Whole level-0 scan: returns [max_inv, max_x, max_y, count_of_nonzero] so the
 // verify-bridge can tell whether real geometry ever lands in the pyramid (the
 // per-texel probes above sit on far/sky pixels chosen blindly).
-PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_level0() {
+PackedInt32Array GneRenderServer::gpu_hzb_dbg_scan_level0() {
 	PackedInt32Array out;
 	if (!gpu_hzb_prod_valid) {
 		return out;
@@ -3371,7 +3371,7 @@ PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_level0() {
 }
 
 // Same scan restricted to a SINGLE pyramid layer (downsample verification).
-PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_level1(int p_level) {
+PackedInt32Array GneRenderServer::gpu_hzb_dbg_scan_level1(int p_level) {
 	PackedInt32Array out;
 	if (!gpu_hzb_prod_valid) {
 		return out;
@@ -3409,7 +3409,7 @@ PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_level1(int p_level) {
 	return out;
 }
 
-PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_buffer(int p_level) {
+PackedInt32Array GneRenderServer::gpu_hzb_dbg_scan_buffer(int p_level) {
 	PackedInt32Array out;
 	if (!gpu_hzb_prod_valid) {
 		return out;
@@ -3452,7 +3452,7 @@ PackedInt32Array GototRenderServer::gpu_hzb_dbg_scan_buffer(int p_level) {
 	return out;
 }
 
-PackedInt32Array GototRenderServer::gpu_hzb_dbg_probe() {
+PackedInt32Array GneRenderServer::gpu_hzb_dbg_probe() {
 	PackedInt32Array out;
 	if (!gpu_hzb_prod_valid) {
 		return out;
@@ -3468,13 +3468,13 @@ PackedInt32Array GototRenderServer::gpu_hzb_dbg_probe() {
 	return out;
 }
 
-bool GototRenderServer::_create_raster_pipeline() {
+bool GneRenderServer::_create_raster_pipeline() {
 	String error;
 
 	Vector<uint8_t> vert_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_VERTEX, String(gpu_raster_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (vert_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] raster vertex shader compile failed:");
+		print_error("[GNE] raster vertex shader compile failed:");
 		print_error(error);
 		return false;
 	}
@@ -3482,7 +3482,7 @@ bool GototRenderServer::_create_raster_pipeline() {
 	Vector<uint8_t> frag_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_FRAGMENT, String(gpu_raster_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (frag_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] raster fragment shader compile failed:");
+		print_error("[GNE] raster fragment shader compile failed:");
 		print_error(error);
 		return false;
 	}
@@ -3497,9 +3497,9 @@ bool GototRenderServer::_create_raster_pipeline() {
 	fs.spirv = frag_spirv;
 	stages.push_back(fs);
 
-	raster_shader = rendering_device->shader_create_from_spirv(stages, "gotot_raster");
+	raster_shader = rendering_device->shader_create_from_spirv(stages, "gne_raster");
 	if (raster_shader.is_null()) {
-		print_error("[GOTOT-NEXT] raster shader_create_from_spirv failed.");
+		print_error("[GNE] raster shader_create_from_spirv failed.");
 		return false;
 	}
 
@@ -3512,11 +3512,11 @@ bool GototRenderServer::_create_raster_pipeline() {
 	cf.usage_bits = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	raster_color_texture = rendering_device->texture_create(cf, RD::TextureView());
 	if (raster_color_texture.is_null()) {
-		print_error("[GOTOT-NEXT] raster color texture_create failed.");
+		print_error("[GNE] raster color texture_create failed.");
 		return false;
 	}
 
-	// GOTOT-009: real depth attachment, D32_SFLOAT, cleared to 1.0 (far) at the
+	// GNE-009: real depth attachment, D32_SFLOAT, cleared to 1.0 (far) at the
 	// start of every frame by the draw list flags (DRAW_CLEAR_DEPTH). Exact 004
 	// usage bits (the prod pyramid reads the R32 view-space-depth copy below, so
 	// the D32 needs no sampling usage).
@@ -3529,11 +3529,11 @@ bool GototRenderServer::_create_raster_pipeline() {
 	df.usage_bits = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	raster_depth_texture = rendering_device->texture_create(df, RD::TextureView());
 	if (raster_depth_texture.is_null()) {
-		print_error("[GOTOT-NEXT] raster depth texture_create failed.");
+		print_error("[GNE] raster depth texture_create failed.");
 		return false;
 	}
 
-	// GOTOT-012: R32_SFLOAT view-space depth (positive z_view) written by the
+	// GNE-012: R32_SFLOAT view-space depth (positive z_view) written by the
 	// batch/group/raster fragment shaders as output location 1 in the SAME draw
 	// pass as the D32. The production pyramid's depth-source pass samples THIS
 	// color texture instead of the D32 (the D32 sampled view is a broken/no-op
@@ -3547,7 +3547,7 @@ bool GototRenderServer::_create_raster_pipeline() {
 	vf.usage_bits = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	raster_viewz_texture = rendering_device->texture_create(vf, RD::TextureView());
 	if (raster_viewz_texture.is_null()) {
-		print_error("[GOTOT-NEXT] raster view-z texture_create failed.");
+		print_error("[GNE] raster view-z texture_create failed.");
 		return false;
 	}
 
@@ -3569,7 +3569,7 @@ bool GototRenderServer::_create_raster_pipeline() {
 	afs.push_back(vf_af);
 	raster_framebuffer_format = rendering_device->framebuffer_format_create(afs);
 	if (raster_framebuffer_format < 0) {
-		print_error("[GOTOT-NEXT] raster framebuffer_format_create failed.");
+		print_error("[GNE] raster framebuffer_format_create failed.");
 		return false;
 	}
 
@@ -3581,7 +3581,7 @@ bool GototRenderServer::_create_raster_pipeline() {
 	// themselves (identical layout; the check only guards against stale ids).
 	raster_framebuffer = rendering_device->framebuffer_create(attachments, RD::INVALID_ID);
 	if (raster_framebuffer.is_null()) {
-		print_error("[GOTOT-NEXT] raster framebuffer_create failed.");
+		print_error("[GNE] raster framebuffer_create failed.");
 		return false;
 	}
 	raster_depth_attached = true;
@@ -3596,7 +3596,7 @@ bool GototRenderServer::_create_raster_pipeline() {
 	raster_pipeline = rendering_device->render_pipeline_create(
 			raster_shader, raster_framebuffer_format, RD::INVALID_ID, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (raster_pipeline.is_null()) {
-		print_error("[GOTOT-NEXT] raster render_pipeline_create failed.");
+		print_error("[GNE] raster render_pipeline_create failed.");
 		return false;
 	}
 
@@ -3619,25 +3619,25 @@ bool GototRenderServer::_create_raster_pipeline() {
 
 	raster_uniform_set = rendering_device->uniform_set_create(uniforms, raster_shader, 0);
 	if (raster_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] raster uniform_set_create failed.");
+		print_error("[GNE] raster uniform_set_create failed.");
 		return false;
 	}
 
-	print_line("[GOTOT-NEXT] Raster framebuffer: color R8G8B8A8 + depth D32_SFLOAT attached=" +
+	print_line("[GNE] Raster framebuffer: color R8G8B8A8 + depth D32_SFLOAT attached=" +
 			itos((int)raster_depth_attached));
 
 	return true;
 }
 
-// GOTOT-008A: builds the real-mesh pipeline + uniform set. Uses a REAL vertex
+// GNE-008A: builds the real-mesh pipeline + uniform set. Uses a REAL vertex
 // format so the vertex shader reads a REAL vertex attribute from a vertex buffer.
-bool GototRenderServer::_create_mesh_pipeline() {
+bool GneRenderServer::_create_mesh_pipeline() {
 	String error;
 
 	Vector<uint8_t> vert_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_VERTEX, String(gpu_mesh_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (vert_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] mesh vertex shader compile failed:");
+		print_error("[GNE] mesh vertex shader compile failed:");
 		print_error(error);
 		return false;
 	}
@@ -3645,7 +3645,7 @@ bool GototRenderServer::_create_mesh_pipeline() {
 	Vector<uint8_t> frag_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_FRAGMENT, String(gpu_mesh_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (frag_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] mesh fragment shader compile failed:");
+		print_error("[GNE] mesh fragment shader compile failed:");
 		print_error(error);
 		return false;
 	}
@@ -3660,16 +3660,16 @@ bool GototRenderServer::_create_mesh_pipeline() {
 	fs.spirv = frag_spirv;
 	stages.push_back(fs);
 
-	mesh_shader = rendering_device->shader_create_from_spirv(stages, "gotot_mesh");
+	mesh_shader = rendering_device->shader_create_from_spirv(stages, "gne_mesh");
 	if (mesh_shader.is_null()) {
-		print_error("[GOTOT-NEXT] mesh shader_create_from_spirv failed.");
+		print_error("[GNE] mesh shader_create_from_spirv failed.");
 		return false;
 	}
 
 	RD::PipelineRasterizationState rs;
 	RD::PipelineMultisampleState ms;
 	RD::PipelineDepthStencilState ds;
-	// GOTOT-009: the REAL MESH path tests and writes depth (LESS_OR_EQUAL,
+	// GNE-009: the REAL MESH path tests and writes depth (LESS_OR_EQUAL,
 	// write enabled), depth buffer cleared to 1.0 (far) each frame.
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
@@ -3678,7 +3678,7 @@ bool GototRenderServer::_create_mesh_pipeline() {
 	mesh_pipeline = rendering_device->render_pipeline_create(
 			mesh_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mesh_pipeline.is_null()) {
-		print_error("[GOTOT-NEXT] mesh render_pipeline_create failed.");
+		print_error("[GNE] mesh render_pipeline_create failed.");
 		return false;
 	}
 	mesh_depth_enabled = true;
@@ -3702,23 +3702,23 @@ bool GototRenderServer::_create_mesh_pipeline() {
 
 	mesh_uniform_set = rendering_device->uniform_set_create(uniforms, mesh_shader, 0);
 	if (mesh_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] mesh uniform_set_create failed.");
+		print_error("[GNE] mesh uniform_set_create failed.");
 		return false;
 	}
 
 	return true;
 }
 
-bool GototRenderServer::gpu_mesh_create() {
+bool GneRenderServer::gpu_mesh_create() {
 	if (!gpu_scene_valid || !gpu_raster_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create: no gpu scene/raster. Call gpu_scene_create first.");
+		print_error("[GNE] gpu_mesh_create: no gpu scene/raster. Call gpu_scene_create first.");
 		return false;
 	}
 
 	_destroy_mesh();
 
-	// GOTOT-008A: a single real CUBE mesh (positions only) occupying mesh table
-	// slot 0. No normals, no UVs, no materials, no textures. GOTOT-010 then
+	// GNE-008A: a single real CUBE mesh (positions only) occupying mesh table
+	// slot 0. No normals, no UVs, no materials, no textures. GNE-010 then
 	// registers additional meshes (gpu_mesh_create_from_arrays) as appended
 	// sub-ranges of the SHARED vertex/index buffers below.
 	const float cube_positions[8][3] = {
@@ -3759,43 +3759,43 @@ bool GototRenderServer::gpu_mesh_create() {
 	attrs.push_back(attr);
 	mesh_vertex_format = rendering_device->vertex_format_create(attrs);
 	if (mesh_vertex_format < 0) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create: vertex_format_create failed.");
+		print_error("[GNE] gpu_mesh_create: vertex_format_create failed.");
 		_destroy_mesh();
 		return false;
 	}
 
-	// GOTOT-010: the SHARED vertex/index buffers get capacity for the whole mesh
+	// GNE-010: the SHARED vertex/index buffers get capacity for the whole mesh
 	// table up-front; the cube is uploaded at offset 0 so every existing 008A/009
 	// draw (first_index/vertex_offset 0, index_count 36) renders identically.
 	// Per-mesh data is appended at increasing offsets by create_from_arrays.
 	Vector<uint8_t> vcap_bytes;
-	vcap_bytes.resize((uint32_t)GOTOT_MAX_MESH_VERTS * 12);
-	mesh_vertex_buffer = rendering_device->vertex_buffer_create((uint32_t)(GOTOT_MAX_MESH_VERTS * 12), vcap_bytes);
+	vcap_bytes.resize((uint32_t)GNE_MAX_MESH_VERTS * 12);
+	mesh_vertex_buffer = rendering_device->vertex_buffer_create((uint32_t)(GNE_MAX_MESH_VERTS * 12), vcap_bytes);
 	Vector<uint8_t> icap_bytes;
-	icap_bytes.resize((uint32_t)GOTOT_MAX_MESH_INDICES * 4);
-	mesh_index_buffer = rendering_device->index_buffer_create(GOTOT_MAX_MESH_INDICES, RD::INDEX_BUFFER_FORMAT_UINT32, icap_bytes);
+	icap_bytes.resize((uint32_t)GNE_MAX_MESH_INDICES * 4);
+	mesh_index_buffer = rendering_device->index_buffer_create(GNE_MAX_MESH_INDICES, RD::INDEX_BUFFER_FORMAT_UINT32, icap_bytes);
 	if (mesh_vertex_buffer.is_null() || mesh_index_buffer.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create: vertex/index buffer_create failed.");
+		print_error("[GNE] gpu_mesh_create: vertex/index buffer_create failed.");
 		_destroy_mesh();
 		return false;
 	}
 	rendering_device->buffer_update(mesh_vertex_buffer, 0, (uint32_t)vertex_bytes.size(), vertex_bytes.ptr());
 	rendering_device->buffer_update(mesh_index_buffer, 0, (uint32_t)index_bytes.size(), index_bytes.ptr());
 
-	// GOTOT-011: storage mirrors of the shared vertex/index buffers so the
+	// GNE-011: storage mirrors of the shared vertex/index buffers so the
 	// procedural (non-indexed) group draw can fetch geometry as SSBOs (RD
 	// vertex/index buffer owners cannot be bound in a uniform set).
 	{
 		Vector<uint8_t> vscap_bytes;
-		vscap_bytes.resize((uint32_t)GOTOT_MAX_MESH_VERTS * 12);
+		vscap_bytes.resize((uint32_t)GNE_MAX_MESH_VERTS * 12);
 		memcpy(vscap_bytes.ptrw(), vertex_bytes.ptr(), vertex_bytes.size());
-		mesh_vertex_storage_buffer = rendering_device->storage_buffer_create((uint32_t)(GOTOT_MAX_MESH_VERTS * 12), vscap_bytes);
+		mesh_vertex_storage_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_MAX_MESH_VERTS * 12), vscap_bytes);
 		Vector<uint8_t> iscap_bytes;
-		iscap_bytes.resize((uint32_t)GOTOT_MAX_MESH_INDICES * 4);
+		iscap_bytes.resize((uint32_t)GNE_MAX_MESH_INDICES * 4);
 		memcpy(iscap_bytes.ptrw(), index_bytes.ptr(), index_bytes.size());
-		mesh_index_storage_buffer = rendering_device->storage_buffer_create((uint32_t)(GOTOT_MAX_MESH_INDICES * 4), iscap_bytes);
+		mesh_index_storage_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_MAX_MESH_INDICES * 4), iscap_bytes);
 		if (mesh_vertex_storage_buffer.is_null() || mesh_index_storage_buffer.is_null()) {
-			print_error("[GOTOT-NEXT] gpu_mesh_create: storage mirror buffer_create failed.");
+			print_error("[GNE] gpu_mesh_create: storage mirror buffer_create failed.");
 			_destroy_mesh();
 			return false;
 		}
@@ -3806,17 +3806,17 @@ bool GototRenderServer::gpu_mesh_create() {
 	mesh_vertex_array = rendering_device->vertex_array_create(8, mesh_vertex_format, src_buffers);
 	mesh_index_array = rendering_device->index_array_create(mesh_index_buffer, 0, 36);
 	if (mesh_vertex_array.is_null() || mesh_index_array.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create: vertex/index array_create failed.");
+		print_error("[GNE] gpu_mesh_create: vertex/index array_create failed.");
 		_destroy_mesh();
 		return false;
 	}
-	// GOTOT-010: full-capacity arrays bound by the multi-batch draw path (its
+	// GNE-010: full-capacity arrays bound by the multi-batch draw path (its
 	// commands may reference any sub-range of the shared buffers via vertex_offset
 	// / first_index).
-	mesh_010_vertex_array = rendering_device->vertex_array_create(GOTOT_MAX_MESH_VERTS, mesh_vertex_format, src_buffers);
-	mesh_010_index_array = rendering_device->index_array_create(mesh_index_buffer, 0, GOTOT_MAX_MESH_INDICES);
+	mesh_010_vertex_array = rendering_device->vertex_array_create(GNE_MAX_MESH_VERTS, mesh_vertex_format, src_buffers);
+	mesh_010_index_array = rendering_device->index_array_create(mesh_index_buffer, 0, GNE_MAX_MESH_INDICES);
 	if (mesh_010_vertex_array.is_null() || mesh_010_index_array.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create: 010 vertex/index array_create failed.");
+		print_error("[GNE] gpu_mesh_create: 010 vertex/index array_create failed.");
 		_destroy_mesh();
 		return false;
 	}
@@ -3829,14 +3829,14 @@ bool GototRenderServer::gpu_mesh_create() {
 		return false;
 	}
 
-	// GOTOT-008A: mesh indirect draw args. Reuses the exact GOTOT-003 indirect
+	// GNE-008A: mesh indirect draw args. Reuses the exact GNE-003 indirect
 	// argument system/buffer; a distinct pipeline is used because the mesh path
 	// pushes its real index_count instead of hardcoding it.
 	String drawargs_error;
 	Vector<uint8_t> drawargs_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_COMPUTE, String(gpu_mesh_drawargs_compute_glsl), RD::SHADER_LANGUAGE_GLSL, &drawargs_error);
 	if (drawargs_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create: mesh drawargs shader compile failed:");
+		print_error("[GNE] gpu_mesh_create: mesh drawargs shader compile failed:");
 		print_error(drawargs_error);
 		_destroy_mesh();
 		return false;
@@ -3848,9 +3848,9 @@ bool GototRenderServer::gpu_mesh_create() {
 	Vector<RD::ShaderStageSPIRVData> da_stages;
 	da_stages.push_back(da_stage);
 
-	mesh_drawargs_shader = rendering_device->shader_create_from_spirv(da_stages, "gotot_mesh_drawargs");
+	mesh_drawargs_shader = rendering_device->shader_create_from_spirv(da_stages, "gne_mesh_drawargs");
 	if (mesh_drawargs_shader.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create: mesh drawargs shader_create_from_spirv failed.");
+		print_error("[GNE] gpu_mesh_create: mesh drawargs shader_create_from_spirv failed.");
 		_destroy_mesh();
 		return false;
 	}
@@ -3871,27 +3871,27 @@ bool GototRenderServer::gpu_mesh_create() {
 
 	mesh_drawargs_uniform_set = rendering_device->uniform_set_create(da_uniforms, mesh_drawargs_shader, 0);
 	if (mesh_drawargs_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create: mesh drawargs uniform_set_create failed.");
+		print_error("[GNE] gpu_mesh_create: mesh drawargs uniform_set_create failed.");
 		_destroy_mesh();
 		return false;
 	}
 
-	// GOTOT-010: mesh table GPU resources + batch assembly/draw pipelines.
+	// GNE-010: mesh table GPU resources + batch assembly/draw pipelines.
 	if (!_init_mesh_table_gpu()) {
 		_destroy_mesh();
 		return false;
 	}
 
 	gpu_mesh_valid = true;
-	print_line("[GOTOT-NEXT] GPU Mesh created. vertices=" + itos(mesh_vertex_count) +
+	print_line("[GNE] GPU Mesh created. vertices=" + itos(mesh_vertex_count) +
 			" indices=" + itos(mesh_index_count) +
 			" vertex_format=" + itos((int)mesh_vertex_format));
 	return true;
 }
 
-bool GototRenderServer::gpu_mesh_drawargs_finalize() {
+bool GneRenderServer::gpu_mesh_drawargs_finalize() {
 	if (!gpu_scene_valid || !gpu_mesh_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_drawargs_finalize: no gpu mesh. Call gpu_mesh_create first.");
+		print_error("[GNE] gpu_mesh_drawargs_finalize: no gpu mesh. Call gpu_mesh_create first.");
 		return false;
 	}
 
@@ -3910,13 +3910,13 @@ bool GototRenderServer::gpu_mesh_drawargs_finalize() {
 	return true;
 }
 
-bool GototRenderServer::gpu_mesh_indirect_draw() {
+bool GneRenderServer::gpu_mesh_indirect_draw() {
 	if (!gpu_scene_valid || !gpu_mesh_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_indirect_draw: no gpu mesh. Call gpu_mesh_create first.");
+		print_error("[GNE] gpu_mesh_indirect_draw: no gpu mesh. Call gpu_mesh_create first.");
 		return false;
 	}
 	if (!frustum_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_indirect_draw: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_mesh_indirect_draw: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 
@@ -3925,7 +3925,7 @@ bool GototRenderServer::gpu_mesh_indirect_draw() {
 	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
 	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_COLOR_1 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
 	if (dl == RD::INVALID_ID) {
-		print_error("[GOTOT-NEXT] gpu_mesh_indirect_draw: draw_list_begin failed.");
+		print_error("[GNE] gpu_mesh_indirect_draw: draw_list_begin failed.");
 		return false;
 	}
 	rendering_device->draw_list_bind_render_pipeline(dl, mesh_pipeline);
@@ -3941,25 +3941,25 @@ bool GototRenderServer::gpu_mesh_indirect_draw() {
 	return true;
 }
 
-int GototRenderServer::gpu_mesh_get_index_count() const {
+int GneRenderServer::gpu_mesh_get_index_count() const {
 	return mesh_index_count;
 }
 
-int GototRenderServer::gpu_mesh_get_vertex_count() const {
+int GneRenderServer::gpu_mesh_get_vertex_count() const {
 	return mesh_vertex_count;
 }
 
-// GOTOT-010: creates the mesh table GPU buffers + the batch assembly compute
+// GNE-010: creates the mesh table GPU buffers + the batch assembly compute
 // pipelines + the multi-batch draw pipeline, and registers the 008A cube as
 // mesh table slot 0. Called from gpu_mesh_create (additive).
-bool GototRenderServer::_init_mesh_table_gpu() {
+bool GneRenderServer::_init_mesh_table_gpu() {
 	String error;
 
 	auto compile_compute = [&](const char *p_glsl, const char *p_name, RID &r_shader) -> bool {
 		Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
 				RD::SHADER_STAGE_COMPUTE, String(p_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 		if (spirv.is_empty()) {
-			print_error(String("[GOTOT-NEXT] ") + p_name + " shader compile failed:");
+			print_error(String("[GNE] ") + p_name + " shader compile failed:");
 			print_error(error);
 			return false;
 		}
@@ -3975,41 +3975,41 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	int64_t inst = gpu_instance_count;
 
 	mesh_id_buffer = rendering_device->storage_buffer_create((uint32_t)inst * 4);
-	mesh_table_buffer = rendering_device->storage_buffer_create((uint32_t)GOTOT_MESH_TABLE_SIZE * sizeof(GototMeshDesc));
-	mesh_color_buffer = rendering_device->storage_buffer_create((uint32_t)GOTOT_MESH_TABLE_SIZE * 16);
-	batch_count_buffer = rendering_device->storage_buffer_create((uint32_t)GOTOT_MESH_TABLE_SIZE * 4);
-	batch_offset_buffer = rendering_device->storage_buffer_create((uint32_t)GOTOT_MESH_TABLE_SIZE * 4);
-	mesh_scratch_buffer = rendering_device->storage_buffer_create((uint32_t)(inst * GOTOT_MESH_TABLE_SIZE * 4));
+	mesh_table_buffer = rendering_device->storage_buffer_create((uint32_t)GNE_MESH_TABLE_SIZE * sizeof(GneMeshDesc));
+	mesh_color_buffer = rendering_device->storage_buffer_create((uint32_t)GNE_MESH_TABLE_SIZE * 16);
+	batch_count_buffer = rendering_device->storage_buffer_create((uint32_t)GNE_MESH_TABLE_SIZE * 4);
+	batch_offset_buffer = rendering_device->storage_buffer_create((uint32_t)GNE_MESH_TABLE_SIZE * 4);
+	mesh_scratch_buffer = rendering_device->storage_buffer_create((uint32_t)(inst * GNE_MESH_TABLE_SIZE * 4));
 	batch_instances_buffer = rendering_device->storage_buffer_create((uint32_t)inst * 4);
 	batch_args_buffer = rendering_device->storage_buffer_create(
-			(uint32_t)(GOTOT_MESH_TABLE_SIZE * 20), Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
+			(uint32_t)(GNE_MESH_TABLE_SIZE * 20), Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
 	batch_total_buffer = rendering_device->storage_buffer_create(4);
-	// GOTOT-011: grouping outputs. group_args holds non-indexed
+	// GNE-011: grouping outputs. group_args holds non-indexed
 	// VkDrawIndirectCommand[64] (16 bytes each, INDIRECT usage for the
 	// procedural multi-draw); group_member_count/list hold the batch order
 	// evidence (members per group + per-group mesh ids).
 	group_args_buffer = rendering_device->storage_buffer_create(
-			(uint32_t)(GOTOT_MESH_TABLE_SIZE * 16), Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
-	group_member_count_buffer = rendering_device->storage_buffer_create((uint32_t)(GOTOT_MESH_TABLE_SIZE * 4));
-	group_member_list_buffer = rendering_device->storage_buffer_create((uint32_t)(GOTOT_MESH_TABLE_SIZE * GOTOT_MESH_TABLE_SIZE * 4));
+			(uint32_t)(GNE_MESH_TABLE_SIZE * 16), Vector<uint8_t>(), RD::STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
+	group_member_count_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_MESH_TABLE_SIZE * 4));
+	group_member_list_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_MESH_TABLE_SIZE * GNE_MESH_TABLE_SIZE * 4));
 	if (mesh_id_buffer.is_null() || mesh_table_buffer.is_null() || mesh_color_buffer.is_null() ||
 			batch_count_buffer.is_null() || batch_offset_buffer.is_null() || mesh_scratch_buffer.is_null() ||
 			batch_instances_buffer.is_null() || batch_args_buffer.is_null() || batch_total_buffer.is_null() ||
 			group_args_buffer.is_null() || group_member_count_buffer.is_null() || group_member_list_buffer.is_null()) {
-		print_error("[GOTOT-NEXT] _init_mesh_table_gpu: buffer_create failed.");
+		print_error("[GNE] _init_mesh_table_gpu: buffer_create failed.");
 		return false;
 	}
 	// All mesh_id entries default to 0 (the cube) until a test sets them.
 	rendering_device->buffer_clear(mesh_id_buffer, 0, (uint32_t)inst * 4);
 
-	for (int i = 0; i < GOTOT_MESH_TABLE_SIZE; i++) {
+	for (int i = 0; i < GNE_MESH_TABLE_SIZE; i++) {
 		mesh_colors[i] = Color(0, 0, 0, 1);
 	}
-	mesh_colors[0] = gotot_mesh_palette(0);
+	mesh_colors[0] = gne_mesh_palette(0);
 	rendering_device->buffer_update(mesh_color_buffer, 0, 16, &mesh_colors[0]);
 
 	// Register the cube as mesh table slot 0 (shared buffer offset 0).
-	GototMeshDesc cube_desc;
+	GneMeshDesc cube_desc;
 	memset(&cube_desc, 0, sizeof(cube_desc));
 	cube_desc.index_buffer_slot = 0;
 	cube_desc.vertex_buffer_slot = 0;
@@ -4017,13 +4017,13 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	cube_desc.vertex_count = 8;
 	cube_desc.first_index = 0;
 	cube_desc.vertex_offset = 0;
-	rendering_device->buffer_update(mesh_table_buffer, 0, (uint32_t)sizeof(GototMeshDesc), &cube_desc);
+	rendering_device->buffer_update(mesh_table_buffer, 0, (uint32_t)sizeof(GneMeshDesc), &cube_desc);
 	mesh_table_count = 1;
 	mesh_next_vertex_offset = 8;
 	mesh_next_index_offset = 36;
 
 	// Pass 1: per-mesh counting.
-	if (!compile_compute(gpu_mesh_batch_count_glsl, "gotot_mesh_batch_count", batch_count_shader)) {
+	if (!compile_compute(gpu_mesh_batch_count_glsl, "gne_mesh_batch_count", batch_count_shader)) {
 		return false;
 	}
 	batch_count_pipeline = rendering_device->compute_pipeline_create(batch_count_shader);
@@ -4038,12 +4038,12 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	}
 	batch_count_uniform_set = rendering_device->uniform_set_create(bc_uniforms, batch_count_shader, 0);
 	if (batch_count_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] _init_mesh_table_gpu: batch_count uniform_set_create failed.");
+		print_error("[GNE] _init_mesh_table_gpu: batch_count uniform_set_create failed.");
 		return false;
 	}
 
 	// Pass 2: workgroup-parallel prefix sum + batch assembly + grouping.
-	if (!compile_compute(gpu_mesh_batch_assemble_glsl, "gotot_mesh_batch_assemble", batch_assemble_shader)) {
+	if (!compile_compute(gpu_mesh_batch_assemble_glsl, "gne_mesh_batch_assemble", batch_assemble_shader)) {
 		return false;
 	}
 	batch_assemble_pipeline = rendering_device->compute_pipeline_create(batch_assemble_shader);
@@ -4062,7 +4062,7 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	}
 	batch_assemble_uniform_set = rendering_device->uniform_set_create(as_uniforms, batch_assemble_shader, 0);
 	if (batch_assemble_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] _init_mesh_table_gpu: batch_assemble uniform_set_create failed.");
+		print_error("[GNE] _init_mesh_table_gpu: batch_assemble uniform_set_create failed.");
 		return false;
 	}
 
@@ -4070,14 +4070,14 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	Vector<uint8_t> vert_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_VERTEX, String(gpu_mesh_batch_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (vert_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] mesh batch vertex shader compile failed:");
+		print_error("[GNE] mesh batch vertex shader compile failed:");
 		print_error(error);
 		return false;
 	}
 	Vector<uint8_t> frag_spirv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_FRAGMENT, String(gpu_mesh_batch_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (frag_spirv.is_empty()) {
-		print_error("[GOTOT-NEXT] mesh batch fragment shader compile failed:");
+		print_error("[GNE] mesh batch fragment shader compile failed:");
 		print_error(error);
 		return false;
 	}
@@ -4090,9 +4090,9 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	fs.shader_stage = RD::SHADER_STAGE_FRAGMENT;
 	fs.spirv = frag_spirv;
 	stages.push_back(fs);
-	mesh_batch_shader = rendering_device->shader_create_from_spirv(stages, "gotot_mesh_batch");
+	mesh_batch_shader = rendering_device->shader_create_from_spirv(stages, "gne_mesh_batch");
 	if (mesh_batch_shader.is_null()) {
-		print_error("[GOTOT-NEXT] mesh batch shader_create_from_spirv failed.");
+		print_error("[GNE] mesh batch shader_create_from_spirv failed.");
 		return false;
 	}
 
@@ -4106,7 +4106,7 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	mesh_batch_pipeline = rendering_device->render_pipeline_create(
 			mesh_batch_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mesh_batch_pipeline.is_null()) {
-		print_error("[GOTOT-NEXT] mesh batch render_pipeline_create failed.");
+		print_error("[GNE] mesh batch render_pipeline_create failed.");
 		return false;
 	}
 
@@ -4126,11 +4126,11 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	}
 	mesh_batch_uniform_set = rendering_device->uniform_set_create(uniforms, mesh_batch_shader, 0);
 	if (mesh_batch_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] mesh batch uniform_set_create failed.");
+		print_error("[GNE] mesh batch uniform_set_create failed.");
 		return false;
 	}
 
-	// GOTOT-011: grouped (procedural, NON-indexed) draw pipeline. The vertex
+	// GNE-011: grouped (procedural, NON-indexed) draw pipeline. The vertex
 	// shader selects each instance's geometry sub-range through the mesh table,
 	// so one VkDrawIndirectCommand per GROUP draws all of its member instances.
 	// An EMPTY vertex format is used (geometry comes from the SSBO storage
@@ -4140,14 +4140,14 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 		Vector<uint8_t> gvert_spirv = rendering_device->shader_compile_spirv_from_source(
 				RD::SHADER_STAGE_VERTEX, String(gpu_mesh_group_batch_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 		if (gvert_spirv.is_empty()) {
-			print_error("[GOTOT-NEXT] mesh group batch vertex shader compile failed:");
+			print_error("[GNE] mesh group batch vertex shader compile failed:");
 			print_error(error);
 			return false;
 		}
 		Vector<uint8_t> gfrag_spirv = rendering_device->shader_compile_spirv_from_source(
 				RD::SHADER_STAGE_FRAGMENT, String(gpu_mesh_batch_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 		if (gfrag_spirv.is_empty()) {
-			print_error("[GOTOT-NEXT] mesh group batch fragment shader compile failed:");
+			print_error("[GNE] mesh group batch fragment shader compile failed:");
 			print_error(error);
 			return false;
 		}
@@ -4160,20 +4160,20 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 		gfs.shader_stage = RD::SHADER_STAGE_FRAGMENT;
 		gfs.spirv = gfrag_spirv;
 		gstages.push_back(gfs);
-		group_batch_shader = rendering_device->shader_create_from_spirv(gstages, "gotot_mesh_group_batch");
+		group_batch_shader = rendering_device->shader_create_from_spirv(gstages, "gne_mesh_group_batch");
 		if (group_batch_shader.is_null()) {
-			print_error("[GOTOT-NEXT] mesh group batch shader_create_from_spirv failed.");
+			print_error("[GNE] mesh group batch shader_create_from_spirv failed.");
 			return false;
 		}
 
 		group_vertex_format = rendering_device->vertex_format_create(Vector<RD::VertexAttribute>());
 		if (group_vertex_format < 0) {
-			print_error("[GOTOT-NEXT] mesh group batch vertex_format_create failed.");
+			print_error("[GNE] mesh group batch vertex_format_create failed.");
 			return false;
 		}
 		group_vertex_array = rendering_device->vertex_array_create(1, group_vertex_format, Vector<RID>(), Vector<uint64_t>());
 		if (group_vertex_array.is_null()) {
-			print_error("[GOTOT-NEXT] mesh group batch vertex_array_create failed.");
+			print_error("[GNE] mesh group batch vertex_array_create failed.");
 			return false;
 		}
 
@@ -4187,7 +4187,7 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 		group_batch_pipeline = rendering_device->render_pipeline_create(
 				group_batch_shader, raster_framebuffer_format, group_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, grs, gms, gds, gbs, 0, 0);
 		if (group_batch_pipeline.is_null()) {
-			print_error("[GOTOT-NEXT] mesh group batch render_pipeline_create failed.");
+			print_error("[GNE] mesh group batch render_pipeline_create failed.");
 			return false;
 		}
 
@@ -4208,7 +4208,7 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 		}
 		group_batch_uniform_set = rendering_device->uniform_set_create(guniforms, group_batch_shader, 0);
 		if (group_batch_uniform_set.is_null()) {
-			print_error("[GOTOT-NEXT] mesh group batch uniform_set_create failed.");
+			print_error("[GNE] mesh group batch uniform_set_create failed.");
 			return false;
 		}
 	}
@@ -4218,12 +4218,12 @@ bool GototRenderServer::_init_mesh_table_gpu() {
 	last_batch_count = 0;
 	last_group_count = 0;
 	last_used_group_draw = false;
-	print_line("[GOTOT-NEXT] Mesh table (GOTOT-010) initialized. slots=" + itos(mesh_table_count) +
-			" max_verts=" + itos(GOTOT_MAX_MESH_VERTS) + " max_indices=" + itos(GOTOT_MAX_MESH_INDICES));
+	print_line("[GNE] Mesh table (GNE-010) initialized. slots=" + itos(mesh_table_count) +
+			" max_verts=" + itos(GNE_MAX_MESH_VERTS) + " max_indices=" + itos(GNE_MAX_MESH_INDICES));
 	return true;
 }
 
-void GototRenderServer::gpu_scene_set_instance_mesh(int p_index, int p_mesh_id) {
+void GneRenderServer::gpu_scene_set_instance_mesh(int p_index, int p_mesh_id) {
 	if (!gpu_scene_valid || !gpu_mesh_batch_valid || p_index < 0 || p_index >= gpu_instance_count || mesh_id_buffer.is_null()) {
 		return;
 	}
@@ -4234,7 +4234,7 @@ void GototRenderServer::gpu_scene_set_instance_mesh(int p_index, int p_mesh_id) 
 	rendering_device->buffer_update(mesh_id_buffer, (uint32_t)(p_index * 4), 4, &v);
 }
 
-int GototRenderServer::gpu_scene_get_instance_mesh(int p_index) {
+int GneRenderServer::gpu_scene_get_instance_mesh(int p_index) {
 	if (!gpu_scene_valid || !gpu_mesh_batch_valid || p_index < 0 || p_index >= gpu_instance_count || mesh_id_buffer.is_null()) {
 		return -1;
 	}
@@ -4247,29 +4247,29 @@ int GototRenderServer::gpu_scene_get_instance_mesh(int p_index) {
 	return (int)v;
 }
 
-int GototRenderServer::gpu_mesh_create_from_arrays(const PackedVector3Array &p_verts, const PackedInt32Array &p_indices) {
+int GneRenderServer::gpu_mesh_create_from_arrays(const PackedVector3Array &p_verts, const PackedInt32Array &p_indices) {
 	if (!gpu_scene_valid || !gpu_mesh_valid || !gpu_mesh_batch_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create_from_arrays: no batch mesh. Call gpu_mesh_create first.");
+		print_error("[GNE] gpu_mesh_create_from_arrays: no batch mesh. Call gpu_mesh_create first.");
 		return -1;
 	}
-	if (mesh_table_count >= GOTOT_MESH_TABLE_SIZE) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create_from_arrays: mesh table full.");
+	if (mesh_table_count >= GNE_MESH_TABLE_SIZE) {
+		print_error("[GNE] gpu_mesh_create_from_arrays: mesh table full.");
 		return -1;
 	}
 	int vc = p_verts.size();
 	int ic = p_indices.size();
 	if (vc <= 0 || ic <= 0) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create_from_arrays: empty arrays.");
+		print_error("[GNE] gpu_mesh_create_from_arrays: empty arrays.");
 		return -1;
 	}
 	for (int i = 0; i < ic; i++) {
 		if (p_indices[i] < 0 || p_indices[i] >= vc) {
-			print_error("[GOTOT-NEXT] gpu_mesh_create_from_arrays: index out of range.");
+			print_error("[GNE] gpu_mesh_create_from_arrays: index out of range.");
 			return -1;
 		}
 	}
-	if (mesh_next_vertex_offset + vc > GOTOT_MAX_MESH_VERTS || mesh_next_index_offset + ic > GOTOT_MAX_MESH_INDICES) {
-		print_error("[GOTOT-NEXT] gpu_mesh_create_from_arrays: shared buffer capacity exceeded.");
+	if (mesh_next_vertex_offset + vc > GNE_MAX_MESH_VERTS || mesh_next_index_offset + ic > GNE_MAX_MESH_INDICES) {
+		print_error("[GNE] gpu_mesh_create_from_arrays: shared buffer capacity exceeded.");
 		return -1;
 	}
 
@@ -4294,7 +4294,7 @@ int GototRenderServer::gpu_mesh_create_from_arrays(const PackedVector3Array &p_v
 		rendering_device->buffer_update(mesh_index_storage_buffer, (uint32_t)(mesh_next_index_offset * 4), (uint32_t)(ic * 4), ibytes.ptr());
 	}
 
-	GototMeshDesc desc;
+	GneMeshDesc desc;
 	memset(&desc, 0, sizeof(desc));
 	desc.index_buffer_slot = 0;
 	desc.vertex_buffer_slot = 0;
@@ -4302,9 +4302,9 @@ int GototRenderServer::gpu_mesh_create_from_arrays(const PackedVector3Array &p_v
 	desc.vertex_count = (uint32_t)vc;
 	desc.first_index = (uint32_t)mesh_next_index_offset;
 	desc.vertex_offset = mesh_next_vertex_offset;
-	rendering_device->buffer_update(mesh_table_buffer, (uint32_t)(mesh_table_count * sizeof(GototMeshDesc)), (uint32_t)sizeof(GototMeshDesc), &desc);
+	rendering_device->buffer_update(mesh_table_buffer, (uint32_t)(mesh_table_count * sizeof(GneMeshDesc)), (uint32_t)sizeof(GneMeshDesc), &desc);
 
-	Color c = gotot_mesh_palette(mesh_table_count);
+	Color c = gne_mesh_palette(mesh_table_count);
 	mesh_colors[mesh_table_count] = c;
 	rendering_device->buffer_update(mesh_color_buffer, (uint32_t)(mesh_table_count * 16), 16, &c);
 
@@ -4312,18 +4312,18 @@ int GototRenderServer::gpu_mesh_create_from_arrays(const PackedVector3Array &p_v
 	mesh_table_count++;
 	mesh_next_vertex_offset += vc;
 	mesh_next_index_offset += ic;
-	print_line("[GOTOT-NEXT] GPU Mesh table entry added. mesh_id=" + itos(id) +
+	print_line("[GNE] GPU Mesh table entry added. mesh_id=" + itos(id) +
 			" verts=" + itos(vc) + " indices=" + itos(ic) + " color=" + String(c));
 	return id;
 }
 
-bool GototRenderServer::gpu_mesh_batch_dispatch() {
+bool GneRenderServer::gpu_mesh_batch_dispatch() {
 	if (!gpu_scene_valid || !gpu_mesh_valid || !gpu_mesh_batch_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_batch_dispatch: no batch mesh. Call gpu_mesh_create first.");
+		print_error("[GNE] gpu_mesh_batch_dispatch: no batch mesh. Call gpu_mesh_create first.");
 		return false;
 	}
 	if (!frustum_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_batch_dispatch: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_mesh_batch_dispatch: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 
@@ -4335,7 +4335,7 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 		return true;
 	}
 
-	rendering_device->buffer_clear(batch_count_buffer, 0, (uint32_t)(GOTOT_MESH_TABLE_SIZE * 4));
+	rendering_device->buffer_clear(batch_count_buffer, 0, (uint32_t)(GNE_MESH_TABLE_SIZE * 4));
 
 	struct BatchCountParams {
 		uint32_t instance_count;
@@ -4351,7 +4351,7 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 	uint32_t groups = (uint32_t)(((visible - 1) / 64) + 1);
 	_run_compute_pass(batch_count_pipeline, batch_count_uniform_set, &cp, sizeof(cp), groups, 1, 1);
 
-	// GOTOT-011 pass 2: workgroup-parallel prefix sum + grouping under the
+	// GNE-011 pass 2: workgroup-parallel prefix sum + grouping under the
 	// current strategy. One workgroup (64 threads) covers the 64-slot table.
 	struct BatchAssembleParams {
 		uint32_t mesh_capacity;
@@ -4360,7 +4360,7 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 		uint32_t pad1;
 	};
 	BatchAssembleParams ap;
-	ap.mesh_capacity = (uint32_t)GOTOT_MESH_TABLE_SIZE;
+	ap.mesh_capacity = (uint32_t)GNE_MESH_TABLE_SIZE;
 	ap.scratch_stride = (uint32_t)gpu_instance_count;
 	ap.strategy = (uint32_t)mesh_batch_strategy;
 	ap.pad1 = 0;
@@ -4375,12 +4375,12 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 		last_batch_count = 0;
 	}
 
-	// GOTOT-011: derive the grouping state on the CPU with the SAME deterministic
+	// GNE-011: derive the grouping state on the CPU with the SAME deterministic
 	// formula as the workgroup assembler; batch_total (read from the GPU) stays
 	// the authoritative indirect draw count (SPEC 011 section 3.2 fallback).
 	int active = 0;
 	{
-		Vector<uint8_t> cb = rendering_device->buffer_get_data(batch_count_buffer, 0, (uint32_t)(GOTOT_MESH_TABLE_SIZE * 4));
+		Vector<uint8_t> cb = rendering_device->buffer_get_data(batch_count_buffer, 0, (uint32_t)(GNE_MESH_TABLE_SIZE * 4));
 		const uint32_t *fptr = (const uint32_t *)cb.ptr();
 		int nn = cb.size() / 4;
 		for (int i = 0; i < nn; i++) {
@@ -4390,7 +4390,7 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 		}
 	}
 	int G = active;
-	if (mesh_batch_strategy == GOTOT_BATCH_STRATEGY_GROUPED || mesh_batch_strategy == GOTOT_BATCH_STRATEGY_REORDERED) {
+	if (mesh_batch_strategy == GNE_BATCH_STRATEGY_GROUPED || mesh_batch_strategy == GNE_BATCH_STRATEGY_REORDERED) {
 		G = active > 5 ? 5 : active;
 	}
 	if (G <= 0) {
@@ -4400,19 +4400,19 @@ bool GototRenderServer::gpu_mesh_batch_dispatch() {
 	last_used_group_draw = (G < active);
 	int expect = last_used_group_draw ? G : active;
 	if (last_batch_count != expect) {
-		print_line("[GOTOT-NEXT] gpu_mesh_batch_dispatch: batch_total(" + itos(last_batch_count) +
+		print_line("[GNE] gpu_mesh_batch_dispatch: batch_total(" + itos(last_batch_count) +
 				") != expected(" + itos(expect) + ") - using GPU value.");
 	}
 	return true;
 }
 
-bool GototRenderServer::gpu_mesh_batch_draw() {
+bool GneRenderServer::gpu_mesh_batch_draw() {
 	if (!gpu_scene_valid || !gpu_mesh_valid || !gpu_mesh_batch_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_batch_draw: no batch mesh. Call gpu_mesh_create first.");
+		print_error("[GNE] gpu_mesh_batch_draw: no batch mesh. Call gpu_mesh_create first.");
 		return false;
 	}
 	if (!frustum_valid) {
-		print_error("[GOTOT-NEXT] gpu_mesh_batch_draw: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_mesh_batch_draw: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 
@@ -4427,7 +4427,7 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
 	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_COLOR_1 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
 	if (dl == RD::INVALID_ID) {
-		print_error("[GOTOT-NEXT] gpu_mesh_batch_draw: draw_list_begin failed.");
+		print_error("[GNE] gpu_mesh_batch_draw: draw_list_begin failed.");
 		return false;
 	}
 	rendering_device->draw_list_bind_render_pipeline(dl, mesh_batch_pipeline);
@@ -4436,7 +4436,7 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 	rendering_device->draw_list_bind_index_array(dl, mesh_010_index_array);
 	if (last_batch_count > 0) {
 		if (last_used_group_draw) {
-			// GOTOT-011 grouped/reordered: one PROCEDURAL (non-indexed)
+			// GNE-011 grouped/reordered: one PROCEDURAL (non-indexed)
 			// VkDrawIndirectCommand per batch GROUP (<=5 for 64 visible meshes);
 			// 16 = sizeof(VkDrawIndirectCommand). draw_count is the GPU-written,
 			// frame-varying batch_total (SPEC 011 3.2 draw_indirect fallback).
@@ -4452,7 +4452,7 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 	}
 	rendering_device->draw_list_end();
 
-	// GOTOT-012: the production pyramid is built in gpu_visibility_prod_dispatch
+	// GNE-012: the production pyramid is built in gpu_visibility_prod_dispatch
 	// (own synced submission) by projecting the registered occluder AABBs with
 	// the occbuf pass into the flat storage buffer the phases read
 	// cross-submission - the ONE reliable GPU route in this RDG fork (R32
@@ -4460,9 +4460,9 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 	// submission only patches the shared view UBO; nothing pyramid-related.
 	// (the old code wrote int32 bits into this float field: 2.8e-42 reads as ~0).
 	float otexel_count = (float)HZB_PROD_TEXEL_COUNT;
-	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &otexel_count);
+	rendering_device->buffer_update(view_ubo, offsetof(GneViewData, viewport) + 2 * sizeof(float), 4, &otexel_count);
 	int32_t oocc_count = occluder_count;
-	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &oocc_count);
+	rendering_device->buffer_update(view_ubo, offsetof(GneViewData, occ_count), 4, &oocc_count);
 
 	if (gpu_hzb_prod_valid) {
 		RD::ComputeListID cl = rendering_device->compute_list_begin();
@@ -4477,20 +4477,20 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 	return true;
 }
 
-int GototRenderServer::gpu_mesh_get_mesh_id_count() const {
+int GneRenderServer::gpu_mesh_get_mesh_id_count() const {
 	return mesh_table_count;
 }
 
-int GototRenderServer::gpu_mesh_get_batch_count() {
+int GneRenderServer::gpu_mesh_get_batch_count() {
 	return last_batch_count;
 }
 
-PackedInt32Array GototRenderServer::gpu_mesh_get_draw_counts() {
+PackedInt32Array GneRenderServer::gpu_mesh_get_draw_counts() {
 	PackedInt32Array ret;
 	if (!gpu_scene_valid || !gpu_mesh_batch_valid || batch_count_buffer.is_null()) {
 		return ret;
 	}
-	Vector<uint8_t> bytes = rendering_device->buffer_get_data(batch_count_buffer, 0, (uint32_t)(GOTOT_MESH_TABLE_SIZE * 4));
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(batch_count_buffer, 0, (uint32_t)(GNE_MESH_TABLE_SIZE * 4));
 	int n = bytes.size() / 4;
 	ret.resize(n);
 	const uint32_t *fptr = (const uint32_t *)bytes.ptr();
@@ -4500,12 +4500,12 @@ PackedInt32Array GototRenderServer::gpu_mesh_get_draw_counts() {
 	return ret;
 }
 
-PackedInt32Array GototRenderServer::gpu_mesh_get_batch_args(int p_batch_index) {
+PackedInt32Array GneRenderServer::gpu_mesh_get_batch_args(int p_batch_index) {
 	PackedInt32Array ret;
 	if (!gpu_scene_valid || !gpu_mesh_batch_valid || batch_args_buffer.is_null()) {
 		return ret;
 	}
-	if (p_batch_index < 0 || p_batch_index >= GOTOT_MESH_TABLE_SIZE) {
+	if (p_batch_index < 0 || p_batch_index >= GNE_MESH_TABLE_SIZE) {
 		return ret;
 	}
 	Vector<uint8_t> bytes = rendering_device->buffer_get_data(batch_args_buffer, (uint32_t)(p_batch_index * 20), 20);
@@ -4520,51 +4520,51 @@ PackedInt32Array GototRenderServer::gpu_mesh_get_batch_args(int p_batch_index) {
 	return ret;
 }
 
-Color GototRenderServer::gpu_mesh_get_mesh_color(int p_mesh_id) const {
-	if (p_mesh_id < 0 || p_mesh_id >= GOTOT_MESH_TABLE_SIZE) {
+Color GneRenderServer::gpu_mesh_get_mesh_color(int p_mesh_id) const {
+	if (p_mesh_id < 0 || p_mesh_id >= GNE_MESH_TABLE_SIZE) {
 		return Color(0, 0, 0, 1);
 	}
 	return mesh_colors[p_mesh_id];
 }
 
-bool GototRenderServer::gpu_mesh_set_batch_strategy(int p_strategy) {
-	if (p_strategy < GOTOT_BATCH_STRATEGY_PER_MESH || p_strategy > GOTOT_BATCH_STRATEGY_REORDERED) {
-		print_error("[GOTOT-NEXT] gpu_mesh_set_batch_strategy: invalid strategy " + itos(p_strategy));
+bool GneRenderServer::gpu_mesh_set_batch_strategy(int p_strategy) {
+	if (p_strategy < GNE_BATCH_STRATEGY_PER_MESH || p_strategy > GNE_BATCH_STRATEGY_REORDERED) {
+		print_error("[GNE] gpu_mesh_set_batch_strategy: invalid strategy " + itos(p_strategy));
 		return false;
 	}
 	mesh_batch_strategy = p_strategy;
-	print_line("[GOTOT-NEXT] Batch strategy set to " + itos(p_strategy));
+	print_line("[GNE] Batch strategy set to " + itos(p_strategy));
 	return true;
 }
 
-int GototRenderServer::gpu_mesh_get_batch_strategy() const {
+int GneRenderServer::gpu_mesh_get_batch_strategy() const {
 	return mesh_batch_strategy;
 }
 
-int GototRenderServer::gpu_mesh_get_batch_group_count() const {
+int GneRenderServer::gpu_mesh_get_batch_group_count() const {
 	return last_group_count;
 }
 
-PackedInt32Array GototRenderServer::gpu_mesh_get_batch_order() {
+PackedInt32Array GneRenderServer::gpu_mesh_get_batch_order() {
 	PackedInt32Array ret;
 	if (!gpu_scene_valid || !gpu_mesh_batch_valid || group_member_list_buffer.is_null() || group_member_count_buffer.is_null()) {
 		return ret;
 	}
 	int n = last_group_count;
-	if (n <= 0 || n > GOTOT_MESH_TABLE_SIZE) {
+	if (n <= 0 || n > GNE_MESH_TABLE_SIZE) {
 		return ret;
 	}
-	Vector<uint8_t> mcbytes = rendering_device->buffer_get_data(group_member_count_buffer, 0, (uint32_t)(GOTOT_MESH_TABLE_SIZE * 4));
-	if (mcbytes.size() != (int)(GOTOT_MESH_TABLE_SIZE * 4)) {
+	Vector<uint8_t> mcbytes = rendering_device->buffer_get_data(group_member_count_buffer, 0, (uint32_t)(GNE_MESH_TABLE_SIZE * 4));
+	if (mcbytes.size() != (int)(GNE_MESH_TABLE_SIZE * 4)) {
 		return ret;
 	}
 	const uint32_t *mc = (const uint32_t *)mcbytes.ptr();
 	for (int g = 0; g < n; g++) {
 		uint32_t mg = mc[g];
-		if (mg == 0 || mg > GOTOT_MESH_TABLE_SIZE) {
+		if (mg == 0 || mg > GNE_MESH_TABLE_SIZE) {
 			continue;
 		}
-		Vector<uint8_t> bytes = rendering_device->buffer_get_data(group_member_list_buffer, (uint32_t)(g * GOTOT_MESH_TABLE_SIZE * 4), mg * 4);
+		Vector<uint8_t> bytes = rendering_device->buffer_get_data(group_member_list_buffer, (uint32_t)(g * GNE_MESH_TABLE_SIZE * 4), mg * 4);
 		if (bytes.size() != (int)(mg * 4)) {
 			continue;
 		}
@@ -4576,25 +4576,25 @@ PackedInt32Array GototRenderServer::gpu_mesh_get_batch_order() {
 	return ret;
 }
 
-int GototRenderServer::gpu_mesh_get_indirect_count() const {
+int GneRenderServer::gpu_mesh_get_indirect_count() const {
 	// The draw count consumed by draw_list_draw_indirect. It originates on the
 	// GPU (batch_total readback) and is frame-varying - the SPEC 011 section 3.2
 	// fallback for the missing vkCmdDrawIndexedIndirectCount API.
 	return last_batch_count;
 }
 
-int GototRenderServer::gpu_mesh_get_draw_call_count() const {
+int GneRenderServer::gpu_mesh_get_draw_call_count() const {
 	// Number of indirect draw commands executed by the last gpu_mesh_batch_draw.
 	return last_batch_count;
 }
 
-bool GototRenderServer::gpu_raster_indirect_draw() {
+bool GneRenderServer::gpu_raster_indirect_draw() {
 	if (!gpu_scene_valid || !gpu_raster_valid || !gpu_drawargs_valid) {
-		print_error("[GOTOT-NEXT] gpu_raster_indirect_draw: no gpu scene. Call gpu_scene_create first.");
+		print_error("[GNE] gpu_raster_indirect_draw: no gpu scene. Call gpu_scene_create first.");
 		return false;
 	}
 	if (!frustum_valid) {
-		print_error("[GOTOT-NEXT] gpu_raster_indirect_draw: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_raster_indirect_draw: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 
@@ -4603,7 +4603,7 @@ bool GototRenderServer::gpu_raster_indirect_draw() {
 	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
 	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_COLOR_1 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
 	if (dl == RD::INVALID_ID) {
-		print_error("[GOTOT-NEXT] gpu_raster_indirect_draw: draw_list_begin failed.");
+		print_error("[GNE] gpu_raster_indirect_draw: draw_list_begin failed.");
 		return false;
 	}
 	rendering_device->draw_list_bind_render_pipeline(dl, raster_pipeline);
@@ -4618,7 +4618,7 @@ bool GototRenderServer::gpu_raster_indirect_draw() {
 	return true;
 }
 
-PackedByteArray GototRenderServer::gpu_raster_read_pixels() {
+PackedByteArray GneRenderServer::gpu_raster_read_pixels() {
 	PackedByteArray ret;
 	if (!gpu_scene_valid || !gpu_raster_valid) {
 		return ret;
@@ -4629,8 +4629,8 @@ PackedByteArray GototRenderServer::gpu_raster_read_pixels() {
 	return ret;
 }
 
-// GOTOT-009: D32_SFLOAT depth readback (values in [0, 1], clear = 1.0 = far).
-PackedFloat32Array GototRenderServer::gpu_raster_read_depth() {
+// GNE-009: D32_SFLOAT depth readback (values in [0, 1], clear = 1.0 = far).
+PackedFloat32Array GneRenderServer::gpu_raster_read_depth() {
 	PackedFloat32Array ret;
 	if (!gpu_scene_valid || !gpu_raster_valid) {
 		return ret;
@@ -4642,8 +4642,8 @@ PackedFloat32Array GototRenderServer::gpu_raster_read_depth() {
 	return ret;
 }
 
-// GOTOT-012: read a single R32 view-z texel (bits as the depth source sees it).
-float GototRenderServer::gpu_raster_read_viewz(int p_x, int p_y) {
+// GNE-012: read a single R32 view-z texel (bits as the depth source sees it).
+float GneRenderServer::gpu_raster_read_viewz(int p_x, int p_y) {
 	if (!gpu_scene_valid || !gpu_raster_valid) {
 		return 0.0f;
 	}
@@ -4659,33 +4659,33 @@ float GototRenderServer::gpu_raster_read_viewz(int p_x, int p_y) {
 	return v;
 }
 
-// GOTOT-009: overwrite a single instance's transform (position_scale) in the
+// GNE-009: overwrite a single instance's transform (position_scale) in the
 // SoA transform buffer. Pure fill helper for the 009 overlay demo; the fill/
 // cull/HZB/compaction/drawargs layout is untouched.
-void GototRenderServer::gpu_scene_set_instance_transform(int p_index, const Vector3 &p_position, float p_scale) {
+void GneRenderServer::gpu_scene_set_instance_transform(int p_index, const Vector3 &p_position, float p_scale) {
 	if (!gpu_scene_valid || p_index < 0 || p_index >= gpu_instance_count) {
 		return;
 	}
 	float data[4] = { p_position.x, p_position.y, p_position.z, p_scale };
 	Error err = rendering_device->buffer_update(transform_buffer, p_index * sizeof(data), sizeof(data), data);
 	if (err != OK) {
-		print_error("[GOTOT-NEXT] gpu_scene_set_instance_transform: buffer_update failed.");
+		print_error("[GNE] gpu_scene_set_instance_transform: buffer_update failed.");
 	}
 }
 
-int GototRenderServer::gpu_raster_get_depth_format() const {
+int GneRenderServer::gpu_raster_get_depth_format() const {
 	return raster_depth_format_value;
 }
 
-bool GototRenderServer::gpu_mesh_get_depth_enabled() const {
+bool GneRenderServer::gpu_mesh_get_depth_enabled() const {
 	return mesh_depth_enabled;
 }
 
-bool GototRenderServer::gpu_raster_get_depth_enabled() const {
+bool GneRenderServer::gpu_raster_get_depth_enabled() const {
 	return raster_depth_enabled;
 }
 
-PackedFloat32Array GototRenderServer::gpu_scene_get_vp() {
+PackedFloat32Array GneRenderServer::gpu_scene_get_vp() {
 	PackedFloat32Array ret;
 	if (!camera_view_valid) {
 		return ret;
@@ -4697,7 +4697,7 @@ PackedFloat32Array GototRenderServer::gpu_scene_get_vp() {
 	return ret;
 }
 
-// GOTOT-013: Meshlets / LOD / cluster culling.
+// GNE-013: Meshlets / LOD / cluster culling.
 // See header block comment. The .gomlet format (tools/meshlet_import/main.cpp):
 //   file header: "GOTOML11" + u32 version(1) + u32 lod_count + u32 reserved
 //   per LOD: u32 vertex_count, u32 tri_count, u32 meshlet_count, u32 ref_count
@@ -4707,9 +4707,9 @@ PackedFloat32Array GototRenderServer::gpu_scene_get_vp() {
 //            u32 triangle_offset (u8 units), u32 triangle_count,
 //            f32 center[3], f32 radius, f32 cone_axis[3], f32 cone_cutoff.
 namespace {
-// std140 layout shared by the meshlet cull/raster UBO. Mirrors GototViewData
+// std140 layout shared by the meshlet cull/raster UBO. Mirrors GneViewData
 // conventions (column-major vp, Godot plane test dot(n,p)+d used by 001B/004).
-struct GOTOTMeshletViewData {
+struct GNEMeshletViewData {
 	float vp[16];          // 0
 	float viewport[4];     // 64
 	float planes[6][4];    // 80
@@ -4748,7 +4748,7 @@ struct MlRasterPush {
 	uint32_t pad1;
 	uint32_t pad2;
 };
-static_assert(sizeof(GOTOTMeshletViewData) == 224, "meshlet view data layout");
+static_assert(sizeof(GNEMeshletViewData) == 224, "meshlet view data layout");
 static_assert(sizeof(GpuMlLodDesc) == 48, "lod desc layout");
 static_assert(sizeof(GpuMlMeshletDesc) == 48, "meshlet desc layout");
 static_assert(sizeof(MlCullPush) == 32, "cull push layout");
@@ -5099,7 +5099,7 @@ void main() {
 )";
 } // namespace
 
-void GototRenderServer::_destroy_meshlet() {
+void GneRenderServer::_destroy_meshlet() {
 	if (rendering_device == nullptr) {
 		gpu_meshlet_valid = false;
 		return;
@@ -5168,8 +5168,8 @@ void GototRenderServer::_destroy_meshlet() {
 	ml_state_uint_count = 0;
 }
 
-bool GototRenderServer::_upload_meshlet_view() {
-	GOTOTMeshletViewData vd;
+bool GneRenderServer::_upload_meshlet_view() {
+	GNEMeshletViewData vd;
 	memset(&vd, 0, sizeof(vd));
 	for (int i = 0; i < 16; i++) {
 		vd.vp[i] = last_vp[i];
@@ -5186,16 +5186,16 @@ bool GototRenderServer::_upload_meshlet_view() {
 	vd.cam[1] = meshlet_camera_position[1];
 	vd.cam[2] = meshlet_camera_position[2];
 	vd.far_plane = far_plane;
-	return rendering_device->buffer_update(ml_ubo, 0, sizeof(GOTOTMeshletViewData), &vd) == OK;
+	return rendering_device->buffer_update(ml_ubo, 0, sizeof(GNEMeshletViewData), &vd) == OK;
 }
 
-bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
+bool GneRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 	if (!ensure_gpu_device()) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: no RenderingDevice.");
+		print_error("[GNE] gpu_meshlet_load: no RenderingDevice.");
 		return false;
 	}
 	if (!gpu_scene_valid) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: no GPU scene. Call gpu_scene_create first.");
+		print_error("[GNE] gpu_meshlet_load: no GPU scene. Call gpu_scene_create first.");
 		return false;
 	}
 
@@ -5204,22 +5204,22 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 	const uint8_t *D = p_data.ptr();
 	const int64_t bytes_size = p_data.size();
 	if (bytes_size < 20) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: file too small.");
+		print_error("[GNE] gpu_meshlet_load: file too small.");
 		return false;
 	}
 	if (memcmp(D, "GOTOML11", 8) != 0) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: bad magic (not a GOTOML11 file).");
+		print_error("[GNE] gpu_meshlet_load: bad magic (not a GOTOML11 file).");
 		return false;
 	}
 	uint32_t version = 0, lod_count = 0;
 	memcpy(&version, D + 8, 4);
 	memcpy(&lod_count, D + 12, 4);
 	if (version != 1) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: unsupported version.");
+		print_error("[GNE] gpu_meshlet_load: unsupported version.");
 		return false;
 	}
 	if (lod_count < 1 || lod_count > ML_MAX_LODS) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: lod_count out of range.");
+		print_error("[GNE] gpu_meshlet_load: lod_count out of range.");
 		return false;
 	}
 
@@ -5237,7 +5237,7 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 	int64_t strip = 20;
 	for (uint32_t l = 0; l < lod_count; l++) {
 		if (strip + 16 > bytes_size) {
-			print_error("[GOTOT-NEXT] gpu_meshlet_load: truncated LOD headers.");
+			print_error("[GNE] gpu_meshlet_load: truncated LOD headers.");
 			return false;
 		}
 		memcpy(&lods[l].vc, D + strip, 4);
@@ -5245,30 +5245,30 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 		memcpy(&lods[l].mc, D + strip + 8, 4);
 		memcpy(&lods[l].rc, D + strip + 12, 4);
 		if (lods[l].vc == 0 || lods[l].tc == 0 || lods[l].mc == 0) {
-			print_error("[GOTOT-NEXT] gpu_meshlet_load: zero LOD metric.");
+			print_error("[GNE] gpu_meshlet_load: zero LOD metric.");
 			return false;
 		}
 		// Record the exact byte offsets the build loop below relies on, then
 		// advance to the next strip (header + positions + refs + micro + descs).
 		lods[l].pos_off = strip + 16;
 		if (lods[l].pos_off + (int64_t)lods[l].vc * 16 > bytes_size) {
-			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD positions out of range.");
-			print_error(String("[GOTOT-NEXT] 013dbg bytes=") + itos(bytes_size) + " lod=" + itos((int)l) + " vc=" + itos((int32_t)lods[l].vc) + " pos_off=" + itos((int64_t)(lods[l].pos_off)) + " need=" + itos((int64_t)(lods[l].pos_off + (int64_t)lods[l].vc * 16)));
+			print_error("[GNE] gpu_meshlet_load: LOD positions out of range.");
+			print_error(String("[GNE] 013dbg bytes=") + itos(bytes_size) + " lod=" + itos((int)l) + " vc=" + itos((int32_t)lods[l].vc) + " pos_off=" + itos((int64_t)(lods[l].pos_off)) + " need=" + itos((int64_t)(lods[l].pos_off + (int64_t)lods[l].vc * 16)));
 			return false;
 		}
 		lods[l].refs_off = lods[l].pos_off + (int64_t)lods[l].vc * 16;
 		if (lods[l].refs_off + (int64_t)lods[l].rc * 4 > bytes_size) {
-			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD refs out of range.");
+			print_error("[GNE] gpu_meshlet_load: LOD refs out of range.");
 			return false;
 		}
 		lods[l].micro_off = lods[l].refs_off + (int64_t)lods[l].rc * 4;
 		if (lods[l].micro_off + (int64_t)lods[l].tc * 3 > bytes_size) {
-			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD micro tris out of range.");
+			print_error("[GNE] gpu_meshlet_load: LOD micro tris out of range.");
 			return false;
 		}
 		lods[l].desc_off = lods[l].micro_off + (int64_t)lods[l].tc * 3;
 		if (lods[l].desc_off + (int64_t)lods[l].mc * 48 > bytes_size) {
-			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD descs out of range.");
+			print_error("[GNE] gpu_meshlet_load: LOD descs out of range.");
 			return false;
 		}
 		strip += 16;
@@ -5278,7 +5278,7 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 		end += (int64_t)lods[l].tc * 3;
 		end += (int64_t)lods[l].mc * 48;
 		if (end > bytes_size) {
-			print_error("[GOTOT-NEXT] gpu_meshlet_load: LOD strip out of range.");
+			print_error("[GNE] gpu_meshlet_load: LOD strip out of range.");
 			return false;
 		}
 		strip = end;
@@ -5307,11 +5307,11 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 		ml_total_meshlets += (int)lods[l].mc;
 	}
 	if (ml0_max <= 0 || ml_instance_count <= 0) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: zero meshlet or instance count.");
+		print_error("[GNE] gpu_meshlet_load: zero meshlet or instance count.");
 		return false;
 	}
 	if ((int64_t)ml_instance_count * (int64_t)ml0_max > (int64_t)1 << 27) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: instance_count x ml0_max grid too large.");
+		print_error("[GNE] gpu_meshlet_load: instance_count x ml0_max grid too large.");
 		return false;
 	}
 	ml_state_uint_count = ML_STATE_HEADER + ml_instance_count + ml_instance_count * ml0_max;
@@ -5384,14 +5384,14 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 		}
 	}
 	if (tri_writer != tri_cum) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: triangle expansion mismatch.");
+		print_error("[GNE] gpu_meshlet_load: triangle expansion mismatch.");
 		return false;
 	}
 
 	// Upload.
-	ml_ubo = rendering_device->uniform_buffer_create(sizeof(GOTOTMeshletViewData));
+	ml_ubo = rendering_device->uniform_buffer_create(sizeof(GNEMeshletViewData));
 	if (!_upload_meshlet_view()) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: view UBO upload failed.");
+		print_error("[GNE] gpu_meshlet_load: view UBO upload failed.");
 		_destroy_meshlet();
 		return false;
 	}
@@ -5410,7 +5410,7 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 		memcpy(&vc, desc_rb.ptr() + (int64_t)l * 48 + 16, 4);
 		memcpy(&tc, desc_rb.ptr() + (int64_t)l * 48 + 20, 4);
 		memcpy(&mc, desc_rb.ptr() + (int64_t)l * 48 + 24, 4);
-		print_line("[GOTOT-NEXT] desc_cpu lod=" + itos(l) + " ord=" + itos(ord) + " vc=" + itos(vc) + " tc=" + itos(tc) + " mc=" + itos(mc));
+		print_line("[GNE] desc_cpu lod=" + itos(l) + " ord=" + itos(ord) + " vc=" + itos(vc) + " tc=" + itos(tc) + " mc=" + itos(mc));
 	}
 	ml_state_buffer = rendering_device->storage_buffer_create((uint32_t)ml_state_uint_count * 4);
 	ml_debug_buffer = rendering_device->storage_buffer_create(128);
@@ -5422,7 +5422,7 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 	Vector<uint8_t> raster_spv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_COMPUTE, String(gpu_meshlet_raster_glsl), RD::SHADER_LANGUAGE_GLSL, &raster_err);
 	if (cull_spv.is_empty() || raster_spv.is_empty()) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: shader compile failed:");
+		print_error("[GNE] gpu_meshlet_load: shader compile failed:");
 		print_error(cull_spv.is_empty() ? cull_err : raster_err);
 		_destroy_meshlet();
 		return false;
@@ -5432,7 +5432,7 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 	stage.spirv = cull_spv;
 	Vector<RD::ShaderStageSPIRVData> stages;
 	stages.push_back(stage);
-	ml_cull_shader = rendering_device->shader_create_from_spirv(stages, "gotot_meshlet_cull");
+	ml_cull_shader = rendering_device->shader_create_from_spirv(stages, "gne_meshlet_cull");
 	if (ml_cull_shader.is_null()) {
 		_destroy_meshlet();
 		return false;
@@ -5440,7 +5440,7 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 	stage.spirv = raster_spv;
 	Vector<RD::ShaderStageSPIRVData> stages2;
 	stages2.push_back(stage);
-	ml_raster_shader = rendering_device->shader_create_from_spirv(stages2, "gotot_meshlet_raster");
+	ml_raster_shader = rendering_device->shader_create_from_spirv(stages2, "gne_meshlet_raster");
 	if (ml_raster_shader.is_null()) {
 		_destroy_meshlet();
 		return false;
@@ -5477,7 +5477,7 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 	cull_uniforms.push_back(cu4);
 	ml_cull_uniform_set = rendering_device->uniform_set_create(cull_uniforms, ml_cull_shader, 0);
 	if (ml_cull_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: cull uniform_set_create failed.");
+		print_error("[GNE] gpu_meshlet_load: cull uniform_set_create failed.");
 		_destroy_meshlet();
 		return false;
 	}
@@ -5493,22 +5493,22 @@ bool GototRenderServer::gpu_meshlet_load(const PackedByteArray &p_data) {
 	}
 	ml_raster_uniform_set = rendering_device->uniform_set_create(raster_uniforms, ml_raster_shader, 0);
 	if (ml_raster_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_load: raster uniform_set_create failed.");
+		print_error("[GNE] gpu_meshlet_load: raster uniform_set_create failed.");
 		_destroy_meshlet();
 		return false;
 	}
 
 	gpu_meshlet_valid = true;
-	print_line("[GOTOT-NEXT] gpu_meshlet_load: lods=", ml_lod_count, " lod0_tris=", ml_lod0_tri_count,
+	print_line("[GNE] gpu_meshlet_load: lods=", ml_lod_count, " lod0_tris=", ml_lod0_tri_count,
 			" lod0_meshlets=", ml_lod0_meshlet_count, " total_meshlets=", ml_total_meshlets,
 			" verts=", ml_total_vertices, " tris=", ml_total_tris, " instances=", ml_instance_count);
 	return true;
 }
 
-bool GototRenderServer::gpu_meshlet_load_path(const String &p_path) {
+bool GneRenderServer::gpu_meshlet_load_path(const String &p_path) {
 	Ref<FileAccess> f = FileAccess::open(p_path, FileAccess::READ);
 	if (f.is_null() || !f->is_open()) {
-		print_error(String("[GOTOT-NEXT] gpu_meshlet_load_path: cannot open ") + p_path);
+		print_error(String("[GNE] gpu_meshlet_load_path: cannot open ") + p_path);
 		return false;
 	}
 	Vector<uint8_t> bytes = f->get_buffer(f->get_length());
@@ -5521,9 +5521,9 @@ bool GototRenderServer::gpu_meshlet_load_path(const String &p_path) {
 	return gpu_meshlet_load(data);
 }
 
-bool GototRenderServer::gpu_meshlet_set_lod_thresholds(float p_t0, float p_t1) {
+bool GneRenderServer::gpu_meshlet_set_lod_thresholds(float p_t0, float p_t1) {
 	if (!(p_t0 > 0.0f && p_t1 > p_t0)) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_set_lod_thresholds: need 0 < t0 < t1.");
+		print_error("[GNE] gpu_meshlet_set_lod_thresholds: need 0 < t0 < t1.");
 		return false;
 	}
 	ml_lod_t0 = p_t0;
@@ -5531,13 +5531,13 @@ bool GototRenderServer::gpu_meshlet_set_lod_thresholds(float p_t0, float p_t1) {
 	return true;
 }
 
-bool GototRenderServer::gpu_meshlet_cull_dispatch() {
+bool GneRenderServer::gpu_meshlet_cull_dispatch() {
 	if (!gpu_meshlet_valid || !gpu_scene_valid) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_cull_dispatch: meshlet not loaded or no scene.");
+		print_error("[GNE] gpu_meshlet_cull_dispatch: meshlet not loaded or no scene.");
 		return false;
 	}
 	if (!frustum_valid) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_cull_dispatch: no camera. Call gpu_scene_set_camera first.");
+		print_error("[GNE] gpu_meshlet_cull_dispatch: no camera. Call gpu_scene_set_camera first.");
 		return false;
 	}
 	_upload_meshlet_view();
@@ -5558,9 +5558,9 @@ bool GototRenderServer::gpu_meshlet_cull_dispatch() {
 	return true;
 }
 
-bool GototRenderServer::gpu_meshlet_raster_dispatch() {
+bool GneRenderServer::gpu_meshlet_raster_dispatch() {
 	if (!gpu_meshlet_valid || !gpu_scene_valid) {
-		print_error("[GOTOT-NEXT] gpu_meshlet_raster_dispatch: meshlet not loaded or no scene.");
+		print_error("[GNE] gpu_meshlet_raster_dispatch: meshlet not loaded or no scene.");
 		return false;
 	}
 	uint64_t total = (uint64_t)ml_instance_count * (uint64_t)ml0_max;
@@ -5582,19 +5582,19 @@ bool GototRenderServer::gpu_meshlet_raster_dispatch() {
 	return true;
 }
 
-int GototRenderServer::gpu_meshlet_get_total_meshlets() const {
+int GneRenderServer::gpu_meshlet_get_total_meshlets() const {
 	return ml_total_meshlets;
 }
 
-int GototRenderServer::gpu_meshlet_get_lod0_tri_count() const {
+int GneRenderServer::gpu_meshlet_get_lod0_tri_count() const {
 	return ml_lod0_tri_count;
 }
 
-int GototRenderServer::gpu_meshlet_get_lod0_meshlet_count() const {
+int GneRenderServer::gpu_meshlet_get_lod0_meshlet_count() const {
 	return ml_lod0_meshlet_count;
 }
 
-PackedInt32Array GototRenderServer::gpu_meshlet_stats() {
+PackedInt32Array GneRenderServer::gpu_meshlet_stats() {
 	PackedInt32Array ret;
 	ret.append(ml_total_meshlets);
 	ret.append(ml_lod0_tri_count);
@@ -5604,7 +5604,7 @@ PackedInt32Array GototRenderServer::gpu_meshlet_stats() {
 	return ret;
 }
 
-PackedInt32Array GototRenderServer::gpu_meshlet_get_instance_lods() {
+PackedInt32Array GneRenderServer::gpu_meshlet_get_instance_lods() {
 	PackedInt32Array ret;
 	if (!gpu_meshlet_valid) {
 		return ret;
@@ -5618,7 +5618,7 @@ PackedInt32Array GototRenderServer::gpu_meshlet_get_instance_lods() {
 	return ret;
 }
 
-PackedInt32Array GototRenderServer::gpu_meshlet_get_cull_debug() {
+PackedInt32Array GneRenderServer::gpu_meshlet_get_cull_debug() {
 	// binding-4 readback: [0..2]=lod_mc, [3]=12345 sanity, [4]=lod0 ordinal,
 	// [5]=ml0_max cfg.y, [6]=STATE_HEADER, [7]=0u (all written on gl_GlobalInvocationID.x==0).
 	PackedInt32Array ret;
@@ -5635,7 +5635,7 @@ PackedInt32Array GototRenderServer::gpu_meshlet_get_cull_debug() {
 	return ret;
 }
 
-PackedInt32Array GototRenderServer::gpu_meshlet_get_cluster_counts() {
+PackedInt32Array GneRenderServer::gpu_meshlet_get_cluster_counts() {
 	PackedInt32Array ret;
 	ret.resize(ML_STATE_HEADER);
 	if (!gpu_meshlet_valid) {
@@ -5650,7 +5650,7 @@ PackedInt32Array GototRenderServer::gpu_meshlet_get_cluster_counts() {
 	return ret;
 }
 
-PackedFloat32Array GototRenderServer::gpu_meshlet_raster_evidence() {
+PackedFloat32Array GneRenderServer::gpu_meshlet_raster_evidence() {
 	PackedFloat32Array ret;
 	ret.resize(4);
 	if (!gpu_meshlet_valid) {
@@ -5682,11 +5682,11 @@ PackedFloat32Array GototRenderServer::gpu_meshlet_raster_evidence() {
 	return ret;
 }
 
-void GototRenderServer::gpu_meshlet_destroy() {
+void GneRenderServer::gpu_meshlet_destroy() {
 	_destroy_meshlet();
 }
 
-// GOTOT-014: GPU Scene Manager (SPEC 014).
+// GNE-014: GPU Scene Manager (SPEC 014).
 // See header block comment. Layouts (std430, all storage buffers):
 //   record (64 B / 16 u32 per unified id, slot id*16):
 //     [0..3]   vec4 transform (pos.xyz, scale)
@@ -5791,7 +5791,7 @@ void main() {
 )";
 } // namespace
 
-void GototRenderServer::_destroy_scene_manager() {
+void GneRenderServer::_destroy_scene_manager() {
 	if (rendering_device == nullptr) {
 		gpu_scene_mgr_valid = false;
 		return;
@@ -5844,13 +5844,13 @@ void GototRenderServer::_destroy_scene_manager() {
 	gms_dispatch_seq = 0;
 }
 
-bool GototRenderServer::gpu_scene_manager_alloc(int p_max_instances) {
+bool GneRenderServer::gpu_scene_manager_alloc(int p_max_instances) {
 	if (!ensure_gpu_device()) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: no RenderingDevice.");
+		print_error("[GNE] gpu_scene_manager_alloc: no RenderingDevice.");
 		return false;
 	}
 	if (p_max_instances <= 0 || p_max_instances > GMS_MAX_CAPACITY) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: capacity must be in (0, " + itos(GMS_MAX_CAPACITY) + "].");
+		print_error("[GNE] gpu_scene_manager_alloc: capacity must be in (0, " + itos(GMS_MAX_CAPACITY) + "].");
 		return false;
 	}
 	_destroy_scene_manager();
@@ -5872,7 +5872,7 @@ bool GototRenderServer::gpu_scene_manager_alloc(int p_max_instances) {
 	Vector<uint8_t> spv = rendering_device->shader_compile_spirv_from_source(
 			RD::SHADER_STAGE_COMPUTE, String(gpu_scene_manager_glsl), RD::SHADER_LANGUAGE_GLSL, &cerr);
 	if (spv.is_empty()) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: shader compile failed:");
+		print_error("[GNE] gpu_scene_manager_alloc: shader compile failed:");
 		print_error(cerr);
 		_destroy_scene_manager();
 		return false;
@@ -5882,9 +5882,9 @@ bool GototRenderServer::gpu_scene_manager_alloc(int p_max_instances) {
 	stage.spirv = spv;
 	Vector<RD::ShaderStageSPIRVData> stages;
 	stages.push_back(stage);
-	gms_shader = rendering_device->shader_create_from_spirv(stages, "gotot_scene_manager");
+	gms_shader = rendering_device->shader_create_from_spirv(stages, "gne_scene_manager");
 	if (gms_shader.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: shader_create_from_spirv failed.");
+		print_error("[GNE] gpu_scene_manager_alloc: shader_create_from_spirv failed.");
 		_destroy_scene_manager();
 		return false;
 	}
@@ -5901,7 +5901,7 @@ bool GototRenderServer::gpu_scene_manager_alloc(int p_max_instances) {
 	}
 	gms_uniform_set = rendering_device->uniform_set_create(uniforms, gms_shader, 0);
 	if (gms_uniform_set.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_alloc: uniform_set_create failed.");
+		print_error("[GNE] gpu_scene_manager_alloc: uniform_set_create failed.");
 		_destroy_scene_manager();
 		return false;
 	}
@@ -5911,25 +5911,25 @@ bool GototRenderServer::gpu_scene_manager_alloc(int p_max_instances) {
 	gms_ring_tail = 0;
 	gms_ring_ops.clear();
 	gms_dispatch_seq = 0;
-	print_line("[GOTOT-NEXT] gpu_scene_manager_alloc: capacity=", gms_capacity,
+	print_line("[GNE] gpu_scene_manager_alloc: capacity=", gms_capacity,
 			" record_buf=", (int64_t)record_bytes, " snapshot_buf=", (int64_t)snapshot_bytes,
 			" ring=16MiB");
 	return true;
 }
 
-bool GototRenderServer::gpu_scene_manager_set_instances(const PackedFloat32Array &p_instances) {
+bool GneRenderServer::gpu_scene_manager_set_instances(const PackedFloat32Array &p_instances) {
 	if (!gpu_scene_mgr_valid) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_set_instances: no manager. Call gpu_scene_manager_alloc first.");
+		print_error("[GNE] gpu_scene_manager_set_instances: no manager. Call gpu_scene_manager_alloc first.");
 		return false;
 	}
 	int n = p_instances.size();
 	if (n <= 0 || n % 16 != 0) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_set_instances: size must be a positive multiple of 16 floats (64-byte record).");
+		print_error("[GNE] gpu_scene_manager_set_instances: size must be a positive multiple of 16 floats (64-byte record).");
 		return false;
 	}
 	int count = n / 16;
 	if (count > gms_capacity) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_set_instances: " + itos(count) + " instances exceed capacity " + itos(gms_capacity) + ".");
+		print_error("[GNE] gpu_scene_manager_set_instances: " + itos(count) + " instances exceed capacity " + itos(gms_capacity) + ".");
 		return false;
 	}
 	// Reset the whole record space (so ids >= count are inactive), then write 0..count-1.
@@ -5942,13 +5942,13 @@ bool GototRenderServer::gpu_scene_manager_set_instances(const PackedFloat32Array
 	gms_active_cpu = count;
 	gms_ring_tail = 0;
 	gms_ring_ops.clear();
-	print_line("[GOTOT-NEXT] gpu_scene_manager_set_instances: instances=", count, " active_cpu=", gms_active_cpu);
+	print_line("[GNE] gpu_scene_manager_set_instances: instances=", count, " active_cpu=", gms_active_cpu);
 	return true;
 }
 
-bool GototRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
+bool GneRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
 	if (!gpu_scene_mgr_valid) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_update: no manager.");
+		print_error("[GNE] gpu_scene_manager_update: no manager.");
 		return false;
 	}
 	const int nitems = p_deltas.size();
@@ -5957,7 +5957,7 @@ bool GototRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
 	}
 	int64_t total_bytes = (int64_t)nitems * (int64_t)GMS_DELTA_BYTES;
 	if ((int64_t)gms_ring_tail + total_bytes > (int64_t)GMS_RING_BYTES) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_update: ring overflow (need " + itos((int64_t)total_bytes) + " at tail " + itos((int64_t)gms_ring_tail) + "/" + itos((int64_t)GMS_RING_BYTES) + ").");
+		print_error("[GNE] gpu_scene_manager_update: ring overflow (need " + itos((int64_t)total_bytes) + " at tail " + itos((int64_t)gms_ring_tail) + "/" + itos((int64_t)GMS_RING_BYTES) + ").");
 		return false;
 	}
 	Vector<uint8_t> cpu;
@@ -5971,7 +5971,7 @@ bool GototRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
 		Variant v = p_deltas[i];
 		PackedFloat32Array d = v; // Array of PackedFloat32Array (20 floats / 80 bytes)
 		if (d.size() != 20) {
-			print_error("[GOTOT-NEXT] gpu_scene_manager_update: delta " + itos(i) + " must be 20 floats (80 bytes), got " + itos(d.size()) + ".");
+			print_error("[GNE] gpu_scene_manager_update: delta " + itos(i) + " must be 20 floats (80 bytes), got " + itos(d.size()) + ".");
 			return false;
 		}
 		const int32_t delta_id = (int32_t)d[1]; // d[1] = instance id (float-encoded)
@@ -5988,9 +5988,9 @@ bool GototRenderServer::gpu_scene_manager_update(const Array &p_deltas) {
 	return true;
 }
 
-bool GototRenderServer::gpu_scene_manager_dispatch() {
+bool GneRenderServer::gpu_scene_manager_dispatch() {
 	if (!gpu_scene_mgr_valid) {
-		print_error("[GOTOT-NEXT] gpu_scene_manager_dispatch: no manager.");
+		print_error("[GNE] gpu_scene_manager_dispatch: no manager.");
 		return false;
 	}
 	struct GmsPush {
@@ -6058,7 +6058,7 @@ bool GototRenderServer::gpu_scene_manager_dispatch() {
 			return false;
 		}
 		if ((int)waves.size() > GMS_MAX_WAVES) {
-			print_line("[GOTOT-NEXT] WARNING gpu_scene_manager_dispatch: ", (int)waves.size(), " delta runs exceed the ", GMS_MAX_WAVES, "-wave limit; collapsing into a single dispatch. Op codes alternate too finely to order - same-id add/remove pairs may race (nondeterministic active count).");
+			print_line("[GNE] WARNING gpu_scene_manager_dispatch: ", (int)waves.size(), " delta runs exceed the ", GMS_MAX_WAVES, "-wave limit; collapsing into a single dispatch. Op codes alternate too finely to order - same-id add/remove pairs may race (nondeterministic active count).");
 			waves.clear();
 			waves.push_back(GmsWave{ 0u, delta_count });
 			gms_last_collapsed = true;
@@ -6105,7 +6105,7 @@ bool GototRenderServer::gpu_scene_manager_dispatch() {
 	return true;
 }
 
-Dictionary GototRenderServer::gpu_scene_manager_get_stats() {
+Dictionary GneRenderServer::gpu_scene_manager_get_stats() {
 	Dictionary d;
 	d["valid"] = gpu_scene_mgr_valid;
 	if (!gpu_scene_mgr_valid) {
@@ -6138,7 +6138,7 @@ Dictionary GototRenderServer::gpu_scene_manager_get_stats() {
 	return d;
 }
 
-Dictionary GototRenderServer::gpu_scene_manager_get_wave_stats() const {
+Dictionary GneRenderServer::gpu_scene_manager_get_wave_stats() const {
 	Dictionary d;
 	d["valid"] = gpu_scene_mgr_valid;
 	if (!gpu_scene_mgr_valid) {
@@ -6150,7 +6150,7 @@ Dictionary GototRenderServer::gpu_scene_manager_get_wave_stats() const {
 	return d;
 }
 
-PackedInt32Array GototRenderServer::gpu_scene_manager_get_draw_counts() {
+PackedInt32Array GneRenderServer::gpu_scene_manager_get_draw_counts() {
 	PackedInt32Array ret;
 	if (!gpu_scene_mgr_valid) {
 		return ret;
@@ -6171,7 +6171,7 @@ PackedInt32Array GototRenderServer::gpu_scene_manager_get_draw_counts() {
 	return ret;
 }
 
-PackedInt32Array GototRenderServer::gpu_scene_manager_get_snapshot(int p_count) {
+PackedInt32Array GneRenderServer::gpu_scene_manager_get_snapshot(int p_count) {
 	PackedInt32Array ret;
 	if (!gpu_scene_mgr_valid || p_count <= 0) {
 		return ret;
@@ -6193,7 +6193,7 @@ PackedInt32Array GototRenderServer::gpu_scene_manager_get_snapshot(int p_count) 
 	return ret;
 }
 
-PackedInt32Array GototRenderServer::gpu_scene_manager_get_active_ids(int p_count) {
+PackedInt32Array GneRenderServer::gpu_scene_manager_get_active_ids(int p_count) {
 	PackedInt32Array ret;
 	if (!gpu_scene_mgr_valid || p_count <= 0) {
 		return ret;
@@ -6212,11 +6212,11 @@ PackedInt32Array GototRenderServer::gpu_scene_manager_get_active_ids(int p_count
 	return ret;
 }
 
-void GototRenderServer::gpu_scene_manager_destroy() {
+void GneRenderServer::gpu_scene_manager_destroy() {
 	_destroy_scene_manager();
 }
 
-// ================================================================ GOTOT-015
+// ================================================================ GNE-015
 // Render Graph (SPEC 015, additive TEST-ONLY evidence bridge). Owns a small
 // DAG: nodes = passes, edges = resource dependencies. gpu_rg_compile runs a
 // KAHN topological sort with cycle detection, DERIVES an automatic barrier per
@@ -6271,9 +6271,9 @@ static int rg_exec_count = 0;
 static Vector<RgPoolSlot> rg_pool;
 static Vector<String> rg_barrier_list;    // "from->to [res]"
 
-bool GototRenderServer::gpu_rg_create() {
+bool GneRenderServer::gpu_rg_create() {
 	if (rendering_device == nullptr) {
-		print_error("[GOTOT-NEXT] gpu_rg_create: no RenderingDevice.");
+		print_error("[GNE] gpu_rg_create: no RenderingDevice.");
 		return false;
 	}
 	if (rg_valid) {
@@ -6295,27 +6295,27 @@ bool GototRenderServer::gpu_rg_create() {
 	return true;
 }
 
-bool GototRenderServer::gpu_rg_add_pass(const String &p_name, int p_kind, const PackedStringArray &p_in_res, const PackedStringArray &p_out_res) {
+bool GneRenderServer::gpu_rg_add_pass(const String &p_name, int p_kind, const PackedStringArray &p_in_res, const PackedStringArray &p_out_res) {
 	if (!rg_valid) {
-		print_error("[GOTOT-NEXT] gpu_rg_add_pass: no graph. Call gpu_rg_create first.");
+		print_error("[GNE] gpu_rg_add_pass: no graph. Call gpu_rg_create first.");
 		return false;
 	}
 	if (rg_compiled) {
-		print_error("[GOTOT-NEXT] gpu_rg_add_pass: graph already compiled.");
+		print_error("[GNE] gpu_rg_add_pass: graph already compiled.");
 		return false;
 	}
 	for (int i = 0; i < rg_passes.size(); i++) {
 		if (rg_passes[i].name == p_name) {
-			print_error("[GOTOT-NEXT] gpu_rg_add_pass: duplicate pass name '" + p_name + "'.");
+			print_error("[GNE] gpu_rg_add_pass: duplicate pass name '" + p_name + "'.");
 			return false;
 		}
 	}
 	if (p_kind < 0 || p_kind >= RG_PASS_KINDS) {
-		print_error("[GOTOT-NEXT] gpu_rg_add_pass: kind " + itos(p_kind) + " out of [0," + itos(RG_PASS_KINDS) + ").");
+		print_error("[GNE] gpu_rg_add_pass: kind " + itos(p_kind) + " out of [0," + itos(RG_PASS_KINDS) + ").");
 		return false;
 	}
 	if (rg_passes.size() >= RG_MAX_PASSES) {
-		print_error("[GOTOT-NEXT] gpu_rg_add_pass: pass limit " + itos(RG_MAX_PASSES) + " reached.");
+		print_error("[GNE] gpu_rg_add_pass: pass limit " + itos(RG_MAX_PASSES) + " reached.");
 		return false;
 	}
 	RgPassCfg p;
@@ -6327,7 +6327,7 @@ bool GototRenderServer::gpu_rg_add_pass(const String &p_name, int p_kind, const 
 	return true;
 }
 
-bool GototRenderServer::gpu_rg_add_edge(const String &p_from, const String &p_to, const String &p_resource, int p_bytes) {
+bool GneRenderServer::gpu_rg_add_edge(const String &p_from, const String &p_to, const String &p_resource, int p_bytes) {
 	if (!rg_valid || rg_compiled) {
 		return false;
 	}
@@ -6342,11 +6342,11 @@ bool GototRenderServer::gpu_rg_add_edge(const String &p_from, const String &p_to
 		}
 	}
 	if (fi < 0 || ti < 0 || fi == ti) {
-		print_error("[GOTOT-NEXT] gpu_rg_add_edge: invalid endpoints.");
+		print_error("[GNE] gpu_rg_add_edge: invalid endpoints.");
 		return false;
 	}
 	if (rg_edges.size() >= RG_MAX_EDGES) {
-		print_error("[GOTOT-NEXT] gpu_rg_add_edge: edge limit " + itos(RG_MAX_EDGES) + " reached.");
+		print_error("[GNE] gpu_rg_add_edge: edge limit " + itos(RG_MAX_EDGES) + " reached.");
 		return false;
 	}
 	RgEdgeCfg e;
@@ -6358,7 +6358,7 @@ bool GototRenderServer::gpu_rg_add_edge(const String &p_from, const String &p_to
 	return true;
 }
 
-bool GototRenderServer::gpu_rg_compile() {
+bool GneRenderServer::gpu_rg_compile() {
 	if (!rg_valid) {
 		return false;
 	}
@@ -6419,7 +6419,7 @@ bool GototRenderServer::gpu_rg_compile() {
 	rg_cycle = visited != passes;
 	rg_compiled = !rg_cycle;
 	if (rg_cycle) {
-		String dbg = "[GOTOT-NEXT] rg_compile: CYCLE passes=" + itos(passes) + " edges=" + itos(edges) + " visited=" + itos(visited) + " indeg=[";
+		String dbg = "[GNE] rg_compile: CYCLE passes=" + itos(passes) + " edges=" + itos(edges) + " visited=" + itos(visited) + " indeg=[";
 		for (int i = 0; i < passes; i++) {
 			dbg += itos(indeg[i]) + (i + 1 < passes ? "," : "");
 		}
@@ -6516,9 +6516,9 @@ bool GototRenderServer::gpu_rg_compile() {
 	return true;
 }
 
-bool GototRenderServer::gpu_rg_execute() {
+bool GneRenderServer::gpu_rg_execute() {
 	if (!rg_valid || !rg_compiled) {
-		print_error("[GOTOT-NEXT] gpu_rg_execute: not compiled.");
+		print_error("[GNE] gpu_rg_execute: not compiled.");
 		return false;
 	}
 	// Each pass body dispatches the EXISTING pipeline. The passes are run via
@@ -6526,11 +6526,11 @@ bool GototRenderServer::gpu_rg_execute() {
 	// earlier signature stays literal. Count executed passes and bump the seq.
 	rg_exec_count = rg_topo.size();
 	rg_dispatch_seq++;
-	print_line("[GOTOT-NEXT] 015: rg_execute seq=", rg_dispatch_seq, " passes=", rg_exec_count, " barriers=", rg_barrier_count, " pool=", rg_pool_bytes, " aliased_saved=", rg_alias_saved);
+	print_line("[GNE] 015: rg_execute seq=", rg_dispatch_seq, " passes=", rg_exec_count, " barriers=", rg_barrier_count, " pool=", rg_pool_bytes, " aliased_saved=", rg_alias_saved);
 	return true;
 }
 
-Dictionary GototRenderServer::gpu_rg_get_stats() {
+Dictionary GneRenderServer::gpu_rg_get_stats() {
 	Dictionary d;
 	if (!rg_valid) {
 		d["valid"] = false;
@@ -6556,7 +6556,7 @@ Dictionary GototRenderServer::gpu_rg_get_stats() {
 	return d;
 }
 
-Dictionary GototRenderServer::gpu_rg_dump() {
+Dictionary GneRenderServer::gpu_rg_dump() {
 	Dictionary d;
 	if (!rg_valid) {
 		d["dot"] = "digraph rg015 { /* not created */ }";
@@ -6589,7 +6589,7 @@ Dictionary GototRenderServer::gpu_rg_dump() {
 
 
 // ============================================================================
-//  GOTOT-015.5 Phase 4: frame-time drift diagnosis.
+//  GNE-015.5 Phase 4: frame-time drift diagnosis.
 //
 //  GROUND TRUTH (verified against this 4.8.dev tree, not assumed):
 //   - There is NO get_frame_timestamp() in Godot's RenderingDevice.
@@ -6609,7 +6609,7 @@ Dictionary GototRenderServer::gpu_rg_dump() {
 //  This is additive, Test-only, and touches NO existing API or signature.
 // ============================================================================
 
-void GototRenderServer::gpu_frame_reset() {
+void GneRenderServer::gpu_frame_reset() {
 	gne_ft_frames = 0;
 	gne_ft_warm = 0;
 	gne_ft_gpu_total = 0;
@@ -6624,7 +6624,7 @@ void GototRenderServer::gpu_frame_reset() {
 	gne_ft_warmup_wall_max = 0;
 }
 
-int GototRenderServer::gpu_frame_begin() {
+int GneRenderServer::gpu_frame_begin() {
 	// Advance the frame counter FIRST. A guard of `if (gne_ft_frames > 0)`
 	// used to wrap the increment, so a run that started from 0 never counted a
 	// single frame and every wall/GPU total stayed at zero - which is why the
@@ -6691,9 +6691,9 @@ int GototRenderServer::gpu_frame_begin() {
 	return gne_ft_frames;
 }
 
-void GototRenderServer::gpu_frame_mark(int p_pass) {
+void GneRenderServer::gpu_frame_mark(int p_pass) {
 	if (p_pass < 0 || p_pass >= GNE_FT_PASSES) {
-		print_error("[GOTOT-NEXT] gpu_frame_mark: pass " + itos(p_pass) + " out of range (0.." + itos(GNE_FT_PASSES - 1) + ").");
+		print_error("[GNE] gpu_frame_mark: pass " + itos(p_pass) + " out of range (0.." + itos(GNE_FT_PASSES - 1) + ").");
 		return;
 	}
 	const uint64_t now_us = OS::get_singleton()->get_ticks_usec();
@@ -6702,7 +6702,7 @@ void GototRenderServer::gpu_frame_mark(int p_pass) {
 	rendering_device->capture_timestamp("gne_p" + itos(p_pass));
 }
 
-void GototRenderServer::gpu_frame_end() {
+void GneRenderServer::gpu_frame_end() {
 	if (gne_ft_frames > 0 && gne_ft_frames <= gne_ft_warm) {
 		const uint64_t now_us = OS::get_singleton()->get_ticks_usec();
 		const uint64_t wall = now_us - gne_ft_prev_wall_us;
@@ -6712,18 +6712,18 @@ void GototRenderServer::gpu_frame_end() {
 	}
 }
 
-void GototRenderServer::gpu_frame_set_warmup(int p_warm) {
+void GneRenderServer::gpu_frame_set_warmup(int p_warm) {
 	// Declares how many leading frames are warm-up. Per-pass accumulators are
 	// CLEARED at the warm-up boundary so the reported per-pass averages cover
 	// the measured window only - otherwise warm-up cost is folded into the mean.
 	if (p_warm < 0) {
-		print_error("[GOTOT-NEXT] gpu_frame_set_warmup: warmup must be >= 0, got " + itos(p_warm) + ".");
+		print_error("[GNE] gpu_frame_set_warmup: warmup must be >= 0, got " + itos(p_warm) + ".");
 		return;
 	}
 	gne_ft_warm = p_warm;
 }
 
-Dictionary GototRenderServer::gpu_frame_stats() const {
+Dictionary GneRenderServer::gpu_frame_stats() const {
 	Dictionary d;
 	d["frames"] = gne_ft_frames;
 	d["warmup"] = gne_ft_warm;
@@ -6771,7 +6771,7 @@ Dictionary GototRenderServer::gpu_frame_stats() const {
 	return d;
 }
 
-void GototRenderServer::gpu_rg_destroy() {
+void GneRenderServer::gpu_rg_destroy() {
 	rg_valid = false;
 	rg_compiled = false;
 	rg_passes.clear();
@@ -6782,7 +6782,7 @@ void GototRenderServer::gpu_rg_destroy() {
 }
 
 // ============================================================================
-//  GOTOT-015.5: Resource Pool (SPEC 015.5 v0.2; D3-D1..D4 resolved)
+//  GNE-015.5: Resource Pool (SPEC 015.5 v0.2; D3-D1..D4 resolved)
 //  A REAL pool: one backing storage buffer + bump cursor + free-list, with
 //  lifetime-based aliasing. The 015 "pool" was CPU accounting only
 //  (SPEC §2.1); every number here is backed by an actual RD buffer.
@@ -6791,7 +6791,7 @@ void GototRenderServer::gpu_rg_destroy() {
 //  020+) and is explicitly out of scope here.
 // ============================================================================
 
-void GototRenderServer::gpu_pool_destroy() {
+void GneRenderServer::gpu_pool_destroy() {
 	if (rendering_device == nullptr) {
 		gne_pool_valid = false;
 		return;
@@ -6813,12 +6813,12 @@ void GototRenderServer::gpu_pool_destroy() {
 	gne_pool_bytes_copied = 0;
 }
 
-bool GototRenderServer::gpu_pool_create(int p_bytes) {
+bool GneRenderServer::gpu_pool_create(int p_bytes) {
 	if (!ensure_gpu_device()) {
 		return false;
 	}
 	if (p_bytes <= 0) {
-		print_error("[GOTOT-NEXT] gpu_pool_create: bytes must be > 0, got " + itos(p_bytes) + ".");
+		print_error("[GNE] gpu_pool_create: bytes must be > 0, got " + itos(p_bytes) + ".");
 		return false;
 	}
 	// Recreate from scratch: the caller owns the lifetime, not the pool.
@@ -6827,7 +6827,7 @@ bool GototRenderServer::gpu_pool_create(int p_bytes) {
 	// in this module (see gpu_scene_create: transform/bounds/id buffers).
 	gne_pool_buffer = rendering_device->storage_buffer_create((uint32_t)p_bytes);
 	if (gne_pool_buffer.is_null()) {
-		print_error("[GOTOT-NEXT] gpu_pool_create: storage_buffer_create failed for " + itos(p_bytes) + " bytes.");
+		print_error("[GNE] gpu_pool_create: storage_buffer_create failed for " + itos(p_bytes) + " bytes.");
 		return false;
 	}
 	gne_pool_capacity = (int64_t)p_bytes;
@@ -6839,23 +6839,23 @@ bool GototRenderServer::gpu_pool_create(int p_bytes) {
 	gne_pool_bytes_copied = 0;
 	gne_pool_blocks.clear();
 	gne_pool_valid = true;
-	print_line("[GOTOT-NEXT] 015.5: pool created bytes=", gne_pool_capacity);
+	print_line("[GNE] 015.5: pool created bytes=", gne_pool_capacity);
 	return true;
 }
 
-int GototRenderServer::gpu_pool_alloc(int p_bytes, int p_first_pass, int p_last_pass, const String &p_tag) {
+int GneRenderServer::gpu_pool_alloc(int p_bytes, int p_first_pass, int p_last_pass, const String &p_tag) {
 	if (!gne_pool_valid) {
-		print_error("[GOTOT-NEXT] gpu_pool_alloc: no pool. Call gpu_pool_create first.");
+		print_error("[GNE] gpu_pool_alloc: no pool. Call gpu_pool_create first.");
 		return -1;
 	}
 	// STD430 alignment (contract_015_5_data §3): 16 B, never silently corrected.
 	const int64_t kAlign = 16;
 	if (p_bytes <= 0) {
-		print_error("[GOTOT-NEXT] gpu_pool_alloc: bytes must be > 0 for tag " + p_tag + ".");
+		print_error("[GNE] gpu_pool_alloc: bytes must be > 0 for tag " + p_tag + ".");
 		return -1;
 	}
 	if (p_first_pass > p_last_pass) {
-		print_error("[GOTOT-NEXT] gpu_pool_alloc: inverted lifetime [" + itos(p_first_pass) + ".." + itos(p_last_pass) + "] for tag " + p_tag + ".");
+		print_error("[GNE] gpu_pool_alloc: inverted lifetime [" + itos(p_first_pass) + ".." + itos(p_last_pass) + "] for tag " + p_tag + ".");
 		return -1;
 	}
 	const int64_t need = ((int64_t)p_bytes + kAlign - 1) / kAlign * kAlign;
@@ -6901,7 +6901,7 @@ int GototRenderServer::gpu_pool_alloc(int p_bytes, int p_first_pass, int p_last_
 
 	// 3) Bump: append if the capacity allows (no silent growth past capacity).
 	if (gne_pool_bump + need > gne_pool_capacity) {
-		print_error("[GOTOT-NEXT] gpu_pool_alloc: out of pool memory for tag " + p_tag + " (need " + itos(need) + " at bump " + itos(gne_pool_bump) + "/" + itos(gne_pool_capacity) + ").");
+		print_error("[GNE] gpu_pool_alloc: out of pool memory for tag " + p_tag + " (need " + itos(need) + " at bump " + itos(gne_pool_bump) + "/" + itos(gne_pool_capacity) + ").");
 		return -1;
 	}
 	GnePoolBlock nb;
@@ -6921,31 +6921,31 @@ int GototRenderServer::gpu_pool_alloc(int p_bytes, int p_first_pass, int p_last_
 	return gne_pool_blocks.size() - 1;
 }
 
-void GototRenderServer::gpu_pool_free(int p_index) {
+void GneRenderServer::gpu_pool_free(int p_index) {
 	if (!gne_pool_valid) {
-		print_error("[GOTOT-NEXT] gpu_pool_free: no pool.");
+		print_error("[GNE] gpu_pool_free: no pool.");
 		return;
 	}
 	if (p_index < 0 || p_index >= gne_pool_blocks.size()) {
-		print_error("[GOTOT-NEXT] gpu_pool_free: index " + itos(p_index) + " out of range (size " + itos(gne_pool_blocks.size()) + ").");
+		print_error("[GNE] gpu_pool_free: index " + itos(p_index) + " out of range (size " + itos(gne_pool_blocks.size()) + ").");
 		return;
 	}
 	GnePoolBlock &b = gne_pool_blocks.ptrw()[p_index];
 	if (!b.in_use) {
-		print_error("[GOTOT-NEXT] gpu_pool_free: index " + itos(p_index) + " is already free.");
+		print_error("[GNE] gpu_pool_free: index " + itos(p_index) + " is already free.");
 		return;
 	}
 	if (b.persistent) {
-		print_error("[GOTOT-NEXT] gpu_pool_free: persistent block " + itos(p_index) + " (" + b.tag + ") is not freeable per frame.");
+		print_error("[GNE] gpu_pool_free: persistent block " + itos(p_index) + " (" + b.tag + ") is not freeable per frame.");
 		return;
 	}
 	gne_pool_used -= b.bytes;
 	b.in_use = false;
 }
 
-int GototRenderServer::gpu_pool_persistent_alloc(int p_bytes, const String &p_tag) {
+int GneRenderServer::gpu_pool_persistent_alloc(int p_bytes, const String &p_tag) {
 	if (!gne_pool_valid) {
-		print_error("[GOTOT-NEXT] gpu_pool_persistent_alloc: no pool.");
+		print_error("[GNE] gpu_pool_persistent_alloc: no pool.");
 		return -1;
 	}
 	// D3-D2: hard cap. Overflow is an error, never a silent growth past it.
@@ -6956,7 +6956,7 @@ int GototRenderServer::gpu_pool_persistent_alloc(int p_bytes, const String &p_ta
 		}
 	}
 	if (count >= GNE_POOL_PERSISTENT_CAP) {
-		print_error("[GOTOT-NEXT] gpu_pool_persistent_alloc: persistent cap " + itos(GNE_POOL_PERSISTENT_CAP) + " reached; rejecting " + p_tag + ".");
+		print_error("[GNE] gpu_pool_persistent_alloc: persistent cap " + itos(GNE_POOL_PERSISTENT_CAP) + " reached; rejecting " + p_tag + ".");
 		return -1;
 	}
 	// Persistent blocks are never freed per frame: give them a full-range
@@ -6970,7 +6970,7 @@ int GototRenderServer::gpu_pool_persistent_alloc(int p_bytes, const String &p_ta
 	return idx;
 }
 
-Dictionary GototRenderServer::gpu_pool_stats() const {
+Dictionary GneRenderServer::gpu_pool_stats() const {
 	Dictionary d;
 	d["valid"] = gne_pool_valid;
 	if (!gne_pool_valid) {
@@ -7006,11 +7006,11 @@ Dictionary GototRenderServer::gpu_pool_stats() const {
 	return d;
 }
 
-bool GototRenderServer::gpu_pool_verify(const String &p_tag, int p_value) {
+bool GneRenderServer::gpu_pool_verify(const String &p_tag, int p_value) {
 	// Criterion 1 proof: the bytes must survive in REAL GPU memory across a
 	// free/reallocate cycle. A pure accounting counter cannot pass this.
 	if (!gne_pool_valid) {
-		print_error("[GOTOT-NEXT] gpu_pool_verify: no pool.");
+		print_error("[GNE] gpu_pool_verify: no pool.");
 		return false;
 	}
 	Vector<uint32_t> src;
@@ -7024,17 +7024,17 @@ bool GototRenderServer::gpu_pool_verify(const String &p_tag, int p_value) {
 	}
 	Vector<uint8_t> back = rendering_device->buffer_get_data(gne_pool_buffer, 0, 4);
 	if (back.size() < 4) {
-		print_error("[GOTOT-NEXT] gpu_pool_verify: readback too small (" + itos(back.size()) + " B).");
+		print_error("[GNE] gpu_pool_verify: readback too small (" + itos(back.size()) + " B).");
 		return false;
 	}
 	uint32_t v = 0;
 	memcpy(&v, back.ptr(), 4);
 	if ((int)v != p_value) {
-		print_error("[GOTOT-NEXT] gpu_pool_verify: read " + itos((int)v) + " != written " + itos(p_value) + ".");
+		print_error("[GNE] gpu_pool_verify: read " + itos((int)v) + " != written " + itos(p_value) + ".");
 		return false;
 	}
 	gpu_pool_free(idx);
-	print_line("[GOTOT-NEXT] 015.5: pool_verify tag=", p_tag, " value=", p_value, " OK");
+	print_line("[GNE] 015.5: pool_verify tag=", p_tag, " value=", p_value, " OK");
 	return true;
 }
 

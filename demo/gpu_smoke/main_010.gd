@@ -1,11 +1,11 @@
 extends Node
 
-# GOTOT-010 - Batch Instance Rendering (multi-mesh, per-batch indirect draw) Proof
+# GNE-010 - Batch Instance Rendering (multi-mesh, per-batch indirect draw) Proof
 #
-# Uses the ENTIRE GOTOT-008B real-mesh groundwork (cull -> compact) unchanged,
+# Uses the ENTIRE GNE-008B real-mesh groundwork (cull -> compact) unchanged,
 # with the 010 additions:
 #   - a per-instance mesh_id buffer (gpu_scene_set_instance_mesh),
-#   - a 64-slot GPU mesh table (GototMeshDesc) built from gpu_mesh_create (cube,
+#   - a 64-slot GPU mesh table (GneMeshDesc) built from gpu_mesh_create (cube,
 #     mesh 0) + gpu_mesh_create_from_arrays (tetrahedron mesh 1, octahedron mesh 2),
 #   - a prefix-sum build_batch_args compute path (per-mesh count + assemble),
 #   - a single multi-draw indirect draw whose draw_count == number of DISTINCT
@@ -86,7 +86,7 @@ const CUBE_FRONT_INDEX := 0
 const TETRA_FRONT_INDEX := 4
 const OCTA_FRONT_INDEX := 5
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
@@ -112,7 +112,7 @@ var center_is_cube := false
 var center_depth := -1.0
 
 func _ready() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(50, "server singleton is null")
 		return
@@ -180,8 +180,8 @@ func _ready() -> void:
 	server.gpu_scene_set_camera(camera.get_global_transform(), camera.get_camera_projection())
 
 	RenderingServer.frame_post_draw.connect(_on_frame_post_draw)
-	print("GOTOT-NEXT 010: scene ready meshes=", mesh_colors)
-	print("GOTOT-NEXT 010: colors cube=", mesh_colors[0], " tetra=", mesh_colors[1], " octa=", mesh_colors[2])
+	print("GNE 010: scene ready meshes=", mesh_colors)
+	print("GNE 010: colors cube=", mesh_colors[0], " tetra=", mesh_colors[1], " octa=", mesh_colors[2])
 
 func _process(_delta: float) -> void:
 	if shot_done:
@@ -251,7 +251,7 @@ func _process(_delta: float) -> void:
 		var argsline := ""
 		for b in server.gpu_mesh_get_batch_count():
 			argsline += " " + str(server.gpu_mesh_get_batch_args(b))
-		print("GOTOT-NEXT 010: frame=", frame, " visible=", visible, " batch_count=",
+		print("GNE 010: frame=", frame, " visible=", visible, " batch_count=",
 				server.gpu_mesh_get_batch_count(), " draw_counts=", server.gpu_mesh_get_draw_counts(),
 				" args=", argsline)
 
@@ -360,10 +360,10 @@ func _finalize(pixels: PackedByteArray, depth: PackedFloat32Array, visible: int)
 		_fail(75, "same-frame center depth differs (det)")
 		return
 
-	print("GOTOT-NEXT 010: evidence batch_count=", server.gpu_mesh_get_batch_count(),
+	print("GNE 010: evidence batch_count=", server.gpu_mesh_get_batch_count(),
 			" draw_counts=", last_draw_counts)
-	print("GOTOT-NEXT 010: pixels g=", count_green, " b=", count_blue, " o=", count_orange)
-	print("GOTOT-NEXT 010: depth dC=", d_cube, " dT=", d_tetra, " dO=", d_octa, " center=", center_depth)
+	print("GNE 010: pixels g=", count_green, " b=", count_blue, " o=", count_orange)
+	print("GNE 010: depth dC=", d_cube, " dT=", d_tetra, " dO=", d_octa, " center=", center_depth)
 	_print_signature()
 	_finish_pass()
 
@@ -373,17 +373,17 @@ func _print_signature() -> void:
 		last_draw_counts[0], last_draw_counts[1], last_draw_counts[2],
 		count_green, count_blue, count_orange, d_cube, d_tetra, d_octa,
 		1 if center_is_cube else 0, compact_sorted[0], compact_sorted[INSTANCE_COUNT - 1]]
-	print("GOTOT-NEXT 010-DET ", sig)
+	print("GNE 010-DET ", sig)
 	var f := FileAccess.open(SIG_FILE, FileAccess.WRITE)
 	if f == null:
-		print("GOTOT-NEXT 010: sig file WRITE FAILED")
+		print("GNE 010: sig file WRITE FAILED")
 	else:
 		f.store_line(sig)
 		f.close()
 
 func _finish_pass() -> void:
 	want_shot = true
-	print("GOTOT-NEXT 010: EVIDENCE OK")
+	print("GNE 010: EVIDENCE OK")
 
 func _on_frame_post_draw() -> void:
 	if not want_shot or shot_done:
@@ -392,12 +392,12 @@ func _on_frame_post_draw() -> void:
 	want_shot = false
 	var shot := get_viewport().get_texture().get_image()
 	if shot.is_empty():
-		print("GOTOT-NEXT 010: window screenshot NOT EXECUTED (empty image)")
+		print("GNE 010: window screenshot NOT EXECUTED (empty image)")
 	else:
 		var err := shot.save_png(WINDOW_PNG)
-		print("GOTOT-NEXT 010: window screenshot saved=", err == OK)
+		print("GNE 010: window screenshot saved=", err == OK)
 	server.gpu_scene_destroy()
-	print("GOTOT-NEXT 010: PASS")
+	print("GNE 010: PASS")
 	get_tree().quit(0)
 
 # --- GPU == CPU culling ---
@@ -501,7 +501,7 @@ func _search_color(cx: int, cy: int, r: int, col: Color, pixels: PackedByteArray
 	return false
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 010: FAIL code=", code, " ", msg)
+	print("GNE 010: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_scene_destroy()
 	get_tree().quit(code)

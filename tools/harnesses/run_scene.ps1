@@ -25,7 +25,7 @@ param(
 )
 
 $exe = 'C:\Users\opc\Documents\AI_ENGINE\godot-master\bin\godot.windows.editor.dev.x86_64.console.exe'
-$proj = 'C:\Users\opc\Documents\AI_ENGINE\gotot-next\demo\gpu_smoke'
+$proj = 'C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\demo\gpu_smoke'
 
 if (-not (Test-Path $exe)) {
     Write-Output "[FATAL] engine exe missing: $exe"

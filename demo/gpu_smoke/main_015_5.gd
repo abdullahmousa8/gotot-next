@@ -1,5 +1,5 @@
 extends Node
-# GOTOT-NEXT 015.5 — Resource Pool (real allocation + async readback)
+# GNE 015.5 — Resource Pool (real allocation + async readback)
 # SPEC 015.5 v0.2; D3-D1..D4 resolved:
 #   D3-D1 presentation = async readback, NOT zero-copy
 #   D3-D2 persistent cap = 256 entries
@@ -19,12 +19,12 @@ extends Node
 const POOL_BYTES := 4 * 1024 * 1024 # 4 MiB
 const PERSISTENT_TRIALS := 300      # > 256 so the cap MUST reject
 
-var server: GototRenderServer
+var server: GneRenderServer
 var pass_count := 0
 
 
 func _ready() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(300, "server singleton is null")
 		return
@@ -43,8 +43,8 @@ func _ready() -> void:
 	if not _phase_readback_framing():
 		return
 
-	print("GOTOT-NEXT 015.5: phases=", pass_count, "/5")
-	print("GOTOT-NEXT 015.5: PASS")
+	print("GNE 015.5: phases=", pass_count, "/5")
+	print("GNE 015.5: PASS")
 	get_tree().quit(0)
 
 
@@ -66,7 +66,7 @@ func _phase_pool_real() -> bool:
 		_fail(305, "gpu_pool_verify beta")
 		return false
 	pass_count += 1
-	print("GOTOT-NEXT 015.5: C1 pool_real bytes=", st["pool_bytes"], " verify=alpha,beta OK")
+	print("GNE 015.5: C1 pool_real bytes=", st["pool_bytes"], " verify=alpha,beta OK")
 	return true
 
 
@@ -109,7 +109,7 @@ func _phase_aliasing() -> bool:
 	server.gpu_pool_free(b)
 	server.gpu_pool_free(a)
 	pass_count += 1
-	print("GOTOT-NEXT 015.5: C2 aliasing_real alias_saved=", final_stats["alias_saved"], " disjoint=shared overlap=fresh OK")
+	print("GNE 015.5: C2 aliasing_real alias_saved=", final_stats["alias_saved"], " disjoint=shared overlap=fresh OK")
 	return true
 
 
@@ -132,7 +132,7 @@ func _phase_persistent_cap() -> bool:
 		_fail(313, "rejected " + str(rejected) + " != " + str(PERSISTENT_TRIALS - cap))
 		return false
 	pass_count += 1
-	print("GOTOT-NEXT 015.5: C4 persistent_cap accepted=", accepted, " rejected=", rejected, " cap=", cap)
+	print("GNE 015.5: C4 persistent_cap accepted=", accepted, " rejected=", rejected, " cap=", cap)
 	return true
 	return true
 
@@ -160,7 +160,7 @@ func _phase_dynamic() -> bool:
 	server.gpu_pool_free(t2)
 	server.gpu_pool_free(t1)
 	pass_count += 1
-	print("GOTOT-NEXT 015.5: C5 dynamic rebuilds=", st2["rebuilds"], " bytes_copied=", st2["bytes_copied"], " grow_initial=", st2["grow_initial"])
+	print("GNE 015.5: C5 dynamic rebuilds=", st2["rebuilds"], " bytes_copied=", st2["bytes_copied"], " grow_initial=", st2["grow_initial"])
 	return true
 
 
@@ -178,13 +178,13 @@ func _phase_readback_framing() -> bool:
 		return false
 	# D3-D4: the 015.5 signature lives INSIDE v15 with the pr flag and is
 	# backward compatible (the old v15 signatures stay valid).
-	print("GOTOT-NEXT 015.5: C7 readback=async-readback-not-zero-copy flag=pr1 (30-50pct claim NOT made here - unmeasured)")
-	print("GOTOT-NEXT 015.5: sig=v15-pr1 pool=", st["pool_bytes"], " blocks=", st["block_count"], " alias_saved=", st["alias_saved"])
+	print("GNE 015.5: C7 readback=async-readback-not-zero-copy flag=pr1 (30-50pct claim NOT made here - unmeasured)")
+	print("GNE 015.5: sig=v15-pr1 pool=", st["pool_bytes"], " blocks=", st["block_count"], " alias_saved=", st["alias_saved"])
 	pass_count += 1
 	return true
 
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 015.5: FAIL code=", code, " ", msg)
+	print("GNE 015.5: FAIL code=", code, " ", msg)
 	get_tree().quit(code)
 

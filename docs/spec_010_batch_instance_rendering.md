@@ -1,8 +1,8 @@
-# GOTOT-010 — Batch Instance Rendering (SPEC DRAFT)
+# GNE-010 — Batch Instance Rendering (SPEC DRAFT)
 
 **الحالة:** SPEC 010 v0.2 FINAL — القرارات 7.1/7.2 محسومة — بانتظار push وموافقة Owner على بدء 010.
 **المرجع:** docs/progress_report.md (قسم 12/13/16) + ملاحظات التأجيل المؤجلة إلى 010.
-**المرحلة السابقة:** GOTOT-009 — Real Depth Buffer (PASS، commit `495bad7`).
+**المرحلة السابقة:** GNE-009 — Real Depth Buffer (PASS، commit `495bad7`).
 
 ---
 
@@ -24,7 +24,7 @@
 ### 3.1 Mesh Table Schema
 
 ```cpp
-struct GototMeshDesc {
+struct GneMeshDesc {
     uint32_t index_buffer_slot;    // slot في bindless table (مستقبلاً) أو RID
     uint32_t vertex_buffer_slot;   // slot
     uint32_t index_count;          // عدد الفهارس
@@ -35,7 +35,7 @@ struct GototMeshDesc {
 };
 ```
 
-- **Builder:** CPU (GOTOT-owned) → GPU buffer عبر `buffer_update`.
+- **Builder:** CPU (GNE-owned) → GPU buffer عبر `buffer_update`.
 - **Size:** ثابت ابتداءً (مثل 64 mesh كحد أقصى في 010A).
 - **Extension:** ديناميكي لاحقاً (011+).
 
@@ -129,7 +129,7 @@ Meshlets / LOD، نظام المواد، render graph، bindless/VMA، streamed 
 
 **التنفيذ:**
 - `gpu_scene_set_camera` يستدعي `Projection::get_projection_planes()` داخليًا.
-- يُحدّث `GototViewData.planes[6]` في UBO.
+- يُحدّث `GneViewData.planes[6]` في UBO.
 - يُلغي الحاجة إلى قراءة per-frame في demo.
 
 **النطاق:** C++ صغير (تحديث UBO في `set_camera`).

@@ -7,7 +7,7 @@ var data: Dictionary = {}
 
 func _process(_delta: float) -> void:
 	var fps := Engine.get_frames_per_second()
-	var text := "GOTOT-NEXT 011 interactive demo\n"
+	var text := "GNE 011 interactive demo\n"
 	text += "FPS %d  frame %.1f ms\n" % [fps, 1000.0 / maxf(1.0, float(fps))]
 	if data.has("visible"):
 		text += "visible %d / %d instances\n" % [data.visible, data.total]

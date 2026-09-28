@@ -107,7 +107,7 @@ GPU Scene هو قلب التصميم. بدلاً من إرسال مجموعة أ
 | VisibilityBuffer | Visible cluster IDs / flags | GPU generated |
 | IndirectArgs | Draw parameters | GPU generated |
 
-## 7. GototMesh — Virtualized Geometry
+## 7. GneMesh — Virtualized Geometry
 
 ### 7.1 Import pipeline
 استيراد mesh عالي الدقة ← تنظيف topology ← تقسيم geometry إلى clusters/meshlets ← حساب bounding sphere/cone وerror metric ← ضغط vertices/indices/attributes ← بناء hierarchy متعددة المستويات ← تخزين chunks قابلة للـ streaming ← توليد metadata للـ shadow/GI/RT.
@@ -129,7 +129,7 @@ Mesh shaders تُستخدم كمسار متقدم عند توفرها. المس�
 ### 7.4 Software rasterization
 يُعامل كـ research module. تُقارن software rasterization مقابل hardware rasterization على micro-triangles، وتُقاس occupancy، LDS/shared-memory pressure، bandwidth وoverdraw. لا يدخل shipping path قبل اجتياز benchmark gate.
 
-## 8. GototMaterials
+## 8. GneMaterials
 
 نظام المواد يعتمد Material Graph عالي المستوى يولد shader permutations مدارة مركزياً. كل مادة ترتبط بـ Material ID ثابت، والموارد تشير إلى texture/sampler IDs بدلاً من bind calls متكررة.
 
@@ -143,7 +143,7 @@ Mesh shaders تُستخدم كمسار متقدم عند توفرها. المس�
 - Virtual textures لاحقاً
 - Material LOD/feature levels
 
-## 9. GototLumen — Hybrid GI
+## 9. GneLumen — Hybrid GI
 
 الاسم داخلي فقط ولا يعني مطابقة Lumen. النظام متعدد المستويات:
 - Screen-space tracing للحلول الرخيصة القريبة.
@@ -155,7 +155,7 @@ Mesh shaders تُستخدم كمسار متقدم عند توفرها. المس�
 
 Hardware RT يجب أن يكون feature tier وليس شرط تشغيل المحرك. Capability System يقرر المسار وقت إنشاء الجهاز.
 
-## 10. GototVSM
+## 10. GneVSM
 
 التصميم يعتمد virtual pages وpage tables وcache. يبدأ التنفيذ بـ directional light واحد، ثم local lights.
 

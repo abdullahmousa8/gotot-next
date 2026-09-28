@@ -1,8 +1,8 @@
 extends Node
 
-# GOTOT-015 - Render Graph (SPEC 015)
+# GNE-015 - Render Graph (SPEC 015)
 #
-# The graph is a real DAG built through the module (modules/gotot_render).
+# The graph is a real DAG built through the module (modules/gne_render).
 # It is completely separate from the 001B scene, the 008A/010/011 batch path,
 # the 009 depth buffer, the 013 meshlet pipeline and the 014 GPU scene
 # manager; the graph only *schedules* the pre-015 server entry points and
@@ -41,7 +41,7 @@ const K_OUT := 5
 var sig_file := "C:/Users/opc/AppData/Local/Temp/opencode/gt015_sig.txt"
 var asset_path := "res://mesh_013_torus.gomlet"
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 
 var pass_count := 0
@@ -66,7 +66,7 @@ var _seq_b := 0
 
 func _ready() -> void:
 	_parse_user_args()
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(200, "server singleton is null")
 		return
@@ -111,15 +111,15 @@ func _ready() -> void:
 		_seq_a,
 		_seq_b,
 		int(ref_ord_total)]
-	print("GOTOT-NEXT 015: ", sig)
+	print("GNE 015: ", sig)
 	var f := FileAccess.open(sig_file, FileAccess.WRITE)
 	if f == null:
-		print("GOTOT-NEXT 015: sig file WRITE FAILED: ", sig_file)
+		print("GNE 015: sig file WRITE FAILED: ", sig_file)
 	else:
 		f.store_line(sig)
 		f.close()
 
-	print("GOTOT-NEXT 015: PASS")
+	print("GNE 015: PASS")
 	server.gpu_rg_destroy()
 	server.gpu_scene_manager_destroy()
 	server.gpu_meshlet_destroy()
@@ -207,7 +207,7 @@ func _phase_013_reference() -> bool:
 	ref_ord_bases = bases
 	ref_ord_total = acc
 	ref_013_sig = str(ref_lods) + "/" + str(int(ref_ev[3]))
-	print("GOTOT-NEXT 015: ref013 fnv=", int(ref_ev[3]), " ord_total=", ref_ord_total)
+	print("GNE 015: ref013 fnv=", int(ref_ev[3]), " ord_total=", ref_ord_total)
 	return true
 
 # ---------------------------------------------------------------- Criterion 1
@@ -261,14 +261,14 @@ func _phase_build_dag() -> bool:
 		return false
 
 	pass_count += 1
-	print("GOTOT-NEXT 015: C1 DAG built (6 passes, 6 resource edges)")
+	print("GNE 015: C1 DAG built (6 passes, 6 resource edges)")
 	return true
 
 # ---------------------------------------------------------------- Criterion 2
 func _phase_topology() -> bool:
 	if not server.gpu_rg_compile():
 		var d := server.gpu_rg_get_stats()
-		print("GOTOT-NEXT 015: DIAG compile-failed stats=", d)
+		print("GNE 015: DIAG compile-failed stats=", d)
 		_fail(226, "gpu_rg_compile")
 		return false
 	var st := server.gpu_rg_get_stats()
@@ -310,7 +310,7 @@ func _phase_topology() -> bool:
 		return false
 	_topo = order
 	pass_count += 1
-	print("GOTOT-NEXT 015: C2 topo pass (order=" + str(order) + ")")
+	print("GNE 015: C2 topo pass (order=" + str(order) + ")")
 	return true
 
 # ---------------------------------------------------------------- Criterion 2b
@@ -344,7 +344,7 @@ func _phase_cycle_reject() -> bool:
 		_fail(240, "state not clean after acyclic rebuild")
 		return false
 	pass_count += 1
-	print("GOTOT-NEXT 015: C2b cycle detection pass (back-edge rejected, rebuilt clean)")
+	print("GNE 015: C2b cycle detection pass (back-edge rejected, rebuilt clean)")
 	return true
 
 # ---------------------------------------------------------------- Criterion 3
@@ -372,7 +372,7 @@ func _phase_pool() -> bool:
 		_fail(245, "pool " + str(_pool_bytes) + " >= resources " + str(_res_bytes) + " (aliasing not applied)")
 		return false
 	pass_count += 1
-	print("GOTOT-NEXT 015: C3 auto-barrier+pool pass (barriers=", _barriers, " pool=", _pool_bytes, " res=", _res_bytes, " saved=", _saved, ")")
+	print("GNE 015: C3 auto-barrier+pool pass (barriers=", _barriers, " pool=", _pool_bytes, " res=", _res_bytes, " saved=", _saved, ")")
 	return true
 
 # ---------------------------------------------------------------- Criterion 5
@@ -390,7 +390,7 @@ func _phase_execute() -> bool:
 		_fail(248, "dispatch_seq " + str(_seq_a) + " <= 0 (no real dispatch)")
 		return false
 	pass_count += 1
-	print("GOTOT-NEXT 015: C5 execute pass (passes=", _exec_a, " seq=", _seq_a, ")")
+	print("GNE 015: C5 execute pass (passes=", _exec_a, " seq=", _seq_a, ")")
 	return true
 
 # ---------------------------------------------------------------- Criterion 6
@@ -427,7 +427,7 @@ func _phase_det() -> bool:
 			_fail(256, "dump dot missing pass " + str(nm))
 			return false
 	pass_count += 1
-	print("GOTOT-NEXT 015: C6 DET pass (2 executes, order+barriers+pool identical, seq ", _seq_a, "->", _seq_b, ")")
+	print("GNE 015: C6 DET pass (2 executes, order+barriers+pool identical, seq ", _seq_a, "->", _seq_b, ")")
 	return true
 
 # ---------------------------------------------------------------- Criterion 8
@@ -495,11 +495,11 @@ func _phase_compat() -> bool:
 		_fail(267, "014 manager invalid with graph alive")
 		return false
 	pass_count += 1
-	print("GOTOT-NEXT 015: C7 zero-drift pass (013 fnv=", int(ref_ev[3]), " 014 snap=", int(dc[0]), " groups=", int(dc[2]), ")")
+	print("GNE 015: C7 zero-drift pass (013 fnv=", int(ref_ev[3]), " 014 snap=", int(dc[0]), " groups=", int(dc[2]), ")")
 	return true
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 015: FAIL code=", code, " ", msg)
+	print("GNE 015: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_rg_destroy()
 		server.gpu_scene_manager_destroy()

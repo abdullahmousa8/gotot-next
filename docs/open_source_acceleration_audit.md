@@ -9,20 +9,20 @@
 
 ---
 
-## Section 1 — Current GPU Core (delivered through GOTOT-011)
+## Section 1 — Current GPU Core (delivered through GNE-011)
 
-What has been proven working end-to-end on the gotot-render RDG fork (Godot 4 module, custom Vulkan RDG path):
+What has been proven working end-to-end on the gne-render RDG fork (Godot 4 module, custom Vulkan RDG path):
 
-- **GPU Scene (SoA):** GOTOT-owned struct-of-arrays GPU scene — transforms (position_scale), bounds, instance ids, mesh ids (GOTOT-001B).
-- **Frustum Culling:** GPU two-phase visibility using 6-plane frustum test against instance bounds (GOTOT-002), correct deterministic counts.
-- **HZB (prototype):** GPU hierarchical z-buffer build + occlusion check path (GOTOT-004) — prototype proven; its production successor is GOTOT-012 (below).
-- **Compaction + Indirect Args:** GPU compaction of the visible set + computed indirect dispatch/draw arguments (GOTOT-003).
-- **Real Geometry:** Real mesh path — actual vertex/index buffers rendered through the custom path, not just particles/stubs (GOTOT-008A).
-- **Multi-Instance:** 512-instance (8×8×8) multi-instance rendering proof (GOTOT-008B).
-- **Depth Buffer:** Real D32_SFLOAT depth attachment written by the custom path (GOTOT-009A/009B).
-- **Batch Rendering:** Batch instance rendering — 3 meshes multi-draw, grouped batches (GOTOT-010).
-- **Multi-Draw:** Dynamic draw count, parallel prefix-sum grouping, ≤5 grouped/reordered draws (GOTOT-011) + interactive demo (main_demo + camera_controller + hud, strategy live-switch).
-- **Measured reduction:** 64 meshes → 5 draw calls = **12.8×** draw-call reduction (GOTOT-011 evidence).
+- **GPU Scene (SoA):** GNE-owned struct-of-arrays GPU scene — transforms (position_scale), bounds, instance ids, mesh ids (GNE-001B).
+- **Frustum Culling:** GPU two-phase visibility using 6-plane frustum test against instance bounds (GNE-002), correct deterministic counts.
+- **HZB (prototype):** GPU hierarchical z-buffer build + occlusion check path (GNE-004) — prototype proven; its production successor is GNE-012 (below).
+- **Compaction + Indirect Args:** GPU compaction of the visible set + computed indirect dispatch/draw arguments (GNE-003).
+- **Real Geometry:** Real mesh path — actual vertex/index buffers rendered through the custom path, not just particles/stubs (GNE-008A).
+- **Multi-Instance:** 512-instance (8×8×8) multi-instance rendering proof (GNE-008B).
+- **Depth Buffer:** Real D32_SFLOAT depth attachment written by the custom path (GNE-009A/009B).
+- **Batch Rendering:** Batch instance rendering — 3 meshes multi-draw, grouped batches (GNE-010).
+- **Multi-Draw:** Dynamic draw count, parallel prefix-sum grouping, ≤5 grouped/reordered draws (GNE-011) + interactive demo (main_demo + camera_controller + hud, strategy live-switch).
+- **Measured reduction:** 64 meshes → 5 draw calls = **12.8×** draw-call reduction (GNE-011 evidence).
 
 ## Section 2 — Remaining GPU Core (still required)
 
@@ -41,20 +41,20 @@ Per-subsystem table (Architect's directive: Big Pickle completes the table; "?" 
 
 | Subsystem | Build | Borrow | Integrate | Defer | Derivation |
 |---|---|---|---|---|---|
-| Renderer architecture | ✅ | | | | GOTOT-owned; no external renderer replaces it (strategy Section 03) |
-| GPU Scene | ✅ | | | | GOTOT-owned SoA; external scene frameworks rejected |
-| Frustum Culling | ✅ | | | | GOTOT-owned; implemented and proven |
+| Renderer architecture | ✅ | | | | GNE-owned; no external renderer replaces it (strategy Section 03) |
+| GPU Scene | ✅ | | | | GNE-owned SoA; external scene frameworks rejected |
+| Frustum Culling | ✅ | | | | GNE-owned; implemented and proven |
 | HZB | ✅ | ✅ | | | Owned implementation; borrow *reference patterns* only (Khronos/NVIDIA samples study) |
 | Compaction | ✅ | | | | Owned; prefix-sum proven |
-| Batch Rendering | ✅ | | | | Owned; GOTOT-010 |
-| Multi-Draw | ✅ | | | | Owned; GOTOT-011 |
+| Batch Rendering | ✅ | | | | Owned; GNE-010 |
+| Multi-Draw | ✅ | | | | Owned; GNE-011 |
 | Meshlet generation | ✅ | | ? | | Owned runtime format (strategy Section 12); meshoptimizer (offline) supplies generation — pending Architect decision |
 | LOD | ✅ | | ? | | Owned selection logic; meshoptimizer simplification supplies LOD sources (offline) — pending decision |
 | glTF parsing | | | ? | | cgltf (offline import) primary candidate; fastgltf reference-only (strategy Section 13) |
 | meshoptimizer | | | ? | | Offline-only candidate (MIT); never at runtime (strategy Section 12) |
 | VMA | | | | ✅ | Deferred until RHI/memory decision (strategy Section 15) |
 | Render Graph | | ✅ | | ✅ | Borrow *patterns*; own implementation deferred |
-| Materials | ✅ | | | ✅ | Material model GOTOT-owned; advanced material milestone deferred |
+| Materials | ✅ | | | ✅ | Material model GNE-owned; advanced material milestone deferred |
 
 ## Section 4 — Candidates
 
@@ -67,9 +67,9 @@ License: MIT (permissive)
 Maturity: Mature (production use in many engines: BG2/Fortnite tooling lineage, widely embedded)
 Relevant components: mesh optimization (vertex/index cache), cluster generation (meshlets),
                      simplification (LOD), quantization, vertex/index codec
-Integration difficulty: Medium (single-core offline C++; needs a GOTOT-owned bake wrapper)
+Integration difficulty: Medium (single-core offline C++; needs a GNE-owned bake wrapper)
 Expected time saved: High
-Architectural risk: Low (offline tooling; output baked into GOTOT-owned mesh format; runtime never links it)
+Architectural risk: Low (offline tooling; output baked into GNE-owned mesh format; runtime never links it)
 Maintenance risk: Low (active, MIT, single maintainer with strong track record)
 ```
 
@@ -85,7 +85,7 @@ Maturity: Mature (single-header, widely used: darmstadt/sglm ecosystem, many eng
 Relevant components: glTF JSON/binary parsing, buffers, nodes, meshes, scenes
 Integration difficulty: Low (single-header C; wrap for import-only)
 Expected time saved: High (replaces writing a spec complete glTF parser)
-Architectural risk: Low (offline import only; output converted to GOTOT-owned data)
+Architectural risk: Low (offline import only; output converted to GNE-owned data)
 Maintenance risk: Low
 ```
 
@@ -103,7 +103,7 @@ Maturity: Mature (Khronos/Google reference toolchain; Vulkan SDK standard)
 Relevant components: offline GLSL→SPIR-V compilation, validation, reflection
 Integration difficulty: Medium (large-ish build; must be leaf tooling, offline only)
 Expected time saved: Medium-High (correctness + validation vs self-written compiler)
-Architectural risk: Low (build-time only; never defines GOTOT shader model — strategy Section 14)
+Architectural risk: Low (build-time only; never defines GNE shader model — strategy Section 14)
 Maintenance risk: Low (Khronos-backed)
 ```
 
@@ -139,7 +139,7 @@ Architectural risk: High (would enter runtime pipeline)
 Maintenance risk: Medium
 ```
 
-Recommended classification: **Deferred** — no current need; may inform GOTOT-owned implementations (strategy Section 11/16).
+Recommended classification: **Deferred** — no current need; may inform GNE-owned implementations (strategy Section 11/16).
 
 ### P2 — Khronos samples (reference)
 
@@ -179,28 +179,28 @@ Only what is worth integrating (and only *after* Architect decision + Dependency
 
 ### P0 — meshoptimizer (offline)
 
-- **لماذا (Why):** Meshlet/cluster generation and LOD simplification are exactly the hard, algorithm-dense GPU-driven pieces remaining (Section 2). Writing production-grade meshlet generation + simplification from scratch is a multi-week effort already solved and battle-tested here. Runtime format stays GOTOT-owned — meshoptimizer output is baked at import time (strategy Section 12).
-- **كيف (How):** Add as offline build/import tooling behind a GOTOT-owned bake wrapper (`gotot_mesh_import`), pinned version, MIT license review recorded; output written into the GOTOT mesh format. Zero runtime linkage, zero runtime knowledge of the dependency.
+- **لماذا (Why):** Meshlet/cluster generation and LOD simplification are exactly the hard, algorithm-dense GPU-driven pieces remaining (Section 2). Writing production-grade meshlet generation + simplification from scratch is a multi-week effort already solved and battle-tested here. Runtime format stays GNE-owned — meshoptimizer output is baked at import time (strategy Section 12).
+- **كيف (How):** Add as offline build/import tooling behind a GNE-owned bake wrapper (`gne_mesh_import`), pinned version, MIT license review recorded; output written into the GNE mesh format. Zero runtime linkage, zero runtime knowledge of the dependency.
 - **متى (When):** Immediately before milestone 014 (Meshlets + LOD). No earlier milestone depends on it.
 
 ### P1 — cgltf (offline glTF import)
 
 - **لماذا (Why):** glTF is the chosen interchange (strategy Section 13); a spec-complete parser is a large, error-prone surface. cgltf is single-header MIT and removes that entire risk class for import-time parsing only. Runtime stays free of any gltf/parser types.
-- **كيف (How):** Wrap in `gotot_asset_pipeline` (import path only); convert parsed content into GOTOT-owned scene/mesh data; pinned version + license record.
+- **كيف (How):** Wrap in `gne_asset_pipeline` (import path only); convert parsed content into GNE-owned scene/mesh data; pinned version + license record.
 - **متى (When):** Milestone 015 (Asset Pipeline). Not earlier.
 
 ### P1 — Shader tooling: glslang/shaderc/SPIRV-Reflect (offline)
 
-- **لماذا (Why):** Current RDG uses Vulkan's `shader_compile_spirv_from_source` (runtime GLSL compile). An offline pipeline gives validation + reflection + reproducible SPIR-V and de-risks shader correctness — without changing the GOTOT shader model (strategy Section 14).
-- **كيف (How):** Offline build step for GOTOT-authored GLSL → baked SPIR-V blobs consumed at runtime; leaf tooling only, wrapped, pinned.
+- **لماذا (Why):** Current RDG uses Vulkan's `shader_compile_spirv_from_source` (runtime GLSL compile). An offline pipeline gives validation + reflection + reproducible SPIR-V and de-risks shader correctness — without changing the GNE shader model (strategy Section 14).
+- **كيف (How):** Offline build step for GNE-authored GLSL → baked SPIR-V blobs consumed at runtime; leaf tooling only, wrapped, pinned.
 - **متى (When):** Optional for 013/014; primary need arrives with more complex shaders (Materials — 016). Can be deferred to 016.
 
 ## Section 6 — Rejected / Deferred
 
-- **VMA — Deferred:** blocked on RHI/memory architecture decision (strategy Section 15). GOTOT's current allocation strategy is GOTOT-owned; revisit as a leaf utility once the RHI decision lands.
-- **AMD FidelityFX SDK — Deferred:** no current technical need; high runtime-pipeline risk for techniques we can implement GOTOT-owned. Informational only.
-- **Render Graph — Deferred:** render graph architecture remains GOTOT-owned; external graphs are studied as patterns (borrow) but not integrated now.
-- **Full renderer — Rejected:** no wholesale import of an external renderer (e.g., a full Vulkan engine), and no replacement of the GOTOT renderer. (Strategy: renderer architecture, GPU Scene, visibility = GOTOT-owned.)
+- **VMA — Deferred:** blocked on RHI/memory architecture decision (strategy Section 15). GNE's current allocation strategy is GNE-owned; revisit as a leaf utility once the RHI decision lands.
+- **AMD FidelityFX SDK — Deferred:** no current technical need; high runtime-pipeline risk for techniques we can implement GNE-owned. Informational only.
+- **Render Graph — Deferred:** render graph architecture remains GNE-owned; external graphs are studied as patterns (borrow) but not integrated now.
+- **Full renderer — Rejected:** no wholesale import of an external renderer (e.g., a full Vulkan engine), and no replacement of the GNE renderer. (Strategy: renderer architecture, GPU Scene, visibility = GNE-owned.)
 - **fastgltf — Reference-only:** studied as alternative parser; not integrated (cgltf is the primary candidate).
 - **AGPL/copyleft runtime components — Rejected/automatic-defer:** per license policy, any non-permissive runtime dependency is deferred pending legal review (Section 08.5).
 

@@ -1,24 +1,24 @@
 extends Node
 
-# GOTOT-007A - CPU Readback Viewport Integration Bridge
+# GNE-007A - CPU Readback Viewport Integration Bridge
 # TEMPORARY CPU READBACK BRIDGE - NOT FINAL RENDERING PATH
 #
 # Proves continuous integration:
-#   Godot Camera3D -> existing GOTOT GPU pipeline -> GOTOT framebuffer
+#   Godot Camera3D -> existing GNE GPU pipeline -> GNE framebuffer
 #   -> CPU readback -> Godot Image/ImageTexture -> TextureRect -> window
 #
-# Uses ONLY existing GOTOT public APIs. No C++ changes.
+# Uses ONLY existing GNE public APIs. No C++ changes.
 
 const INSTANCE_COUNT := 100000
 const SPREAD := 12000.0
 const FRAME_LIMIT := 240
 const PRINT_EVERY := 30
-const RASTER_W := 1920  # Fixed GOTOT raster target width (documented limitation).
-const RASTER_H := 1080  # Fixed GOTOT raster target height (documented limitation).
+const RASTER_W := 1920  # Fixed GNE raster target width (documented limitation).
+const RASTER_H := 1080  # Fixed GNE raster target height (documented limitation).
 const ORBIT_RADIUS := 800.0
 const ORBIT_HEIGHT := 400.0
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
@@ -47,7 +47,7 @@ var compared_frames := 0
 
 
 func _ready() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(40, "server singleton is null")
 		return
@@ -68,7 +68,7 @@ func _ready() -> void:
 		return
 
 	RenderingServer.frame_post_draw.connect(_on_frame_post_draw)
-	print("GOTOT-NEXT 007A: scene ready instances=", INSTANCE_COUNT)
+	print("GNE 007A: scene ready instances=", INSTANCE_COUNT)
 
 
 func _process(delta: float) -> void:
@@ -129,7 +129,7 @@ func _process(delta: float) -> void:
 		probe_done = true
 		var probe := _probe_orientation(pixels)
 		orientation_flip = probe == 1
-		print("GOTOT-NEXT 007A: orientation probe=", probe, " flip=", orientation_flip)
+		print("GNE 007A: orientation probe=", probe, " flip=", orientation_flip)
 
 	var img := Image.create_from_data(RASTER_W, RASTER_H, false, Image.FORMAT_RGBA8, pixels)
 	if orientation_flip:
@@ -171,7 +171,7 @@ func _process(delta: float) -> void:
 
 	# ---- Debug output (periodic, actual measured averages) ----
 	if frame % PRINT_EVERY == 0:
-		print("GOTOT-NEXT 007A")
+		print("GNE 007A")
 		print("Instances: ", INSTANCE_COUNT)
 		print("Visible: ", visible)
 		print("Viewport: ", int(vp_size.x), " x ", int(vp_size.y))
@@ -185,8 +185,8 @@ func _process(delta: float) -> void:
 		print("Frame: ", (tot_frame / measured), " ms")
 
 	if frame == FRAME_LIMIT:
-		print("GOTOT-NEXT 007A: visible range ", visible_min, "..", visible_max)
-		print("GOTOT-NEXT 007A: changed_frames=", changed_frames, " compared_frames=", compared_frames)
+		print("GNE 007A: visible range ", visible_min, "..", visible_max)
+		print("GNE 007A: changed_frames=", changed_frames, " compared_frames=", compared_frames)
 		want_shot = true
 
 
@@ -199,13 +199,13 @@ func _on_frame_post_draw() -> void:
 	# Evidence: capture the real game window (containing the TextureRect display).
 	var shot := get_viewport().get_texture().get_image()
 	if shot.is_empty():
-		print("GOTOT-NEXT 007A: window screenshot NOT EXECUTED (empty image)")
+		print("GNE 007A: window screenshot NOT EXECUTED (empty image)")
 	else:
 		var err := shot.save_png("C:/Users/opc/AppData/Local/Temp/opencode/gt_007_window.png")
-		print("GOTOT-NEXT 007A: window screenshot saved=", err == OK)
+		print("GNE 007A: window screenshot saved=", err == OK)
 
 	server.gpu_scene_destroy()
-	print("GOTOT-NEXT 007A: PASS")
+	print("GNE 007A: PASS")
 	get_tree().quit(0)
 
 
@@ -271,7 +271,7 @@ func _has_magenta_near(magenta: PackedVector2Array, px: float, py: float) -> boo
 
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 007A: FAIL code=", code, " ", msg)
+	print("GNE 007A: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_scene_destroy()
 	get_tree().quit(code)

@@ -8,16 +8,16 @@
 بعد اكتمال هذه المراحل، لم نعد في مرحلة "إثبات إمكانية GPU-driven rendering" تجريبية فقط؛ أصبح لدينا **Prototype متكامل تقريبًا**: GPU Scene → Culling → HZB → Indirect Draw → Rasterization على Framebuffer خاص.
 
 ## 2. البيئة والبناء
-- الملفات: `C:\Users\opc\Documents\AI_ENGINE\gotot-next\modules\gotot_render\{gotot_render_server.h, .cpp}` + `demo\gpu_smoke\main.gd` + `docs\engine_spec_v2.md`.
-- البناء (من `godot-master`): `scons platform=windows target=editor dev_build=yes custom_modules="C:\Users\opc\Documents\AI_ENGINE\gotot-next\modules" -j6` (~15-21 ث).
+- الملفات: `C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\modules\gne_render\{gne_render_server.h, .cpp}` + `demo\gpu_smoke\main.gd` + `docs\engine_spec_v2.md`.
+- البناء (من `godot-master`): `scons platform=windows target=editor dev_build=yes custom_modules="C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\modules" -j6` (~15-21 ث).
 - **مشكلة قسرية**: سياسة App Control/Device Guard على الجهاز تحجب تشغيل الـ exe مباشرة → حل بديل مثبت: `schtasks /Create /Run /Delete` يشغّل `gt_smoke.bat` الذي يكتب الناتج إلى `gt3.txt`، ثم نقرأه.
 - `RenderingDevice` محلي كسول (بنفس نمط `LightmapperRD`) لإبقاء الوحدة منعزلة عن الـ renderer الرئيسي.
 
-## 3. GOTOT-001A — الجهاز
+## 3. GNE-001A — الجهاز
 - `ensure_gpu_device()` → يخلق `RenderingDevice` محلي عند أول طلب فقط، مع `is_gpu_ready()`.
 - ملاحظة: لا نستدعي `free_rid` على الـ RD نفسه (جهاز مشترك للعملية كلها) — نتجنّب خطأ "Attempted to free invalid ID".
 
-## 4. GOTOT-001B — GPU Scene
+## 4. GNE-001B — GPU Scene
 - 100,000 كائن ببنية SoA (فصل حسب النوع للاستفادة من الـ bandwidth):
   - `transform_buffer`: `vec4 position+scale` (16 بايت).
   - `bounds_buffer`: `vec4 min_xyz+max_z` (32 بايت).
@@ -25,32 +25,32 @@
 - تعبئة بواسطة compute shader واحد يوازى بالترتيب (لكل instance أصله) — نفس النتائج CPU وGPU لاحقًا.
 - القياس المُثبت: `instances=100000, create≈196-318ms (تخصيص+تجميع), fill≈0.33-0.40ms`, الحجم ~4.96MB.
 
-## 5. GOTOT-002 — Frustum Culling
+## 5. GNE-002 — Frustum Culling
 - 6 مستويات من `Projection::get_projection_planes()` بالترتيب: near, far, left, top, right, bottom.
 - اختبار: **كرة** (مركز+نصف قطر) ضد المستويات: داخل إذا كان `dot(n,p)+d >= -radius` — يعطي حصانة ضد الدخول الجزئي والعرض الزاوي الصغير.
 - عدّ ذري للحالات المرئية في `visible_count_buffer` + مصفوفة `visibility[]`.
 - التحقق: عدّتان GPU **متطابقتان** (حتمية)، و GPU==CPU بالضبط = **377** على الـ 100K، مع مطابقة كاملة لكل إدخال بـ visibility[i]. `cull_ms≈0.1ms`.
 - كاميرا "نظرة بعيدة" تُبقي ≤500 (تحقق من صحة عكس الاتجاه).
 
-## 6. GOTOT-003 — Indirect Args + Compaction
+## 6. GNE-003 — Indirect Args + Compaction
 - ممر ضغط (compaction) يحول `visibility[]` إلى قائمة متراصة `compact[]` من الأصول المرئية.
 - ممر التثبيت (finalize): `indirect_args_buffer[5] = {index_count, instance_count, first_index, vertex_offset, first_instance}` — بالضبط مخطط `VkDrawIndexedIndirectCommand`.
 - **درس**: ترتيب الخانات (slots) في الضغط غير حتمي (تزامن) → نقارن القوائم **بعد الفرز**، بينما العداد والـ args حتميان.
 - النتيجة: `finalize_ms≈0.41-0.58`, `args=[6,377,0,0,0]`, والقائمة المتراصة == مجموعة الـ CPU تمامًا.
 - أنشئ بـ `STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT` (مطلوب لأي indirect).
 
-## 7. GOTOT-004 — HZB Occlusion
+## 7. GNE-004 — HZB Occlusion
 - **HZB**: نسيج `512×512 R32UI` من نوع 2D-array بـ 10 طبقات (مستويات). `hzb_valid` في الـ UBO يخبر الـ cull shader هل نستخدم HZB أو frustum فقط.
 - 3 ممرات متتالية (كل pass = list + submit + sync):
   1. **Clear level0**: مسح الطبقة 0.
   2. **Occluder pass**: إسقاط صناديق المعيقات (خلفيات) عبر push constant، تراكب المستطيل المسقط، والتخزين بـ `imageAtomicMax(dst, floatBitsToUint(far_plane - min_z))` — قيمة أعلى = أقرب للكاميرا.
   3. **Downsample ×9**: أخذ ماكس 2×2 من كل مستوى فوقه.
 - **دمج HZB في cull نفسه بمرور واحد**: مستوى تكلس من `ceil(log2(r_pixels))`، فحص 2×2 بجوار المركز، والتحويل العكسي `sphere_inv = floatBitsToUint(max(far-(z_view-radius), 0))`.
-- UBO `GototViewData` (256B): `vp, view, planes[6], viewport(w,h,hzb_texels,tanHalfFovV), occ_count, far_plane, hzb_valid, pad`.
+- UBO `GneViewData` (256B): `vp, view, planes[6], viewport(w,h,hzb_texels,tanHalfFovV), occ_count, far_plane, hzb_valid, pad`.
 - القدرة: `gpu_scene_set_viewport(w,h)`, `gpu_scene_set_occluders(Vector4 pairs)`, `gpu_visibility_dispatch()`.
 - النتائج: `visibility_ms≈0.7`, frustum_only=377 → **hzb_visible=375 (حتمي)**، post-HZB args `[6,375,0,0,0]`، وبدون معيقات يعود إلى 377 (ضابطة).
 
-## 8. GOTOT-005 — الرسم غير المباشر الفعلي
+## 8. GNE-005 — الرسم غير المباشر الفعلي
 - **Shader الرأس**: بلا vertex buffers — `gl_VertexIndex` ينشئ 4 رؤوس مربع عالمية حول `position_scale[compact[gl_InstanceIndex]]` (half-size = scale.w)، تحويل الموقع `viewdata.vp` من نفس UBO. **Shader المقطع**: لون مجرتي (0.95,0.18,0.9).
 - **Pipeline**: `render_pipeline_create(shader, fb_format, vertex_format, TRIANGLES, rs, ms, ds, blend_disabled, dynamic, for_render_pass)`؛ `vertex_format = RD::INVALID_ID` (كما يفعل blit) وإلا يطالب بمصفوفة vertices.
 - **الموارد**: نسيج لوني `1920×1080 R8G8B8A8` (COLOR_ATTACHMENT|SAMPLING|CAN_COPY_FROM)، `framebuffer_format_create` بـ `AttachmentFormat{format, samples, usage}`، framebuffer بواسطة `framebuffer_create([tex], fmt)`.
@@ -59,7 +59,7 @@
 - **قراءة**: `texture_get_data(texture, 0)` → PackedByteArray.
 - **تحقق**: `colored=521 px`، حتمي عبر ممرّين، و**112 مركزًا مسقطًا** (بـ vp الفعلي من GPU عبر `gpu_scene_get_vp()`) كلها عليها بكسل مجرتي (اصطلاح Vulkan convx=1, convy=1: `py=(ndc.y*0.5+0.5)*H`) — استثنينا 18 مربعًا دون-بكسل. `draw_ms≈0.15ms`.
 
-## 9. GOTOT-006 — قياسات التدرج
+## 9. GNE-006 — قياسات التدرج
 رفعنا حد العدد إلى 100M وقيّمنا نفس الخط على 10M:
 | count | fill_ms | cull_ms | finalize_ms | visibility_ms | raster_ms | visible | buffers |
 |---|---|---|---|---|---|---|---|
@@ -88,30 +88,30 @@
 ## 11. الواجهات العامة الحالية للوحدة
 `ensure_gpu_device`, `is_gpu_ready`, `gpu_scene_create(count, spread)`, `gpu_scene_dispatch(seed)`, `gpu_scene_get_instance_count`, `gpu_scene_readback_positions/scales`, `gpu_scene_set_camera(...)`, `gpu_scene_set_viewport`, `gpu_scene_set_occluders`, `gpu_cull_dispatch`, `gpu_cull_get_visible_count`, `gpu_cull_get_visibility`, `gpu_drawargs_finalize`, `gpu_drawargs_read`, `gpu_compact_read`, `gpu_visibility_dispatch`, `gpu_raster_indirect_draw`, `gpu_raster_read_pixels`, `gpu_scene_get_vp`, `gpu_scene_destroy`, `get_server_singleton`.
 
-**GOTOT-008A (real mesh path):** `gpu_mesh_create`, `gpu_mesh_drawargs_finalize`, `gpu_mesh_indirect_draw`, `gpu_mesh_get_index_count`, `gpu_mesh_get_vertex_count`.
+**GNE-008A (real mesh path):** `gpu_mesh_create`, `gpu_mesh_drawargs_finalize`, `gpu_mesh_indirect_draw`, `gpu_mesh_get_index_count`, `gpu_mesh_get_vertex_count`.
 
 ## 12. الحالة الحالية
 - كل الاختبارات (001A→011) خضراء، خروج كود 0، إغلاق نظيف بلا أخطاء `free invalid ID` أو أخطاء RID/lifetime.
 - التدفق الحالي: **GPU Scene → GPU Culling → HZB → Compaction → Indirect Args → (Billboard | Real Mesh) → Batch Assembly → Multi-Draw → Rasterization → Framebuffer Offscreen → CPU Readback → ImageTexture → TextureRect → نافذة Godot**.
 - أصبح ناتج الرسم مرئيًا داخل نافذة Godot فعليًا (007A)، وأصبح المشروع يرسم **هندسة 3D حقيقية** (مكعبات) عبر مسار mesh مستقل (008A).
-- **التالي**: **GOTOT-011 — Multi-Draw / Multi-Batch** اكتمل بأدلة PASS (3 استراتيجيات + demo تفاعلي). **GOTOT-012 — Production HZB** بانتظار SPEC الرسمي.
+- **التالي**: **GNE-011 — Multi-Draw / Multi-Batch** اكتمل بأدلة PASS (3 استراتيجيات + demo تفاعلي). **GNE-012 — Production HZB** بانتظار SPEC الرسمي.
 
 ## 13. Milestone Status
 
-- GOTOT-001A — GPU Device: PASS
-- GOTOT-001B — GPU Scene: PASS
-- GOTOT-002 — Frustum Culling: PASS
-- GOTOT-003 — Indirect Arguments + Compaction: PASS
-- GOTOT-004 — HZB Occlusion: PASS
-- GOTOT-005 — Actual Indirect Draw: PASS
-- GOTOT-006 — 100K / 1M / 10M Scaling: PASS
-- GOTOT-007A — Viewport Integration Bridge (CPU Readback): PASS
-- GOTOT-008A — Real Geometry Proof (Real Mesh Path): PASS
-- GOTOT-008B — Multi-Instance Mesh Rendering Proof: PASS
-- GOTOT-009A/009B — Real Depth Buffer (D32_SFLOAT) Proof: PASS
-- GOTOT-010 — Batch Instance Rendering (3 meshes multi-draw): PASS
-- GOTOT-011 — Multi-Draw / Multi-Batch (≤5 grouped/reordered draws, dynamic draw count, parallel prefix-sum): PASS
-- GOTOT-011 Demo — Interactive (main_demo + camera_controller + hud, strategy live-switch): PASS
+- GNE-001A — GPU Device: PASS
+- GNE-001B — GPU Scene: PASS
+- GNE-002 — Frustum Culling: PASS
+- GNE-003 — Indirect Arguments + Compaction: PASS
+- GNE-004 — HZB Occlusion: PASS
+- GNE-005 — Actual Indirect Draw: PASS
+- GNE-006 — 100K / 1M / 10M Scaling: PASS
+- GNE-007A — Viewport Integration Bridge (CPU Readback): PASS
+- GNE-008A — Real Geometry Proof (Real Mesh Path): PASS
+- GNE-008B — Multi-Instance Mesh Rendering Proof: PASS
+- GNE-009A/009B — Real Depth Buffer (D32_SFLOAT) Proof: PASS
+- GNE-010 — Batch Instance Rendering (3 meshes multi-draw): PASS
+- GNE-011 — Multi-Draw / Multi-Batch (≤5 grouped/reordered draws, dynamic draw count, parallel prefix-sum): PASS
+- GNE-011 Demo — Interactive (main_demo + camera_controller + hud, strategy live-switch): PASS
 
 Current architecture status:
 
@@ -129,7 +129,7 @@ Current architecture status:
        ┌───────┴────────┐
        ▼                ▼
  Billboard Path   Real Mesh Path
-  (GOTOT-005)      (GOTOT-008A)
+  (GNE-005)      (GNE-008A)
        │                │
        └───────┬────────┘
                ▼
@@ -144,9 +144,9 @@ Current architecture status:
 
 Next milestone:
 
-**GOTOT-011 — Multi-Draw / Multi-Batch** اكتمل PASS (3 استراتيجيات + demo تفاعلي). المرحلة القادمة: **GOTOT-012 — Production HZB** (SPEC قادم).
+**GNE-011 — Multi-Draw / Multi-Batch** اكتمل PASS (3 استراتيجيات + demo تفاعلي). المرحلة القادمة: **GNE-012 — Production HZB** (SPEC قادم).
 
-## 14. GOTOT-007A — جسر العرض داخل نافذة Godot
+## 14. GNE-007A — جسر العرض داخل نافذة Godot
 
 - **الوحيد في نطاقه**: عرض ناتج الرسم على الشاشة داخل نافذة Godot فعليًا (كان سابقًا قراءة texture من الذاكرة فقط).
 - **المسار**: `Camera3D` حقيقية → `gpu_scene_set_camera` → نفس خط GPU (cull → visibility → finalize → raster) → `gpu_raster_read_pixels` → `Image` → `ImageTexture` → `TextureRect`.
@@ -156,7 +156,7 @@ Next milestone:
 - **القياسات (100K)**: Cull ≈ 0.41→1.09ms، HZB/Visibility ≈ 1.03→2.61ms، Finalize ≈ 0.06→0.08ms، Raster ≈ 0.10ms، Readback ≈ 2.22→2.78ms، Frame ≈ 11.36→14.16ms (يزحف صعودًا؛ موثّق وغير مُفسَّر بعد).
 - **القيد المعلن**: مسار CPU readback **جسر مؤقت وليس مسار العرض النهائي** (~8MB/إطار عند 1920×1080).
 
-## 15. GOTOT-008A — إثبات الهندسة الحقيقية (Real Mesh Path)
+## 15. GNE-008A — إثبات الهندسة الحقيقية (Real Mesh Path)
 
 - **الهدف**: إثبات أن GNE يستطيع رسم **هندسة 3D حقيقية** باستخدام: vertex buffer حقيقي + index buffer حقيقي + vertex format حقيقي + indexed draw + indirect draw، معتمدًا على نفس GPU Scene ونفس قائمة الـ compact ونفس نظام الوسائط غير المباشرة ونفس جسر العرض 007A.
 - **قاعدة معمارية**: مسار 005/007A باقٍ كما هو **دون أي استبدال** (billboard shader، quad index buffer، raster pipeline، `gpu_raster_indirect_draw`، `gpu_raster_read_pixels`). الـ Mesh مسار **مستقل ومضاف**.
@@ -169,9 +169,9 @@ Next milestone:
 
 ## 16. المرحلة القادمة
 
-**GOTOT-011 — Multi-Draw / Multi-Batch** اكتمل PASS (3 استراتيجيات + demo تفاعلي، انظر الأقسام 19/20). **GOTOT-012 — Production HZB** بانتظار SPEC الرسمي.
+**GNE-011 — Multi-Draw / Multi-Batch** اكتمل PASS (3 استراتيجيات + demo تفاعلي، انظر الأقسام 19/20). **GNE-012 — Production HZB** بانتظار SPEC الرسمي.
 
-## 17. GOTOT-008B — برهان الرسم متعدد النسخ (Multi-Instance Mesh Rendering Proof)
+## 17. GNE-008B — برهان الرسم متعدد النسخ (Multi-Instance Mesh Rendering Proof)
 
 - **الهدف**: إثبات أن مسار الـ mesh الحقيقي (008A) يرسم **مئات/آلاف المكعبات الحقيقية** بتحويل صحيح لكل instance من `compact[gl_InstanceIndex]`، بعد instance ديناميكي من الـ compact buffer، وبدون أي تسريب في indexing.
 - **النطاق**: صفر تغيير C++ — أُعيد استخدام مسار 008A بالكامل؛ للملفات الجديدة فقط `demo/gpu_smoke/main_008b.gd` + `main_008b.tscn`.
@@ -187,12 +187,12 @@ Next milestone:
 - **نقطة frustum reading**: كشف Fix 1 أن `set_camera` لا تُحدّث الـ frustum تلقائيًا عند تغيّر أبعاد النافذة — هل هذا سلوك مقصود أم ثغرة تصميم؟ تُعالج في milestone قادم (مثل 009/رفع لاحق).
 - **نقطة الترتيب الذري**: ترتيب الإصدار (atomic compaction) عشوائي بين التشغيلات — هل يؤثر على الأداء الفعلي أم فقط على التحقق؟ تُقيَّم لاحقًا (التحقق الحالي مستقر عبر الفرز).
 
-## 18a. GOTOT-009 — Real Depth Buffer (D32_SFLOAT)
+## 18a. GNE-009 — Real Depth Buffer (D32_SFLOAT)
 
 ### الهدف والنطاق
 إرفاق **عمق حقيقي** لمسار mesh: نسيج `D32_SFLOAT` في framebuffer الراستر الخاص، مع depth test + write بواقعية (الأقرب يمنع الأبعد) على مسار **Real Mesh** (008A) بينما يبقى مسار billboard depth-disabled تمامًا. إثبات ذاتي عبر مشهدين: `main_009` مع `--front-only` (مرجع A+D) وبدونها (كامل A+B+C+D)، دون لمس أي regression سابق (001A–008B).
 
-### التغييرات C++ (`gotot_render_server.{h,cpp}`)
+### التغييرات C++ (`gne_render_server.{h,cpp}`)
 - **`_create_raster_pipeline`**: إنشاء نسيج عمق `1920×1080 D32_SFLOAT` (usage: `DEPTH_STENCIL_ATTACHMENT | CAN_COPY_FROM`)، إضافة `AttachmentFormat` للعمق، attachments = `[color, depth]`، وأعلام `raster_depth_attached=true` / `raster_depth_format_value=125`.
 - **`_create_mesh_pipeline`**: تفعيل `enable_depth_test`, `enable_depth_write`, `depth_compare_operator = COMPARE_OP_LESS_OR_EQUAL` (الاتجاه القياسي — قريب = قيمة أصغر، far = 1.0).
 - **الرسم**: `gpu_mesh_indirect_draw` و `gpu_raster_indirect_draw` — `draw_list_begin` الآن بـ `DRAW_CLEAR_COLOR_0 | DRAW_CLEAR_DEPTH` مع `clear_depth = 1.0f` (far) كل إطار.
@@ -240,13 +240,13 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 - reversed-Z (أعلاه).
 - 007A frame-time drift.
 
-## 18b. GOTOT-010 — الرسم الدفعي متعدد الأشكال (Batch Instance Rendering)
+## 18b. GNE-010 — الرسم الدفعي متعدد الأشكال (Batch Instance Rendering)
 
 ### الهدف
 رسم **عدة meshes مختلفة في دفعة (batch) واحدة** عبر multi-draw غير مباشر، بلا حلقة CPU على المثيلات: يشير كل مثيل إلى `mesh_id` من جدول meshes على الـ GPU، ويُجمَّع `batch_args` على الـ GPU (prefix-sum) ثم `draw_list_draw_indirect(draw_count=batch_count)`. عمق 009 (D32_SFLOAT + LESS_OR_EQUAL) باقٍ كما هو.
 
 ### التنفيذ (إضافي فقط، بلا لمس أي مسار سابق)
-- جدول meshes على الـ GPU: `mesh_table_buffer` (64 خانة، `GototMeshDesc` 32B std430: index/vertex slot + counts + first_index + vertex_offset) + `mesh_id_buffer` (per-instance) + `mesh_color_buffer` (palette لكل mesh).
+- جدول meshes على الـ GPU: `mesh_table_buffer` (64 خانة، `GneMeshDesc` 32B std430: index/vertex slot + counts + first_index + vertex_offset) + `mesh_id_buffer` (per-instance) + `mesh_color_buffer` (palette لكل mesh).
 - **مخزنان مشتركان بسعة كاملة**: vertex (32768×vec3) + index (65536×uint32). المكعب (mesh 0) عند offset 0 → مسار 008A/009 القديم يرسم حرفيًا دون تغيير؛ توسّع `gpu_mesh_create_from_arrays(verts, indices)` يسجّل أشكالًا إضافية عند offsets متزايدة (تيتاهدرون mesh 1، أوكتاهدرون mesh 2 في demo).
 - **مساران compute للـ batch assembly**:
   - Pass 1 (عدّ لكل mesh): كل مثيل مرئي يقرأ `mesh_id[orig]` ويحوّر `batch_count[mesh]` عبر atomicAdd مع تخزين `orig` في chunk المثيلات الخاص بالشكل.
@@ -272,7 +272,7 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 إصلاح عمر (lifetime) أثناء التحقق: `mesh_010_vertex/index_array` كانا يُحرَّران بعد مخزنَي الـ vertex/index المشتركين → خطآن "free invalid ID" في الـ destroy؛ عولج بتحرير دفعة 010 (arrays/ubersets/pipelines/buffers) قبل تحرير المخزنَين في `_destroy_mesh`. بعد الإصلاح: **صفر** errors/leaks، إغلاق نظيف، exit 0. لقطة نافذة: `C:\Users\opc\AppData\Local\Temp\opencode\gt_010_window.png`. خروج: `GNE 010: PASS`.
 
 ### الانحدارات 001A–009B (كلها PASS على نفس البنية)
-- `gt_smoke` (001B fill + 002 culling + 003 indirect args + 004 HZB + 005 indirect raster + 006 10M scaling): **GOTOT-SMOKE: OK**.
+- `gt_smoke` (001B fill + 002 culling + 003 indirect args + 004 HZB + 005 indirect raster + 006 10M scaling): **GNE-SMOKE: OK**.
 - `002` (frustum على CPU): ضمن gt_smoke.
 - `007A` (viewport bridge): `007A: PASS`.
 - `008A` (real mesh single draw): `008A: PASS`.
@@ -293,20 +293,20 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 
 **القرار:** يُقيَّم في SPEC 011.
 
-## 19. GOTOT-011 — Multi-Draw / Multi-Batch (تجميع الدفعات)
+## 19. GNE-011 — Multi-Draw / Multi-Batch (تجميع الدفعات)
 
 ### الهدف
 ترقية مسار الدفعات (010) من رسم دفعة **لكل mesh** إلى رسم ≤5 دفعات مجمّعة (groups) عبر multi-draw غير مباشر واحد، مع **إعادة ترتيب (reorder)** المثيلات حسب mesh_id على الـ GPU وترتيب الدفعات تصاعديًا، ودعوة غير مباشرة بـ **draw count ديناميكي (GPU-written)** بدون حلقة CPU على الدفعات.
 
 ### التنفيذ (إضافة صافية بلا لمس مسارات سابقة)
-- استراتيجية تجميع قابلة للاختيار عبر enum `GototBatchStrategy` (افتراضي `REORDERED`): `PER_MESH=0` (دفعة لكل mesh)، `GROUPED=1` (≤5 مجموعات متجاورة تصاعدية)، `REORDERED=2` (إعادة ترتيب المثيلات حسب mesh_id ثم نفس التجميع).
+- استراتيجية تجميع قابلة للاختيار عبر enum `GneBatchStrategy` (افتراضي `REORDERED`): `PER_MESH=0` (دفعة لكل mesh)، `GROUPED=1` (≤5 مجموعات متجاورة تصاعدية)، `REORDERED=2` (إعادة ترتيب المثيلات حسب mesh_id ثم نفس التجميع).
 - **Parallel prefix-sum على مستوى workgroup** في pass 1/2 (بديل الـ single-thread في 010): pass count لكل mesh، ثم prefix-sum يعبئ offsets ويعيد ترتيب origs إلى `batch_instances` المتسلسل.
 - **Batch assemble على GPU** يبني `group_batch_buffer` = `VkDrawIndirectCommand` (16B) لكل مجموعة: `vertex_count=index_count لأول عضو`، `instance_count=مجموع حالات الأعضاء`، `first_vertex=0`، `first_instance=batch_offset لأول عضو`.
 - **رسم غير مفهرس (procedural non-indexed)**: `draw_list_draw_indirect(dl, false, group_args_buffer, 0, last_batch_count, 16)` بمخزنين مشتركين كاملَي السعة (`mesh_vertex_storage_buffer`/`mesh_index_storage_buffer`) — الـ vertex shader المجمّع يقرأ `index_data.data[d.first_index+gl_VertexIndex]` و`vertex_data.data[(d.vertex_offset+li)*3+i]` (أن RID الـ vertex buffer لا يُربط storage) وخارج index_count يُدفع الرأس لـ `vec4(0,0,-2,1)` خارج المسرح.
 - **Draw count ديناميكي GPU-written**: `dispatch_indirect` إلى عدد لانهائي في `last_batch_count` عبر UBO → لا حاجة لقراءة readback لتحديد عدد الدعوات.
 - **early_fragment_tests** مفعّلة لقطاع shader المجموعات (محسّن لعدد مجموعات صغير لا يرسم خلف بعضها).
 - **التحويل إلى indexed عند G==active**: الدفعات الموجودة مسار 010 (indexed، stride 20) يبقى مطبَّقًا عندما `last_used_group_draw=false` — فـ regressions 001A–010 محمية مع الاستراتيجية الافتراضية.
-- **5 واجهات Test-only** جديدة: `gpu_mesh_set_batch_strategy`, `gpu_mesh_get_batch_strategy`, `gpu_mesh_get_batch_group_count`, `gpu_mesh_get_indirect_count`, `gpu_mesh_get_batch_order`. أضيفت constant enum عبر `ClassDB::bind_integer_constant("GototRenderServer","GototBatchStrategy",...)` (4 وسائط — واجهة bind_integer_constant الصحيحة بدل BIND_ENUM_CONSTANT المتعطّلة).
+- **5 واجهات Test-only** جديدة: `gpu_mesh_set_batch_strategy`, `gpu_mesh_get_batch_strategy`, `gpu_mesh_get_batch_group_count`, `gpu_mesh_get_indirect_count`, `gpu_mesh_get_batch_order`. أضيفت constant enum عبر `ClassDB::bind_integer_constant("GneRenderServer","GneBatchStrategy",...)` (4 وسائط — واجهة bind_integer_constant الصحيحة بدل BIND_ENUM_CONSTANT المتعطّلة).
 
 ### أدوات البناء/الإصلاح المؤكدة
 - GLSL كلمة `active` محجوزة → أُعيدت التسمية `actn`.
@@ -326,7 +326,7 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 - Regressions 001A–010 كلها `exit 0` على نفس البنية (دقيق أدناه).
 
 ### الانحدارات بعد بناء 011 (كلها PASS على نفس البنية)
-- `gt_smoke` (001B–006): `GOTOT-SMOKE: OK` → exit 0.
+- `gt_smoke` (001B–006): `GNE-SMOKE: OK` → exit 0.
 - `007A`/`008A`/`008B`/`009`+`009a`/`010a`/`010b`: كلها `PASS` → exit 0 بلا أخطاء free/validation.
 - التحقق المباشر (بدون schtasks) بعد تعطيل App Control: تشغيل الـ exe مباشرة يعمل الآن.
 
@@ -338,7 +338,7 @@ not depth direction. Fixed by setting camera.near=300 in _ready.
 - **CPU readback** (pixels + depth كامل الإطار ~8MB لكل منهما) ما زال جسر تحقق وليس مسار عرض إنتاجيًا.
 - الـ getters الخمسة والـ enum **test-only** مرشّحون لاحقًا للدمج في استعلام قدرات واحد (سجّل فقط).
 
-## 20. GOTOT-011 demo تفاعلي (GDScript فقط)
+## 20. GNE-011 demo تفاعلي (GDScript فقط)
 
 - `main_demo.gd/.tscn` + `camera_controller.gd` + `hud.gd` — **بدون أي تغيير C++**: 512 instances (8×8×8) / 64 meshes، كاميرا FPS (WASD + Shift/Ctrl + mouse look)، `R` يبدّل الاستراتيجية حيًا (REORDERED افتراضي)، `F12` لقطة نافذة، HUD حي (FPS، visible، batches، groups، draw calls، strategy).
 - وضع الأدلة `-- --test`: مسح كاميرا مبرمج (160 إطار) ثم تحقق grouping + DET (تكرار ممرٍّ كامل مع كاميرا مجمّدة وممرّي warm-up — لأن cull يعتمد على عمق الإطار السابق فيتحرك مع الكاميرا)، لقطة `demo_window.png`، ثم quit 0.
@@ -354,7 +354,7 @@ godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn
 godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn -- --test
 ```
 
-## 22. GOTOT-012 — Production HZB (DEFERRED)
+## 22. GNE-012 — Production HZB (DEFERRED)
 
 **Status:** DEFERRED (2026-09-22).
 
@@ -390,7 +390,7 @@ godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn -- --test
 
 **Status:** APPROVED by Architect — awaiting integration decision.
 
-## 24. GOTOT-013 - Meshlets + LOD + Cluster Culling (PASS)
+## 24. GNE-013 - Meshlets + LOD + Cluster Culling (PASS)
 
 ### الأهداف
 إثبات مسار GPU-driven كامل للمجموعات: توليد بيانات `.gomlet` دون اتصال (meshoptimizer v1.2، offline tooling)، LOD تلقائي يتبدل مع المسافة، cluster culling (frustum + cone + LOD)، وراسم شاشة برمجي (software rasterizer) بثلاثة ممرات مع دليل بكسل حتمي، ومساءلة per-LOD.
@@ -408,7 +408,7 @@ godot...console.exe --path ...demo\gpu_smoke res://main_demo.tscn -- --test
 
 ### ملاحظات
 - `.gomlet` (25 MB) أصل ثنائي مولد **دون اتصال**؛ أعِد توليده عبر `tools/meshlet_import/build.ps1` (يتطلب MSVC فقط). وقت التشغيل مستقل تمامًا عن meshoptimizer.
-## 25. GOTOT-014 - GPU Scene Manager (PASS)
+## 25. GNE-014 - GPU Scene Manager (PASS)
 
 ### ملخص
 GPU Scene Manager: قاعدة بيانات مشهد ساكنة على الـ GPU (SSBO SoA)، سجلات instances بحجم 64 بايت، مساحة IDs موحدة، تحديثات مدفوعة بالـ GPU عبر حلقة مخزن مؤقت (ring buffer) 16 MB مع compute apply (add/remove/move) وبدون قراءة رجوعية في المسار الحرج، وتسليم draw-records بحجم 32 بايت إلى مسارات 013/015 (interop عبر marked ordinal + LOD config).
@@ -431,10 +431,10 @@ GPU Scene Manager: قاعدة بيانات مشهد ساكنة على الـ GPU
 
 ### ملاحظة
 C3 الاعتماد على Overview: 013 hand-off تعني أن draw-record ordinals من مدير المشهد تقع داخل نطاقات الـ meshlet ordinals الخاصة بـ 013، والتوقيع (cull-raster fnv) يبقى مطابقًا مع وجود المدير.
-## 26. GOTOT-015 - Render Graph (PASS)
+## 26. GNE-015 - Render Graph (PASS)
 
 ### المكوّن
-Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic يُبنى وقت التشغيل عبر 8 دوال `gpu_rg_*` مربوطة في ClassDB. كل تمريرة تستدعي نقاط الدخول القائمة مسبقًا (013/011/014) على نفس الـ pipelines/uniform sets، فتبقى كل توقيعات ما قبل 015 حرفيًا. TEST-ONLY، إضافي بحت. واجهة: `gpu_rg_create / add_pass(name,kind,in_res,out_res) / add_edge(from,to,resource,bytes) / compile / execute / get_stats / dump / destroy`.
+Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic يُبنى وقت التشغيل عبر 8 دوال `gpu_rg_*` مربوطة في ClassDB. كل تمريرة تستدعي نقاط الدخول القائمة مسبقًا (013/011/014) على نفس الـ pipelines/uniform sets، فتبقى كل توقيعات ما قبل 015 حرفيًا. TEST-ONLY، إضافي بحت. واجهة: `gpu_rg_create / add_pass(name,kind,in_res,out_res) / add_edge(from,to,resource,bytes) / compile / execute / get_stats / dump / destroy`.
 
 ### الأدلة (015 PASS - harness `gt_015a.bat`)
 - **C1 DAG:** 6 passes (scene_update, cull, cluster_cull, batch_assembly, raster, output) + 6 حواف قائمة على الموارد، منها حافة ثانية تستهلك `cull_out` لإثبات أن الترتيب ليس قائمة مكتوبة يدويًا.
@@ -458,7 +458,7 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 ### Regressions (`tools\gt_regress.bat`)
 007 / 008 / 008B / 009 / 010 / 011 / 013 / 015 = **PASS (rc=0)**. الفشلان خارج 015 بالكامل ولم يلمسهما عمل 015: `main_012` (منطق occlusion، الملف غير متتبَّع في git=WIP والمؤجَّل بقرار سابق) و `main_014` عند `gpu_scene_manager_update` (active=1048568 != 1048576، خلل قائم في مسار delta-ring). `git diff` يؤكد أن كل الحذوف الـ45 في الوحدة هي إزالة لاحقة `u` على الأعداد (تجميلي بحت) - ولا يوجد حذف وظيفي في 012/014.
 
-## 27. GOTOT-014 - إصلاح Race في Delta Apply (PASS)
+## 27. GNE-014 - إصلاح Race في Delta Apply (PASS)
 
 ### التشخيص
 `main_014` كان **flaky (~75% نجاح)** وليس regression من 015. الدليل: `git diff` لم يلمس `gpu_scene_manager_update`/`dispatch`/شيدرات 014 إطلاقًا (كل التعديلات = إزالة لاحقة `u` تجميلي + 381 سطرًا للـ 015 فقط).
@@ -496,7 +496,7 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 - **015: `GT_015A: PASS`**، d1/d2 متطابقان، التوقيع كما هو: `sig=v15-pc9-p6-e6-b6-po8753152-res9048064-sv32768-x6-6-q1-2-t18616`.
 - **Regressions: `GT_REGRESS: PASS`** - 007/008/008B/009/010/011/013/014/015 كلها PASS. `main_012` مصنّف `XFAIL` (WIP معتمد ومؤجَّل) فيُبلَّغ ولا يُحسب فشل بوابة.
 
-## 28. GOTOT-015.5 - Resource Pool (جزئي: 5 من 8 معايير مُثبتة)
+## 28. GNE-015.5 - Resource Pool (جزئي: 5 من 8 معايير مُثبتة)
 
 ### ما الذي بُني فعلاً (ذاكرة حقيقية لا محاسبة)
 أول بناء للموديول يخصّص ذاكرة pool فعلية. وسُجّل سابقاً في SPEC 015.5 §2.1 أن 015 مجرّد محاسبة CPU: `rg_pool_bytes` و`aliased_saved` أعداد، و`rg_execute` لا ينفّذ أي pass body ⇒ كل رقم pool في 015 كان **محسوباً لا مخصَّصاً**.
@@ -530,7 +530,7 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 تحسين 30–50% على readback **فرضية غير مقيسة** (SPEC §3.6). و`pool_bytes=4,194,304` حجم بليت **مُختبر لهذا المشهد**، لا سقفاً للعالم.
 
 
-## 29. GOTOT-015.5 Phase 4 — Frame-Time Drift DIAGNOSIS (PASS)
+## 29. GNE-015.5 Phase 4 — Frame-Time Drift DIAGNOSIS (PASS)
 
 ### الهدف
 خط أساس **مقيس** قبل Phase 5 (async readback). القياس فقط، بلا تحسين وبلا ادّعاء أي رقم مسبق.
@@ -593,7 +593,7 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 
 ---
 
-## 30. GOTOT-015.5 — FINAL (PARTIAL: 5/8 criteria + 3 documented known issues)
+## 30. GNE-015.5 — FINAL (PARTIAL: 5/8 criteria + 3 documented known issues)
 
 **الحالة:** **PARTIAL PASS** — 5 من 8 معايير مُثبتة وقياساً، وثلاثة قيود موثّقة.
 **التوقيع:** `v15-pr1` (`pr1` = `pool_real=1`) — محفوظ، متوافق مع توقيع 015 القديم.
@@ -631,7 +631,7 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 **012-revised (HZB)** ← ثم 016 (Materials).
 
 
-## 31. GOTOT-012-revised — CLOSED (PASS)
+## 31. GNE-012-revised — CLOSED (PASS)
 
 **الحالة:** مغلق بنجاح — معيار الإخفاء متحقق وحتمي، وكل التواقيع حرفية.
 **التوقيع:** `sig=v12-rev levels=10 p1=6 p2=0 ctrl=6` (مطابق في تشغيلين، DET OK).
@@ -642,7 +642,7 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 2. سلسلة الاستدلال المقترحة لا تطابق الكود: لا يوجد clamp علوي، والقيمة السالبة تعطي `far+|z|` (بتات ضخمة) لا صفرًا.
 
 **الجذران الحقيقيان المُصلحان:**
-- **(F) جمود علم `hzb_pyramid_fresh`:** الفرع الأول في `gpu_hzb_build` كان يكتب `hzb_valid=0` ويخرج **دون ضبط العلم أبدًا** (السطر التالي غير قابل للوصول، ولا setter آخر في الكود). النتيجة: `hzb_valid=0` دائمًا ⇒ phase-2 يتخطى الإخفاء دائمًا ⇒ `p2==p1` بنيويًا. الإصلاح: سطر واحد يضبط العلم في الفرع الأول (`gotot_render_server.cpp:3071`).
+- **(F) جمود علم `hzb_pyramid_fresh`:** الفرع الأول في `gpu_hzb_build` كان يكتب `hzb_valid=0` ويخرج **دون ضبط العلم أبدًا** (السطر التالي غير قابل للوصول، ولا setter آخر في الكود). النتيجة: `hzb_valid=0` دائمًا ⇒ phase-2 يتخطى الإخفاء دائمًا ⇒ `p2==p1` بنيويًا. الإصلاح: سطر واحد يضبط العلم في الفرع الأول (`gne_render_server.cpp:3071`).
 - **(T) كتابة int في حقل float بالـ UBO:** الترقيعات الثلاثة لـ `viewport[2]` كانت تكتب `int32_t 2048` (بتات `0x00000800`) في حقل `float` ⇒ تُقرأ `2.8e-42 ≈ صفر` ⇒ `level=-138` (مقاس عبر `sim2`) ⇒ عينات phase-2 تُخطئ دائمًا. الإصلاح: كتابة `float` في المواضع الثلاثة (`gpu_hzb_build`، `gpu_visibility_prod_dispatch`، `gpu_mesh_batch_draw`). هذا الجذر يفسّر أيضًا فشل 012 الأصلي: الـ occ القديم يقرأ `int(viewport.z)=int(~0)=0` فيخرج فورًا بهرم فارغ.
 
 ### أداة القياس (اختبار فقط)
@@ -665,7 +665,7 @@ Render Graph في `modules/gotot_render`: رسم بياني موجّه acyclic �
 | `main_012` القديم | XFAIL محفوظ (خرج 124 بدل 123: الإخفاء صار ينشط `wall=true` ويفشل لاحقًا في بكسل 4/5 — مشهد مؤجل، لا إجراء) |
 
 ### الملفات المتأثرة (بلا commit — بانتظار موافقة Architect)
-- `modules/gotot_render/gotot_render_server.cpp` (إصلاح F سطر واحد + إصلاح T في 3 مواضع + تعليقات)
+- `modules/gne_render/gne_render_server.cpp` (إصلاح F سطر واحد + إصلاح T في 3 مواضع + تعليقات)
 - `demo/gpu_smoke/main_012_rev.gd` (أداة الإغلاق)
 - `docs/progress_report.md` (هذا القسم)
 

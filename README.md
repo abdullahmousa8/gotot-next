@@ -23,7 +23,7 @@
 
 ### Overview
 
-**GNE** is an experimental, GPU-driven rendering pipeline implemented as a standalone C++ module (`modules/gotot_render`) for **Godot v4.8.dev**. It uses a local `RenderingDevice` (Vulkan) — isolated from Godot's main renderer in the same style as `LightmapperRD` — to prove a fully GPU-resident scene flow:
+**GNE** is an experimental, GPU-driven rendering pipeline implemented as a standalone C++ module (`modules/gne_render`) for **Godot v4.8.dev**. It uses a local `RenderingDevice` (Vulkan) — isolated from Godot's main renderer in the same style as `LightmapperRD` — to prove a fully GPU-resident scene flow:
 
 > **GPU Scene → Frustum Culling → HZB Occlusion → Compaction → Indirect Arguments → GPU-driven Rasterization → Real Geometry → Presentation**
 
@@ -37,8 +37,8 @@ This repository contains the module source, the Godot demo project used for veri
 - **Deterministic frustum culling** — sphere-vs-plane tests with atomic counting; GPU result matches a CPU reference **exactly**.
 - **Hierarchical Z occlusion (HZB)** — a 10-level `R32UI` depth pyramid built and consumed entirely on the GPU.
 - **GPU-produced indirect arguments** — a compute pass writes a `VkDrawIndexedIndirectCommand` layout directly.
-- **Real geometry path** — real vertex buffer, real index buffer, real vertex format, and an **indexed indirect draw** (GOTOT-008A).
-- **Viewport integration bridge** — the rendered framebuffer is displayed live inside a Godot window through a CPU readback → `ImageTexture` → `TextureRect` bridge (GOTOT-007A).
+- **Real geometry path** — real vertex buffer, real index buffer, real vertex format, and an **indexed indirect draw** (GNE-008A).
+- **Viewport integration bridge** — the rendered framebuffer is displayed live inside a Godot window through a CPU readback → `ImageTexture` → `TextureRect` bridge (GNE-007A).
 - **Honest, measured numbers** — every milestone reports actual measurements, not targets.
 
 ### Architecture
@@ -68,7 +68,7 @@ This repository contains the module source, the Godot demo project used for veri
         │         │             │          │
         │         ▼             ▼          │
         │  Billboard Path   Real Mesh Path │
-        │   (GOTOT-005)      (GOTOT-008A)  │
+        │   (GNE-005)      (GNE-008A)  │
         │         │             │          │
         │         └──────┬──────┘          │
         │                ▼                 │
@@ -85,7 +85,7 @@ This repository contains the module source, the Godot demo project used for veri
                       SCREEN
 ```
 
-The **billboard path** (GOTOT-005 / 007A) and the **real mesh path** (GOTOT-008A) are independent and additive. The mesh path never replaces the billboard path.
+The **billboard path** (GNE-005 / 007A) and the **real mesh path** (GNE-008A) are independent and additive. The mesh path never replaces the billboard path.
 
 ### Milestones
 
@@ -115,10 +115,10 @@ See [`docs/progress_report.md`](docs/progress_report.md) for the full technical 
 ### Repository layout
 
 ```
-gotot-next/
-├── modules/gotot_render/          # The C++ RenderingDevice module
-│   ├── gotot_render_server.h/.cpp #   Core: GPU scene, culling, HZB, raster, mesh
-│   ├── gotot_render.h/.cpp        #   Module entry object
+godot-next-engine/
+├── modules/gne_render/          # The C++ RenderingDevice module
+│   ├── gne_render_server.h/.cpp #   Core: GPU scene, culling, HZB, raster, mesh
+│   ├── gne_render.h/.cpp        #   Module entry object
 │   ├── register_types.h/.cpp      #   Godot module registration
 │   ├── config.py / SCsub          #   SCons build glue
 ├── demo/gpu_smoke/                # Godot demo / verification project
@@ -162,7 +162,7 @@ gotot-next/
 
 ```powershell
 scons platform=windows target=editor dev_build=yes `
-      custom_modules="C:\path\to\gotot-next\modules" -j6
+      custom_modules="C:\path\to\godot-next-engine\modules" -j6
 ```
 
 The build produces:
@@ -185,37 +185,37 @@ The demo project lives in `demo/gpu_smoke/`. Launch a specific scene explicitly:
 # 001A–006 regression smoke test
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke
 
-# GOTOT-007A — viewport bridge, billboard path
+# GNE-007A — viewport bridge, billboard path
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_007.tscn
 
-# GOTOT-008A — real geometry, indexed indirect draw
+# GNE-008A — real geometry, indexed indirect draw
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_008.tscn
 
-# GOTOT-008B — multi-instance mesh rendering
+# GNE-008B — multi-instance mesh rendering
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_008b.tscn
 
-# GOTOT-009A — real depth buffer, front-only reference run
+# GNE-009A — real depth buffer, front-only reference run
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn -- --front-only
 
-# GOTOT-009B — real depth buffer, full scene (A+B+C+D)
+# GNE-009B — real depth buffer, full scene (A+B+C+D)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_009.tscn
 
-# GOTOT-010 — batch instance rendering (3 meshes, multi-draw)
+# GNE-010 — batch instance rendering (3 meshes, multi-draw)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_010.tscn
 
-# GOTOT-011 — multi-draw / multi-batch (--strategy: 0=per_mesh 1=grouped 2=reordered)
+# GNE-011 — multi-draw / multi-batch (--strategy: 0=per_mesh 1=grouped 2=reordered)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_011.tscn -- --strategy=2
 
-# GOTOT-011 interactive demo (WASD + mouse, R switches strategy live, F12 screenshot)
+# GNE-011 interactive demo (WASD + mouse, R switches strategy live, F12 screenshot)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_demo.tscn
 
-# GOTOT-011 interactive demo — self-evidence run (scripted sweep + screenshot, exits 0)
+# GNE-011 interactive demo — self-evidence run (scripted sweep + screenshot, exits 0)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_demo.tscn -- --test
 
-# GOTOT-013 — meshlets + LOD + cluster culling (uses mesh_013_torus.gomlet)
+# GNE-013 — meshlets + LOD + cluster culling (uses mesh_013_torus.gomlet)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_013.tscn
 
-# GOTOT-014 — GPU scene manager (SSBO scene DB, ≥1M instances, GPU-driven updates)
+# GNE-014 — GPU scene manager (SSBO scene DB, ≥1M instances, GPU-driven updates)
 godot.windows.editor.dev.x86_64.console.exe --path <repo>\demo\gpu_smoke res://main_014.tscn
 ```
 
@@ -229,7 +229,7 @@ Each demo prints its own objective evidence and finishes with `PASS` or `FAIL co
 
 ### Results
 
-**GOTOT-006 — scaling (100K / 1M / 10M instances):**
+**GNE-006 — scaling (100K / 1M / 10M instances):**
 
 | count | fill_ms | cull_ms | finalize_ms | visibility_ms | raster_ms | visible | buffers |
 |------:|--------:|--------:|------------:|--------------:|----------:|--------:|--------:|
@@ -237,7 +237,7 @@ Each demo prints its own objective evidence and finishes with `PASS` or `FAIL co
 | 1M | 3.33 | 0.15 | 0.12 | 0.60 | 0.16 | 3,670 | 49.6 MB |
 | 10M | 1.48 | 0.50 | 0.12 | 0.92 | 0.18 | 36,744 | 495.9 MB |
 
-**GOTOT-008A — real geometry proof:**
+**GNE-008A — real geometry proof:**
 
 - Mesh: 8 vertices (`R32G32B32_SFLOAT`), 36 `UINT32` indices.
 - Indirect args observed: `[36, N, 0, 0, 0]` where `N == visible` every frame.
@@ -259,7 +259,7 @@ Completed through **014**. Planned direction:
 015  Render Graph                ⏳
 016+ Materials / Lighting / Shadows
 ─────────────────────────────────────────
-     GototMesh → Meshlets → Meshlet Culling → LOD
+     GneMesh → Meshlets → Meshlet Culling → LOD
               → Virtual Shadows → Hybrid GI
 ```
 
@@ -283,7 +283,7 @@ production depth buffer, and **no** full render graph or synchronization.
 - The raster target is a **fixed 1920×1080**; the demo window is 1152×648 (same 16:9 aspect).
 - The mesh path reuses the existing indirect argument buffer, so the billboard
   `gpu_drawargs_finalize()` and the mesh path must not be interleaved in one run.
-- Depth buffer was added in GOTOT-009 (`D32_SFLOAT`, `LESS_OR_EQUAL`, `clear=1.0`).
+- Depth buffer was added in GNE-009 (`D32_SFLOAT`, `LESS_OR_EQUAL`, `clear=1.0`).
   The billboard path (005 / 007A) still runs without depth testing. The mesh path
   (008A+) now has per-fragment depth ordering.
 - The module deliberately avoids `RenderingServer` integration, RHI changes,
@@ -310,7 +310,7 @@ Dependency/third-party licensing (permissive-only runtime policy, legal review p
 
 ## نظرة عامة بالعربية
 
-**GNE** نموذج أولي لنظام **GPU-driven rendering** مبني كوحدة C++ مخصّصة (`modules/gotot_render`) داخل **Godot v4.8.dev**، يستخدم `RenderingDevice` محليًا (Vulkan) معزولًا عن renderer المحرك بنفس أسلوب `LightmapperRD`.
+**GNE** نموذج أولي لنظام **GPU-driven rendering** مبني كوحدة C++ مخصّصة (`modules/gne_render`) داخل **Godot v4.8.dev**، يستخدم `RenderingDevice` محليًا (Vulkan) معزولًا عن renderer المحرك بنفس أسلوب `LightmapperRD`.
 
 **الفكرة:** كاميرا واحدة → ممران فقط: culling + HZB بالحوسبة، ثم **رسم واحد غير مباشر** (indexed indirect draw) تُنتج وسائطه (arguments) على الـ GPU مباشرة. لا توجد حلقات CPU على آلاف الكائنات في المسار الحرج.
 
@@ -348,7 +348,7 @@ Dependency/third-party licensing (permissive-only runtime policy, legal review p
 
 ```powershell
 scons platform=windows target=editor dev_build=yes `
-      custom_modules="C:\path\to\gotot-next\modules" -j6
+      custom_modules="C:\path\to\godot-next-engine\modules" -j6
 ```
 
 **التشغيل:**

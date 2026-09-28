@@ -1,11 +1,11 @@
 extends Node
 
-# GOTOT-008A - Real Geometry Proof (independent mesh path)
+# GNE-008A - Real Geometry Proof (independent mesh path)
 # TEMPORARY CPU READBACK BRIDGE - NOT FINAL RENDERING PATH
 #
-# Proves the existing GOTOT GPU scene can render REAL 3D GEOMETRY (a real cube
+# Proves the existing GNE GPU scene can render REAL 3D GEOMETRY (a real cube
 # mesh with a real vertex buffer, real index buffer, real vertex format and an
-# indexed INDIRECT draw) instead of the GOTOT-005 billboard quads.
+# indexed INDIRECT draw) instead of the GNE-005 billboard quads.
 #
 # This is an ADDITIVE path. It does not replace the billboard path, the quad
 # index buffer, the existing raster pipeline or any existing 001A-007A API.
@@ -18,12 +18,12 @@ const INSTANCE_COUNT := 100000
 const SPREAD := 12000.0
 const FRAME_LIMIT := 240
 const PRINT_EVERY := 30
-const RASTER_W := 1920  # Fixed GOTOT raster target width (documented limitation).
-const RASTER_H := 1080  # Fixed GOTOT raster target height (documented limitation).
+const RASTER_W := 1920  # Fixed GNE raster target width (documented limitation).
+const RASTER_H := 1080  # Fixed GNE raster target height (documented limitation).
 const ORBIT_RADIUS := 800.0
 const ORBIT_HEIGHT := 400.0
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
@@ -47,7 +47,7 @@ var last_args := PackedInt32Array()
 
 
 func _ready() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(50, "server singleton is null")
 		return
@@ -67,14 +67,14 @@ func _ready() -> void:
 		_fail(53, "gpu_scene_dispatch")
 		return
 
-	# ---- GOTOT-008A: independent real-mesh path ----
+	# ---- GNE-008A: independent real-mesh path ----
 	if not server.gpu_mesh_create():
 		_fail(54, "gpu_mesh_create")
 		return
 
 	var vcount := server.gpu_mesh_get_vertex_count()
 	var icount := server.gpu_mesh_get_index_count()
-	print("GOTOT-NEXT 008A: mesh created vertices=", vcount, " indices=", icount)
+	print("GNE 008A: mesh created vertices=", vcount, " indices=", icount)
 	if vcount != 8:
 		_fail(55, "unexpected vertex count " + str(vcount))
 		return
@@ -83,7 +83,7 @@ func _ready() -> void:
 		return
 
 	RenderingServer.frame_post_draw.connect(_on_frame_post_draw)
-	print("GOTOT-NEXT 008A: scene ready instances=", INSTANCE_COUNT)
+	print("GNE 008A: scene ready instances=", INSTANCE_COUNT)
 
 
 func _process(delta: float) -> void:
@@ -172,7 +172,7 @@ func _process(delta: float) -> void:
 			green_min = green
 		if green_max == -1 or green > green_max:
 			green_max = green
-		print("GOTOT-NEXT 008A")
+		print("GNE 008A")
 		print("Instances: ", INSTANCE_COUNT)
 		print("Visible: ", visible)
 		print("Mesh: vertices=", server.gpu_mesh_get_vertex_count(), " indices=", server.gpu_mesh_get_index_count())
@@ -184,10 +184,10 @@ func _process(delta: float) -> void:
 		var exact := _count_exact(pixels)
 		green_exact = exact[0]
 		magenta_exact = exact[1]
-		print("GOTOT-NEXT 008A: visible range ", visible_min, "..", visible_max)
-		print("GOTOT-NEXT 008A: green range ", green_min, "..", green_max)
-		print("GOTOT-NEXT 008A: EXACT green pixels=", green_exact, " EXACT magenta pixels=", magenta_exact)
-		print("GOTOT-NEXT 008A: changed_frames=", changed_frames, " compared_frames=", compared_frames)
+		print("GNE 008A: visible range ", visible_min, "..", visible_max)
+		print("GNE 008A: green range ", green_min, "..", green_max)
+		print("GNE 008A: EXACT green pixels=", green_exact, " EXACT magenta pixels=", magenta_exact)
+		print("GNE 008A: changed_frames=", changed_frames, " compared_frames=", compared_frames)
 		if green_exact == 0:
 			_fail(63, "no real mesh pixels rendered")
 			return
@@ -206,18 +206,18 @@ func _on_frame_post_draw() -> void:
 	# Evidence: capture the real game window (containing the TextureRect display).
 	var shot := get_viewport().get_texture().get_image()
 	if shot.is_empty():
-		print("GOTOT-NEXT 008A: window screenshot NOT EXECUTED (empty image)")
+		print("GNE 008A: window screenshot NOT EXECUTED (empty image)")
 	else:
 		var err := shot.save_png("C:/Users/opc/AppData/Local/Temp/opencode/gt_008_window.png")
-		print("GOTOT-NEXT 008A: window screenshot saved=", err == OK)
+		print("GNE 008A: window screenshot saved=", err == OK)
 
 	server.gpu_scene_destroy()
-	print("GOTOT-NEXT 008A: PASS")
+	print("GNE 008A: PASS")
 	get_tree().quit(0)
 
 
 # Exact full-image scan, run once on the final frame. Returns [green, magenta].
-# Green = real mesh pixels; magenta = the old GOTOT-005 billboard (must be 0).
+# Green = real mesh pixels; magenta = the old GNE-005 billboard (must be 0).
 func _count_exact(pixels: PackedByteArray) -> Array:
 	var green := 0
 	var magenta := 0
@@ -234,7 +234,7 @@ func _count_exact(pixels: PackedByteArray) -> Array:
 
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 008A: FAIL code=", code, " ", msg)
+	print("GNE 008A: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_scene_destroy()
 	get_tree().quit(code)

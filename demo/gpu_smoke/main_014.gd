@@ -1,9 +1,9 @@
 extends Node
 
-# GOTOT-014 - GPU Scene Manager (SPEC 014)
+# GNE-014 - GPU Scene Manager (SPEC 014)
 #
 # The manager is a GPU-resident scene database (additive TEST-ONLY evidence
-# bridge in modules/gotot_render). Everything here is separate from the 001B
+# bridge in modules/gne_render). Everything here is separate from the 001B
 # scene, the 008A/010/011 mesh batch path, the 009 depth buffer and the 013
 # meshlet pipeline; the manager mirrors the 013 meshlet ordinal space + LOD
 # config into its 32-byte draw-record snapshot (015 render-graph hand-off).
@@ -35,7 +35,7 @@ const DELTA_BYTES := 80
 var sig_file := "C:/Users/opc/AppData/Local/Temp/opencode/gt014_sig.txt"
 var asset_path := "res://mesh_013_torus.gomlet"
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 
 var pass_count := 0
@@ -51,7 +51,7 @@ var ref_ord_total := 0
 
 func _ready() -> void:
 	_parse_user_args()
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(160, "server singleton is null")
 		return
@@ -89,15 +89,15 @@ func _ready() -> void:
 		_phase6_ssbo,
 		_pass_m5_snap_hash,
 		1 if pass_count >= 5 else 0]
-	print("GOTOT-NEXT 014: ", sig)
+	print("GNE 014: ", sig)
 	var f := FileAccess.open(sig_file, FileAccess.WRITE)
 	if f == null:
-		print("GOTOT-NEXT 014: sig file WRITE FAILED: ", sig_file)
+		print("GNE 014: sig file WRITE FAILED: ", sig_file)
 	else:
 		f.store_line(sig)
 		f.close()
 
-	print("GOTOT-NEXT 014: PASS")
+	print("GNE 014: PASS")
 	server.gpu_scene_manager_destroy()
 	server.gpu_meshlet_destroy()
 	server.gpu_scene_destroy()
@@ -199,7 +199,7 @@ func _run_013_pipeline() -> bool:
 	if ref_ord_total != expected_total:
 		_fail(175, "ordinal total " + str(ref_ord_total) + " != " + str(expected_total))
 		return false
-	print("GOTOT-NEXT 014: ref013 ev=[covered=" + str(int(ref_ev[0])) + ", sub=" + str(int(ref_ev[1])) + ", winner=" + str(int(ref_ev[2])) + ", fnv=" + str(int(ref_ev[3])) + "] ord_bases=" + str(ref_ord_bases) + " ord_total=" + str(ref_ord_total))
+	print("GNE 014: ref013 ev=[covered=" + str(int(ref_ev[0])) + ", sub=" + str(int(ref_ev[1])) + ", winner=" + str(int(ref_ev[2])) + ", fnv=" + str(int(ref_ev[3])) + "] ord_bases=" + str(ref_ord_bases) + " ord_total=" + str(ref_ord_total))
 	return true
 
 # ---------------------------------------------------------------- Criterion 1
@@ -256,7 +256,7 @@ func _phase_capacity() -> bool:
 		_fail(183, "distinct meshes != 1 on single-mesh fill")
 		return false
 	pass_count += 1
-	print("GOTOT-NEXT 014: C1 GPU Scene DB pass (active=", st["active"], " snap=", st["snap_records"], " ssbo=", st["ssbo_bytes"], ")")
+	print("GNE 014: C1 GPU Scene DB pass (active=", st["active"], " snap=", st["snap_records"], " ssbo=", st["ssbo_bytes"], ")")
 	return true
 
 # ---------------------------------------------------------------- Criterion 2
@@ -301,7 +301,7 @@ func _phase_gpu_driven_update() -> bool:
 	if int(st["ring_used_bytes"]) != 0:
 		_fail(190, "ring not reset after dispatch")
 		return false
-	# Guard >256 (GOTOT-006 commit): this workload is 5,000 removes + 5,000 adds
+	# Guard >256 (GNE-006 commit): this workload is 5,000 removes + 5,000 adds
 	# + 10,000 moves = exactly 3 consecutive equal-op runs, so the wave split
 	# must produce 3 ordered waves and the >256 collapse must NOT fire. A
 	# collapse here means the guard is folding a deterministic workload into a
@@ -318,7 +318,7 @@ func _phase_gpu_driven_update() -> bool:
 	_phase3_removes = 5000
 	_phase3_moves = 10000
 	pass_count += 1
-	print("GOTOT-NEXT 014: C2 GPU-driven update pass (applied ", st["adds"], "/", st["removes"], "/", st["moves"], " ring=16MiB)")
+	print("GNE 014: C2 GPU-driven update pass (applied ", st["adds"], "/", st["removes"], "/", st["moves"], " ring=16MiB)")
 	return true
 
 # ---------------------------------------------------------------- Criterion 4
@@ -375,7 +375,7 @@ func _phase_011_compat() -> bool:
 	_phase4_distinct = distinct
 	_phase4_groups = groups
 	pass_count += 1
-	print("GOTOT-NEXT 014: C4 011-compat grouping pass (snap=", snap, " distinct=", distinct, " groups=", groups, ")")
+	print("GNE 014: C4 011-compat grouping pass (snap=", snap, " distinct=", distinct, " groups=", groups, ")")
 	return true
 
 # ---------------------------------------------------------------- Criterion 3
@@ -447,7 +447,7 @@ func _phase_013_handoff() -> bool:
 		_fail(204, "013 raster evidence changed with manager alive (ev1=" + str(ref_ev) + " ev2=" + str(ev2) + ")")
 		return false
 	pass_count += 1
-	print("GOTOT-NEXT 014: C3 013 hand-off pass (ord hash=", _pass_m5_snap_hash, " fnv preserved=", int(ref_ev[3]), ")")
+	print("GNE 014: C3 013 hand-off pass (ord hash=", _pass_m5_snap_hash, " fnv preserved=", int(ref_ev[3]), ")")
 	return true
 
 # ---------------------------------------------------------------- Criterion 5
@@ -474,7 +474,7 @@ func _phase_det() -> bool:
 			return false
 	_phase6_ssbo = int(stats_a["ssbo_bytes"])
 	pass_count += 1
-	print("GOTOT-NEXT 014: C5 DET pass (d1, ordinals+stats identical across runs)")
+	print("GNE 014: C5 DET pass (d1, ordinals+stats identical across runs)")
 	return true
 
 # ---------------------------------------------------------------- Guard / errors
@@ -543,7 +543,7 @@ func _delta_move(id: int, seq: int, px: float, py: float, pz: float, scale: floa
 	return d
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 014: FAIL code=", code, " ", msg)
+	print("GNE 014: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_scene_manager_destroy()
 		server.gpu_meshlet_destroy()

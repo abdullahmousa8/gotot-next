@@ -1,6 +1,6 @@
 extends Node
 
-# GOTOT-012 - Production HZB (two-phase occlusion culling + temporal coherence)
+# GNE-012 - Production HZB (two-phase occlusion culling + temporal coherence)
 #
 # Reuses the 011 multi-batch scene (64 meshes, 128 two-plane instances) intact
 # and ADDS the production pyramid on top, without changing any pre-012 path:
@@ -43,7 +43,7 @@ const INSTANCE_COUNT := 128
 const WALL_COUNT := 4
 const TOTAL_INSTANCES := INSTANCE_COUNT + WALL_COUNT
 # The walls are big (@WALL_SCALE) instances of an EXISTING small mesh (mesh 5,
-# octahedron) - the GOTOT mesh table capacity is fixed at 64, so adding a 65th
+# octahedron) - the GNE mesh table capacity is fixed at 64, so adding a 65th
 # mesh would require a capacity change (risk to the protected 011 signatures).
 # The walls still write their depth into the previous-frame D32 buffer and the
 # pyramid is built from that depth, so their occlusion role is unchanged; the
@@ -59,7 +59,7 @@ const STRATEGY_REORDERED := 2
 var window_png := "C:/Users/opc/AppData/Local/Temp/opencode/gt_012_window.png"
 var sig_file := "C:/Users/opc/AppData/Local/Temp/opencode/gt012_sig.txt"
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
@@ -121,7 +121,7 @@ func _parse_user_args() -> void:
 		else:
 			_user_args012[a.lstrip("-")] = ""
 
-# GOTOT-012 (restored): deterministic instance placement. 128 instances =
+# GNE-012 (restored): deterministic instance placement. 128 instances =
 # two 8x8 grids clamped to the same z-slab evidence the phases read: front
 # plane z=-700 (+70 x from the -400 column base), back plane z=-1100 (+170 x).
 # Instance 0 = front col0 x=-330 (the deliberate slit, must stay VISIBLE);
@@ -142,9 +142,9 @@ func _instance_pos(i: int) -> Vector3:
 		FRONT_PLANE_Z if plane == 0 else BACK_PLANE_Z)
 
 func _ready() -> void:
-	print("[GOTOT-NEXT DBG] _ready START frame=", frame)
+	print("[GNE DBG] _ready START frame=", frame)
 	_parse_user_args()
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(100, "server singleton is null")
 		return
@@ -211,7 +211,7 @@ func _ready() -> void:
 		_fail(109, "gpu_hzb_prod_create")
 		return
 
-	# GOTOT-012: register the two wall AABB slabs as GPU occluders (spec 012
+	# GNE-012: register the two wall AABB slabs as GPU occluders (spec 012
 	# occluder path - a flat storage buffer projection, the ONE reliable GPU
 	# cross-submission route, rebuilt every dispatch). Box A covers cols 0/1
 	# back, Box B covers cols 2..7; the x-gap at -330 (back col 1) is the
@@ -271,31 +271,31 @@ func _ready() -> void:
 		phase_history.append(Vector2i(p1, p2))
 
 		if frame == 8:
-			print("[GOTOT-NEXT DBG] f8 ENTER frame=", frame)
-			print("[GOTOT-NEXT DBG] f8 sim2 BEFORE")
+			print("[GNE DBG] f8 ENTER frame=", frame)
+			print("[GNE DBG] f8 sim2 BEFORE")
 			var sim := server.gpu_hzb_dbg_sim2()
 			var i := 0
 			while i + 8 <= sim.size():
 				var row := "012-DBG sim2 i=%d lv=%d t=(%d,%d) mx=%d sp=%d vis=%d rpx=%d" % [
 					sim[i], sim[i + 1], sim[i + 2], sim[i + 3], sim[i + 4], sim[i + 5], sim[i + 6], sim[i + 7]]
-				print("[GOTOT-NEXT] ", row)
+				print("[GNE] ", row)
 				i += 8
-			print("[GOTOT-NEXT DBG] f8 sim2 AFTER")
-			print("[GOTOT-NEXT DBG] f8 scanL0 BEFORE")
+			print("[GNE DBG] f8 sim2 AFTER")
+			print("[GNE DBG] f8 scanL0 BEFORE")
 			var scan := server.gpu_hzb_dbg_scan_level0()
 			if scan.size() == 4:
-				print("[GOTOT-NEXT] 012-DBG scanL0 max_inv=", scan[0], " @(", scan[1], ",", scan[2], ") nonzero=", scan[3])
-			print("[GOTOT-NEXT DBG] f8 scanL0 AFTER")
-			print("[GOTOT-NEXT DBG] f8 scanL/B loop BEFORE")
+				print("[GNE] 012-DBG scanL0 max_inv=", scan[0], " @(", scan[1], ",", scan[2], ") nonzero=", scan[3])
+			print("[GNE DBG] f8 scanL0 AFTER")
+			print("[GNE DBG] f8 scanL/B loop BEFORE")
 			for lvl in [1, 2, 4, 6, 8, 10]:
 				var s1 := server.gpu_hzb_dbg_scan_level1(lvl)
 				if s1.size() == 4:
-					print("[GOTOT-NEXT] 012-DBG scanL", lvl, " max_inv=", s1[0], " @(", s1[1], ",", s1[2], ") nonzero=", s1[3])
+					print("[GNE] 012-DBG scanL", lvl, " max_inv=", s1[0], " @(", s1[1], ",", s1[2], ") nonzero=", s1[3])
 				var sb := server.gpu_hzb_dbg_scan_buffer(lvl)
 				if sb.size() == 4:
-					print("[GOTOT-NEXT] 012-DBG scanB", lvl, " max_inv=", sb[0], " @(", sb[1], ",", sb[2], ") nonzero=", sb[3])
-			print("[GOTOT-NEXT DBG] f8 scanL/B loop AFTER")
-			print("[GOTOT-NEXT DBG] f8 EXIT")
+					print("[GNE] 012-DBG scanB", lvl, " max_inv=", sb[0], " @(", sb[1], ",", sb[2], ") nonzero=", sb[3])
+			print("[GNE DBG] f8 scanL/B loop AFTER")
+			print("[GNE DBG] f8 EXIT")
 
 		if p1 != TOTAL_INSTANCES:
 			_fail(114, "phase1=" + str(p1) + " expected " + str(TOTAL_INSTANCES))
@@ -318,56 +318,56 @@ func _ready() -> void:
 		display.texture = image_tex
 
 		if frame % PRINT_EVERY == 0:
-			print("GOTOT-NEXT 012: frame=", frame, " lv=", levels, " p1=", p1, " p2=", p2,
+			print("GNE 012: frame=", frame, " lv=", levels, " p1=", p1, " p2=", p2,
 					" co=", coherent, " occlusion=", occlusion_active)
 		if frame == 3:
-			print("[GOTOT-NEXT DBG] f3 ENTER frame=", frame)
+			print("[GNE DBG] f3 ENTER frame=", frame)
 			var probe := ""
-			print("[GOTOT-NEXT DBG] f3 dbg_level0 row1024 BEFORE")
+			print("[GNE DBG] f3 dbg_level0 row1024 BEFORE")
 			for pxr in range(1020, 1330, 40):
 				probe += "[" + str(pxr) + "]=" + str(server.gpu_hzb_dbg_level0(pxr, 1024)) + " "
-			print("[GOTOT-NEXT DBG] f3 dbg_level0 row1024 AFTER")
-			print("[GOTOT-NEXT DBG] f3 valid+lv0pair BEFORE")
-			print("GOTOT-NEXT 012-DBG valid=", server.gpu_hzb_dbg_valid(), " lv0mid_row1024 ", probe)
-			print("GOTOT-NEXT 012-DBG lv0(" + str(1023) + "," + str(995) + ")=", server.gpu_hzb_dbg_level0(1023, 995),
+			print("[GNE DBG] f3 dbg_level0 row1024 AFTER")
+			print("[GNE DBG] f3 valid+lv0pair BEFORE")
+			print("GNE 012-DBG valid=", server.gpu_hzb_dbg_valid(), " lv0mid_row1024 ", probe)
+			print("GNE 012-DBG lv0(" + str(1023) + "," + str(995) + ")=", server.gpu_hzb_dbg_level0(1023, 995),
 					" lv0(" + str(1023) + "," + str(1024) + ")=", server.gpu_hzb_dbg_level0(1023, 1024))
-			print("[GOTOT-NEXT DBG] f3 valid+lv0pair AFTER")
-			print("[GOTOT-NEXT DBG] f3 read_depth BEFORE")
+			print("[GNE DBG] f3 valid+lv0pair AFTER")
+			print("[GNE DBG] f3 read_depth BEFORE")
 			var dpx := server.gpu_raster_read_depth()
-			print("[GOTOT-NEXT DBG] f3 read_depth AFTER")
-			print("GOTOT-NEXT 012-DBG cpu_depth@x960,540=", dpx[540 * RASTER_W + 960],
+			print("[GNE DBG] f3 read_depth AFTER")
+			print("GNE 012-DBG cpu_depth@x960,540=", dpx[540 * RASTER_W + 960],
 					" x1180,540=", dpx[540 * RASTER_W + 1180],
 					" x810,540=", dpx[540 * RASTER_W + 810],
 					" x960,470=", dpx[470 * RASTER_W + 960])
-			print("[GOTOT-NEXT DBG] f3 lv0pp BEFORE")
+			print("[GNE DBG] f3 lv0pp BEFORE")
 			for pp in [[1020, 1001], [1024, 1002]]:
-				print("GOTOT-NEXT 012-DBG lv0@(" + str(pp[0]) + "," + str(pp[1]) + ")=",
+				print("GNE 012-DBG lv0@(" + str(pp[0]) + "," + str(pp[1]) + ")=",
 						server.gpu_hzb_dbg_level0(pp[0], pp[1]))
-			print("[GOTOT-NEXT DBG] f3 lv0pp AFTER")
-			print("[GOTOT-NEXT DBG] f3 grid BEFORE")
+			print("[GNE DBG] f3 lv0pp AFTER")
+			print("[GNE DBG] f3 grid BEFORE")
 			var grid := ""
 			for ty2 in range(1010, 1040):
 				for tx2 in range(850, 880):
 					grid += str(server.gpu_hzb_dbg_level0(tx2, ty2)) + " "
-			print("GOTOT-NEXT 012-DBG lv0grid@864,1024:", grid)
+			print("GNE 012-DBG lv0grid@864,1024:", grid)
 			var grid2 := ""
 			for ty2 in range(1040, 1070):
 				for tx2 in range(1060, 1090):
 					grid2 += str(server.gpu_hzb_dbg_level0(tx2, ty2)) + " "
-			print("GOTOT-NEXT 012-DBG lv0grid@1072,1053:", grid2)
-			print("[GOTOT-NEXT DBG] f3 grid AFTER")
-			print("[GOTOT-NEXT DBG] f3 probe BEFORE")
+			print("GNE 012-DBG lv0grid@1072,1053:", grid2)
+			print("[GNE DBG] f3 grid AFTER")
+			print("[GNE DBG] f3 probe BEFORE")
 			var pb := server.gpu_hzb_dbg_probe()
 			if pb.size() == 4:
-				print("GOTOT-NEXT 012-DBG probe count>0 p:" + str(pb[0]) + " max_inv p:" + str(pb[1]) +
+				print("GNE 012-DBG probe count>0 p:" + str(pb[0]) + " max_inv p:" + str(pb[1]) +
 						" dbits p:" + str(pb[2]) + " ndcbits p:" + str(pb[3]))
-			print("[GOTOT-NEXT DBG] f3 probe AFTER")
-			print("[GOTOT-NEXT DBG] f3 EXIT")
+			print("[GNE DBG] f3 probe AFTER")
+			print("[GNE DBG] f3 EXIT")
 
 		if frame == FRAME_LIMIT:
 			_finalize(pixels, depth)
 		frame += 1
-	print("[GOTOT-NEXT DBG] _ready END frame=", frame)
+	print("[GNE DBG] _ready END frame=", frame)
 
 func _check_batch_state() -> bool:
 	last_draw_counts = server.gpu_mesh_get_draw_counts()
@@ -437,7 +437,7 @@ func _finalize(pixels: PackedByteArray, depth: PackedFloat32Array) -> void:
 	# PASS (5): in-binary DET - rerun the full 012 GPU path and compare counts.
 	det_ok = _det_check(pixels)
 
-	print("GOTOT-NEXT 012: evidence lv=", levels, " p1=", p1, " p2=", p2,
+	print("GNE 012: evidence lv=", levels, " p1=", p1, " p2=", p2,
 			" co=", coherent, " oc_first=", occlusion_seen_at,
 			" groups=", server.gpu_mesh_get_batch_group_count(),
 			" draw_calls=", server.gpu_mesh_get_draw_call_count(),
@@ -455,7 +455,7 @@ func _det_check(pixels: PackedByteArray) -> bool:
 		return false
 	var c2 := server.gpu_hzb_get_phase_counts()
 	if c2[0] != p1 or c2[1] != p2:
-		print("GOTOT-NEXT 012: DET phase counts differ ", c2, " vs [", p1, ",", p2, "]")
+		print("GNE 012: DET phase counts differ ", c2, " vs [", p1, ",", p2, "]")
 		return false
 	if server.gpu_hzb_get_level_count() != levels:
 		return false
@@ -469,7 +469,7 @@ func _det_check(pixels: PackedByteArray) -> bool:
 		return false
 	var pixels2 := server.gpu_raster_read_pixels()
 	if _color_counts(pixels2) != cc1:
-		print("GOTOT-NEXT 012: DET pixel counts differ")
+		print("GNE 012: DET pixel counts differ")
 		return false
 	return true
 
@@ -493,17 +493,17 @@ func _print_signature(cc: int) -> void:
 		TOTAL_INSTANCES, levels, last.x, last.y, 1 if coherent else 0,
 		occlusion_seen_at, first.y, server.gpu_mesh_get_draw_call_count(),
 		1 if det_ok else 0, dispatch_us, draw_us, p1, p2]
-	print("GOTOT-NEXT 012-DET ", sig)
+	print("GNE 012-DET ", sig)
 	var f := FileAccess.open(sig_file, FileAccess.WRITE)
 	if f == null:
-		print("GOTOT-NEXT 012: sig file WRITE FAILED: ", sig_file)
+		print("GNE 012: sig file WRITE FAILED: ", sig_file)
 	else:
 		f.store_line(sig)
 		f.close()
 
 func _finish_pass() -> void:
 	want_shot = true
-	print("GOTOT-NEXT 012: EVIDENCE OK")
+	print("GNE 012: EVIDENCE OK")
 
 func _on_frame_post_draw() -> void:
 	if not want_shot or shot_done:
@@ -512,12 +512,12 @@ func _on_frame_post_draw() -> void:
 	want_shot = false
 	var shot := get_viewport().get_texture().get_image()
 	if shot.is_empty():
-		print("GOTOT-NEXT 012: window screenshot NOT EXECUTED")
+		print("GNE 012: window screenshot NOT EXECUTED")
 	else:
 		var err := shot.save_png(window_png)
-		print("GOTOT-NEXT 012: window screenshot saved=", err == OK)
+		print("GNE 012: window screenshot saved=", err == OK)
 	server.gpu_scene_destroy()
-	print("GOTOT-NEXT 012: PASS")
+	print("GNE 012: PASS")
 	get_tree().quit(0)
 
 # --- pixel helpers (identical to main_011) ---
@@ -579,7 +579,7 @@ func _search_color(cx: int, cy: int, r: int, col: Color, pixels: PackedByteArray
 	return false
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 012: FAIL code=", code, " ", msg)
+	print("GNE 012: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_scene_destroy()
 	get_tree().quit(code)

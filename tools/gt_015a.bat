@@ -1,13 +1,13 @@
 @echo off
 REM ============================================================================
-REM  gt_015a.bat - GOTOT-015 Render Graph smoke/det runner
-REM  Run 1 (d1) then Run 2 (d2); both must print "GOTOT-NEXT 015: PASS" and
+REM  gt_015a.bat - GNE-015 Render Graph smoke/det runner
+REM  Run 1 (d1) then Run 2 (d2); both must print "GNE 015: PASS" and
 REM  emit the SAME sig line. Any "FAIL code=" / ERROR / RID cleanup fails the gate.
 REM ============================================================================
 setlocal EnableDelayedExpansion
 
 set GODOT=C:\Users\opc\Documents\AI_ENGINE\godot-master\bin\godot.windows.editor.dev.x86_64.console.exe
-set PROJ=C:\Users\opc\Documents\AI_ENGINE\gotot-next\demo\gpu_smoke
+set PROJ=C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\demo\gpu_smoke
 set SIGF=C:\Users\opc\AppData\Local\Temp\opencode\gt015_sig.txt
 set OUT=C:\Users\opc\AppData\Local\Temp\opencode\gt015_full.txt
 
@@ -19,12 +19,12 @@ if not exist "%GODOT%" (
 if exist "%SIGF%" del /q "%SIGF%"
 if exist "%OUT%" del /q "%OUT%"
 
-echo === GOTOT-015 RUN 1 (d1) ===
+echo === GNE-015 RUN 1 (d1) ===
 "%GODOT%" --path "%PROJ%" --rendering-method forward_plus res://main_015.tscn -- --sigf="%SIGF%" >> "%OUT%" 2>&1
 set RC1=%errorlevel%
 if exist "%SIGF%" set /p SIG1=<"%SIGF%"
 
-echo === GOTOT-015 RUN 2 (d2) ===
+echo === GNE-015 RUN 2 (d2) ===
 "%GODOT%" --path "%PROJ%" --rendering-method forward_plus res://main_015.tscn -- --sigf="%SIGF%" >> "%OUT%" 2>&1
 set RC2=%errorlevel%
 if exist "%SIGF%" set /p SIG2=<"%SIGF%"
@@ -51,12 +51,12 @@ if not "%SIG1%"=="%SIG2%" (
   set FAILED=1
 )
 
-findstr /c:"GOTOT-NEXT 015: PASS" "%OUT%" >nul 2>&1
+findstr /c:"GNE 015: PASS" "%OUT%" >nul 2>&1
 if errorlevel 1 (
   echo [FAIL] no PASS marker in output
   set FAILED=1
 )
-findstr /c:"GOTOT-NEXT 015: FAIL code=" "%OUT%" >nul 2>&1
+findstr /c:"GNE 015: FAIL code=" "%OUT%" >nul 2>&1
 if not errorlevel 1 (
   echo [FAIL] FAIL marker present in output
   set FAILED=1

@@ -1,6 +1,6 @@
 # Contract 014 — Lifecycle
 
-**GOTOT-014 — PASS (2026-09-23).** Manager lifecycle mirrors `gpu_scene_create/dispatch/destroy`.
+**GNE-014 — PASS (2026-09-23).** Manager lifecycle mirrors `gpu_scene_create/dispatch/destroy`.
 
 ## States
 

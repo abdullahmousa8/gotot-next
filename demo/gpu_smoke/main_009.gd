@@ -1,8 +1,8 @@
 extends Node
 
-# GOTOT-009 - Real Depth Buffer (D32_SFLOAT) Proof
+# GNE-009 - Real Depth Buffer (D32_SFLOAT) Proof
 #
-# Uses the ENTIRE GOTOT-008B real-mesh path (cull -> compact -> drawargs ->
+# Uses the ENTIRE GNE-008B real-mesh path (cull -> compact -> drawargs ->
 # indirect draw) unchanged, with the 009 additions:
 #   - the raster framebuffer now carries a D32_SFLOAT depth attachment cleared
 #     to 1.0 (far) every frame (DRAW_CLEAR_DEPTH),
@@ -75,7 +75,7 @@ const HIDDEN_POS := Vector3(99999.0, 0.0, 0.0)
 const FRONT_KEEP: Array[int] = [0, 3]
 const FULL_KEEP: Array[int] = [0, 1, 2, 3]
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
@@ -100,7 +100,7 @@ var d_min := -1.0
 
 
 func _ready() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(50, "server singleton is null")
 		return
@@ -132,7 +132,7 @@ func _ready() -> void:
 		_fail(54, "gpu_mesh_create")
 		return
 
-	# GOTOT-009 additions: fixed overlay transforms + depth attachment checks.
+	# GNE-009 additions: fixed overlay transforms + depth attachment checks.
 	for i in INSTANCE_COUNT:
 		var pos := CUBES[i]
 		var s := SCALES[i]
@@ -143,7 +143,7 @@ func _ready() -> void:
 	var dfmt := server.gpu_raster_get_depth_format()
 	var mesh_depth := server.gpu_mesh_get_depth_enabled()
 	var raster_depth := server.gpu_raster_get_depth_enabled()
-	print("GOTOT-NEXT 009: depth_format_value=", dfmt, " mesh_depth_enabled=", mesh_depth,
+	print("GNE 009: depth_format_value=", dfmt, " mesh_depth_enabled=", mesh_depth,
 			" raster_depth_enabled=", raster_depth)
 	if dfmt < 0:
 		_fail(55, "depth format not exposed (value " + str(dfmt) + ")")
@@ -160,7 +160,7 @@ func _ready() -> void:
 	server.gpu_scene_set_camera(camera.get_global_transform(), camera.get_camera_projection())
 
 	RenderingServer.frame_post_draw.connect(_on_frame_post_draw)
-	print("GOTOT-NEXT 009: scene ready front_only=", front_only)
+	print("GNE 009: scene ready front_only=", front_only)
 
 
 func _process(_delta: float) -> void:
@@ -286,7 +286,7 @@ func _process(_delta: float) -> void:
 		print(dbg2)
 
 	if frame % PRINT_EVERY == 0:
-		print("GOTOT-NEXT 009: frame=", frame, " visible=", visible,
+		print("GNE 009: frame=", frame, " visible=", visible,
 				" args=", last_args, " green_px=", _count_green_exact(pixels))
 
 	if frame == FRAME_LIMIT:
@@ -350,9 +350,9 @@ func _finalize(pixels: PackedByteArray, depth: PackedFloat32Array, visible: int)
 		var ok_write := fg_final > 0 and bg_final > RASTER_W * RASTER_H / 2
 		var ok_budget := fg_final < RASTER_W * RASTER_H / 4
 		var green_ok := green_final >= 0.8 * fg_final and green_final <= 1.2 * fg_final
-		print("GOTOT-NEXT 009: front-only fg=", fg_final, " bg=", bg_final,
+		print("GNE 009: front-only fg=", fg_final, " bg=", bg_final,
 				" green=", green_final)
-		print("GOTOT-NEXT 009: depth samples front-only dF=", d_center, " dC=", d_control)
+		print("GNE 009: depth samples front-only dF=", d_center, " dC=", d_control)
 		if not ok_write:
 			_fail(78, "depth write/clear failed fg=" + str(fg_final) + " bg=" + str(bg_final))
 			return
@@ -405,11 +405,11 @@ func _finalize(pixels: PackedByteArray, depth: PackedFloat32Array, visible: int)
 	var rim := fg_final - fg_front
 	var rim_ok := rim > 0 and rim <= fg_front * 6
 	var rim_colored := green_final > green_front
-	print("GOTOT-NEXT 009: full fg=", fg_final, " bg=", bg_final,
+	print("GNE 009: full fg=", fg_final, " bg=", bg_final,
 			" rim=", rim, " green=", green_final)
-	print("GOTOT-NEXT 009: depth samples dF=", d_center, " dM=", d_mid_rim,
+	print("GNE 009: depth samples dF=", d_center, " dM=", d_mid_rim,
 			" dB=", d_back_rim, " dC=", d_control, " dmin=", d_min)
-	print("GOTOT-NEXT 009: masked_eq pixels=", eq[1], " bad=", eq[2])
+	print("GNE 009: masked_eq pixels=", eq[1], " bad=", eq[2])
 	if not meta_ok:
 		_fail(85, "reference meta malformed")
 		return
@@ -427,7 +427,7 @@ func _finalize(pixels: PackedByteArray, depth: PackedFloat32Array, visible: int)
 
 func _finish_pass() -> void:
 	want_shot = true
-	print("GOTOT-NEXT 009: EVIDENCE OK")
+	print("GNE 009: EVIDENCE OK")
 
 
 func _on_frame_post_draw() -> void:
@@ -438,13 +438,13 @@ func _on_frame_post_draw() -> void:
 
 	var shot := get_viewport().get_texture().get_image()
 	if shot.is_empty():
-		print("GOTOT-NEXT 009: window screenshot NOT EXECUTED (empty image)")
+		print("GNE 009: window screenshot NOT EXECUTED (empty image)")
 	else:
 		var err := shot.save_png("C:/Users/opc/AppData/Local/Temp/opencode/gt_009_window.png")
-		print("GOTOT-NEXT 009: window screenshot saved=", err == OK)
+		print("GNE 009: window screenshot saved=", err == OK)
 
 	server.gpu_scene_destroy()
-	print("GOTOT-NEXT 009: PASS")
+	print("GNE 009: PASS")
 	get_tree().quit(0)
 
 
@@ -457,7 +457,7 @@ func _print_signature() -> void:
 	var sig := "sig=v%d|%d|%d|%s|g%d|f%d|b%d|dF%.5f|dM%.5f|dB%.5f|dC%.5f|dmin%.5f|c%d|%d" % [
 		v, last_args[0], last_args[1], tag, green_final, fg_final, bg_final,
 		d_center, d_mid_rim, d_back_rim, d_control, d_min, c0, cm]
-	print("GOTOT-NEXT 009-DET ", sig)
+	print("GNE 009-DET ", sig)
 
 
 func _min_foreground_depth(depth: PackedFloat32Array) -> float:
@@ -549,23 +549,23 @@ func _count_green_exact(pixels: PackedByteArray) -> int:
 func _save_depth(depth: PackedFloat32Array) -> void:
 	var f := FileAccess.open(DEPTH_A_FILE, FileAccess.WRITE)
 	if f == null:
-		print("GOTOT-NEXT 009: reference depth WRITE FAILED")
+		print("GNE 009: reference depth WRITE FAILED")
 		return
 	f.store_buffer(depth.to_byte_array())
 	f.close()
-	print("GOTOT-NEXT 009: reference depth saved (" + str(depth.size() * 4) + " bytes)")
+	print("GNE 009: reference depth saved (" + str(depth.size() * 4) + " bytes)")
 
 
 func _save_meta() -> void:
 	var path := META_A_FILE if front_only else META_B_FILE
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
-		print("GOTOT-NEXT 009: meta WRITE FAILED")
+		print("GNE 009: meta WRITE FAILED")
 		return
 	f.store_line(str(fg_final))
 	f.store_line(str(green_final))
 	f.close()
-	print("GOTOT-NEXT 009: meta saved (", path, ")")
+	print("GNE 009: meta saved (", path, ")")
 
 
 func _load_meta_a() -> PackedInt32Array:
@@ -591,7 +591,7 @@ func _load_depth() -> PackedFloat32Array:
 
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 009: FAIL code=", code, " ", msg)
+	print("GNE 009: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_scene_destroy()
 	get_tree().quit(code)

@@ -35,7 +35,7 @@ const SCALES: Array[float] = [29.0, 45.0, 86.0, 36.0, 46.0, 64.0]
 const WALL_MIN := Vector4(-400.0, -400.0, -550.0, 0.0)
 const WALL_MAX := Vector4(400.0, 400.0, -450.0, 0.0)
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var frame := 0
@@ -53,7 +53,7 @@ var scan_prod: PackedInt32Array = PackedInt32Array()
 
 
 func _ready() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(700, "server singleton is null")
 		return

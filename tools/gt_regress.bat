@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  gt_regress.bat - GOTOT regression sweep
+REM  gt_regress.bat - GNE regression sweep
 REM  Runs every historical smoke scene and requires its own PASS marker.
 REM  015 must stay green with 011/013/014 alive.
 REM  Subroutine-per-scene: no for-variable/percent adjacency, fully portable.
@@ -8,7 +8,7 @@ REM ============================================================================
 setlocal
 
 set GODOT=C:\Users\opc\Documents\AI_ENGINE\godot-master\bin\godot.windows.editor.dev.x86_64.console.exe
-set PROJ=C:\Users\opc\Documents\AI_ENGINE\gotot-next\demo\gpu_smoke
+set PROJ=C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\demo\gpu_smoke
 set TMPC=C:\Users\opc\AppData\Local\Temp\opencode
 set OUT=%TMPC%\gt_regress.txt
 
@@ -52,7 +52,7 @@ set RC=%errorlevel%
 type "%LOGF%" >> "%OUT%"
 set HAS=0
 set OK=0
-findstr /c:"GOTOT-NEXT" "%LOGF%" >nul 2>&1
+findstr /c:"GNE" "%LOGF%" >nul 2>&1
 if not errorlevel 1 set HAS=1
 findstr /c:"PASS" "%LOGF%" >nul 2>&1
 if not errorlevel 1 set OK=1

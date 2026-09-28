@@ -1,8 +1,8 @@
 extends Node
 
-# GOTOT-011 - Multi-Draw / Batch Instancing (workgroup prefix-sum + grouping)
+# GNE-011 - Multi-Draw / Batch Instancing (workgroup prefix-sum + grouping)
 #
-# Uses the entire GOTOT-008B/009/010 groundwork unchanged and adds GOTOT-011:
+# Uses the entire GNE-008B/009/010 groundwork unchanged and adds GNE-011:
 #   - gpu_mesh_set_batch_strategy(PER_MESH | GROUPED | REORDERED),
 #   - a workgroup-parallel (Hillis-Steele) inclusive scan assembler replacing
 #     the serial pass-2 prefix sum; the per-mesh batch_args layout is identical,
@@ -52,7 +52,7 @@ var window_png := "C:/Users/opc/AppData/Local/Temp/opencode/gt_011_window.png"
 var sig_file := "C:/Users/opc/AppData/Local/Temp/opencode/gt011_sig.txt"
 var strategy := STRATEGY_REORDERED
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
@@ -95,7 +95,7 @@ const INSTANCE_SCALE := 26.0
 
 func _ready() -> void:
 	_parse_user_args()
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(100, "server singleton is null")
 		return
@@ -157,7 +157,7 @@ func _ready() -> void:
 	server.gpu_scene_set_camera(camera.get_global_transform(), camera.get_camera_projection())
 
 	RenderingServer.frame_post_draw.connect(_on_frame_post_draw)
-	print("GOTOT-NEXT 011: scene ready strategy=", strategy,
+	print("GNE 011: scene ready strategy=", strategy,
 			" meshes=", MESH_COUNT, " instances=", INSTANCE_COUNT)
 
 func _parse_user_args() -> void:
@@ -247,7 +247,7 @@ func _process(_delta: float) -> void:
 	display.texture = image_tex
 
 	if frame % PRINT_EVERY == 0:
-		print("GOTOT-NEXT 011: frame=", frame, " visible=", visible, " strategy=", strategy,
+		print("GNE 011: frame=", frame, " visible=", visible, " strategy=", strategy,
 				" groups=", server.gpu_mesh_get_batch_group_count(),
 				" draw_calls=", server.gpu_mesh_get_draw_call_count(),
 				" batches=", _distinct_batches())
@@ -256,7 +256,7 @@ func _process(_delta: float) -> void:
 		var fin_t0 := Time.get_ticks_msec()
 		_finalize(pixels, depth, visible)
 		var fin_t1 := Time.get_ticks_msec()
-		print("GOTOT-NEXT 011: finalize_ms=", fin_t1 - fin_t0, " strategy=", strategy)
+		print("GNE 011: finalize_ms=", fin_t1 - fin_t0, " strategy=", strategy)
 
 func _distinct_batches() -> int:
 	var n := 0
@@ -345,14 +345,14 @@ func _finalize(pixels: PackedByteArray, depth: PackedFloat32Array, visible: int)
 	det_ok = _det_check(pixels, depth, visible)
 
 	var color_counts := _color_counts(pixels)
-	print("GOTOT-NEXT 011: evidence strategy=", strategy, " visible=", visible,
+	print("GNE 011: evidence strategy=", strategy, " visible=", visible,
 			" batches=", _distinct_batches(), " groups=", groups,
 			" draw_calls=", server.gpu_mesh_get_draw_call_count(),
 			" indirect=", server.gpu_mesh_get_indirect_count(),
 			" cc=", cc)
-	print("GOTOT-NEXT 011: pixels g=", color_counts[0], " b=", color_counts[1],
+	print("GNE 011: pixels g=", color_counts[0], " b=", color_counts[1],
 			" o=", color_counts[2], " k=", color_counts[3])
-	print("GOTOT-NEXT 011: depth dF=", d_front, " dB=", d_back,
+	print("GNE 011: depth dF=", d_front, " dB=", d_back,
 			" dispatch_us=", dispatch_us, " draw_us=", draw_us, " det=", det_ok)
 	_print_signature(color_counts, cc, d_front, d_back, center_bg)
 	_finish_pass()
@@ -372,10 +372,10 @@ func _det_check(pixels: PackedByteArray, depth: PackedFloat32Array, visible: int
 	var depth2 := server.gpu_raster_read_depth()
 	var cc2 := _color_counts(pixels2)
 	if cc1 != cc2:
-		print("GOTOT-NEXT 011: DET color counts differ")
+		print("GNE 011: DET color counts differ")
 		return false
 	if absf(depth2[540 * RASTER_W + 960] - center_depth) > 1e-6:
-		print("GOTOT-NEXT 011: DET center depth differs")
+		print("GNE 011: DET center depth differs")
 		return false
 	if server.gpu_mesh_get_draw_call_count() != (5 if strategy >= STRATEGY_GROUPED else MESH_COUNT):
 		return false
@@ -386,18 +386,18 @@ func _print_signature(color_counts: Array, cc: int, d_front: float, d_back: floa
 		INSTANCE_COUNT, strategy, _distinct_batches(), server.gpu_mesh_get_batch_group_count(),
 		server.gpu_mesh_get_draw_call_count(), server.gpu_mesh_get_indirect_count(),
 		cc, d_front, d_back, 1 if center_bg else 0, 1 if det_ok else 0]
-	print("GOTOT-NEXT 011-DET ", sig)
-	print("GOTOT-NEXT 011: timing dispatch_us=", dispatch_us, " draw_us=", draw_us)
+	print("GNE 011-DET ", sig)
+	print("GNE 011: timing dispatch_us=", dispatch_us, " draw_us=", draw_us)
 	var f := FileAccess.open(sig_file, FileAccess.WRITE)
 	if f == null:
-		print("GOTOT-NEXT 011: sig file WRITE FAILED: ", sig_file)
+		print("GNE 011: sig file WRITE FAILED: ", sig_file)
 	else:
 		f.store_line(sig)
 		f.close()
 
 func _finish_pass() -> void:
 	want_shot = true
-	print("GOTOT-NEXT 011: EVIDENCE OK")
+	print("GNE 011: EVIDENCE OK")
 
 func _on_frame_post_draw() -> void:
 	if not want_shot or shot_done:
@@ -406,12 +406,12 @@ func _on_frame_post_draw() -> void:
 	want_shot = false
 	var shot := get_viewport().get_texture().get_image()
 	if shot.is_empty():
-		print("GOTOT-NEXT 011: window screenshot NOT EXECUTED (empty image)")
+		print("GNE 011: window screenshot NOT EXECUTED (empty image)")
 	else:
 		var err := shot.save_png(window_png)
-		print("GOTOT-NEXT 011: window screenshot saved=", err == OK)
+		print("GNE 011: window screenshot saved=", err == OK)
 	server.gpu_scene_destroy()
-	print("GOTOT-NEXT 011: PASS")
+	print("GNE 011: PASS")
 	get_tree().quit(0)
 
 # --- pixel helpers (identical conventions to main_010) ---
@@ -538,7 +538,7 @@ func _search_color(cx: int, cy: int, r: int, col: Color, pixels: PackedByteArray
 	return false
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT 011: FAIL code=", code, " ", msg)
+	print("GNE 011: FAIL code=", code, " ", msg)
 	if server != null:
 		server.gpu_scene_destroy()
 	get_tree().quit(code)

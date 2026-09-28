@@ -3,7 +3,7 @@ REM ============================================================================
 REM  gt_det.bat - N-run determinism runner   (ADDITIVE / new file)
 REM
 REM  Why this exists: a single passing run cannot validate a fix for a flaky
-REM  (nondeterministic) defect - e.g. the GOTOT-014 add/remove race, which was
+REM  (nondeterministic) defect - e.g. the GNE-014 add/remove race, which was
 REM  observed to fail ~25% of the time with -4/-8 lost instances. Proving the
 REM  wave fix requires REPEATED runs, so repetition is a first-class tool here.
 REM
@@ -16,7 +16,7 @@ REM ============================================================================
 setlocal EnableDelayedExpansion
 
 set "GODOT=C:\Users\opc\Documents\AI_ENGINE\godot-master\bin\godot.windows.editor.dev.x86_64.console.exe"
-set "PROJ=C:\Users\opc\Documents\AI_ENGINE\gotot-next\demo\gpu_smoke"
+set "PROJ=C:\Users\opc\Documents\AI_ENGINE\godot-next-engine\demo\gpu_smoke"
 set "SCENE=%~1"
 set "N=%~2"
 if "%SCENE%"=="" set "SCENE=main_014"

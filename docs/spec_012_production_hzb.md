@@ -1,7 +1,7 @@
-# GOTOT-012-revised — Production HZB (SPEC v2.0)
+# GNE-012-revised — Production HZB (SPEC v2.0)
 
 **الحالة:** DRAFT v2.0 — جاهز للتنفيذ (بانتظار موافقة المعماري).
-**المرجع:** HEAD `836086d` · **السابق:** GOTOT-012 v0.1 (DEFERRED 2026-09-22) — تشخيصه **الخاطئ**.
+**المرجع:** HEAD `836086d` · **السابق:** GNE-012 v0.1 (DEFERRED 2026-09-22) — تشخيصه **الخاطئ**.
 **م supersedes:** `docs/spec_012_production_hzb.md` v0.1 بالكامل (محفوظ في تاريخ git).
 
 ---
@@ -61,12 +61,12 @@
 | «projection collapse إلى texel (0,0)» | ❌ **ملغى** | لا مسار إسقاط معطوب؛ العطل سببه (A)+(B) لا الإسقاط |
 
 ### 3.5 قيمة مُثبتة (+) — ثبات سجل الهرم
-`HZB_PYRAMID_DATA_UINTS = 5,592,405` (`gotot_render_server.h:214`) = `Σ_{i=0..11} 4^i` = مجموع `((2048>>k)²)` لكل المستويات ⇒ **تخطيط مسطّح متسق** مع فهرسة `poff` (1338-1341). يُستخدم كبند تحقّق في `contract_012_hzb_format.md`.
+`HZB_PYRAMID_DATA_UINTS = 5,592,405` (`gne_render_server.h:214`) = `Σ_{i=0..11} 4^i` = مجموع `((2048>>k)²)` لكل المستويات ⇒ **تخطيط مسطّح متسق** مع فهرسة `poff` (1338-1341). يُستخدم كبند تحقّق في `contract_012_hzb_format.md`.
 
 
 **الحالة:** SPEC 012 v0.1 DRAFT — بانتظار مراجعة المعماري وتثبيت النهائي.
-**المرجع:** docs/progress_report.md (قسم 19/20 — 011) + docs/spec_010_batch_instance_rendering.md (مبنى 010/011) + قسم GOTOT-004 (HZB prototype).
-**المرحلة السابقة:** GOTOT-011 — Multi-Draw / Multi-Batch (PASS، commit `371cb3c` على GitHub).
+**المرجع:** docs/progress_report.md (قسم 19/20 — 011) + docs/spec_010_batch_instance_rendering.md (مبنى 010/011) + قسم GNE-004 (HZB prototype).
+**المرحلة السابقة:** GNE-011 — Multi-Draw / Multi-Batch (PASS، commit `371cb3c` على GitHub).
 
 ---
 ---

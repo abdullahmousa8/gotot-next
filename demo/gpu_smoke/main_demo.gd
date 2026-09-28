@@ -1,6 +1,6 @@
 extends Node
 
-# GOTOT-011 INTERACTIVE DEMO
+# GNE-011 INTERACTIVE DEMO
 #
 # Interactive: WASD + mouse fly-through of a volume with 64 distinct GPU meshes
 # and 512 instances (8x8x8 cells, mesh_id = i % 64). R cycles the batch
@@ -28,7 +28,7 @@ var GRID_CX := -455.0        # +0*STEP_X => -455
 var GRID_CY := -297.5
 var GRID_CZ := -700.0        # back shell of the volume
 
-var server: GototRenderServer
+var server: GneRenderServer
 var camera: Camera3D
 var controller: Node
 var display: TextureRect
@@ -73,7 +73,7 @@ func _ready() -> void:
 	_setup()
 
 func _setup() -> void:
-	server = GototRenderServer.get_server_singleton()
+	server = GneRenderServer.get_server_singleton()
 	if server == null or not server.ensure_gpu_device():
 		_fail(200, "server/GPU unavailable")
 		return
@@ -124,7 +124,7 @@ func _setup() -> void:
 	server.gpu_scene_set_viewport(vp_size.x, vp_size.y)
 	server.gpu_scene_set_camera(camera.get_global_transform(), camera.get_camera_projection())
 	RenderingServer.frame_post_draw.connect(_on_frame_post_draw)
-	print("GOTOT-NEXT DEMO: ready strategy=", STRATEGY_NAMES[strategy],
+	print("GNE DEMO: ready strategy=", STRATEGY_NAMES[strategy],
 			" meshes=", MESH_COUNT, " instances=", INSTANCE_COUNT, " test=", test_mode)
 
 func _pos(i: int) -> Vector3:
@@ -207,7 +207,7 @@ func _handle_keys() -> void:
 			_r_pressed = true
 			strategy = (strategy + 1) % 3
 			server.gpu_mesh_set_batch_strategy(strategy)
-			print("GOTOT-NEXT DEMO: strategy -> ", STRATEGY_NAMES[strategy])
+			print("GNE DEMO: strategy -> ", STRATEGY_NAMES[strategy])
 	elif _r_pressed:
 		_r_pressed = false
 	if Input.is_key_pressed(KEY_F12):
@@ -219,7 +219,7 @@ func _handle_keys() -> void:
 	if Input.is_key_pressed(KEY_P):
 		if not _p_pressed:
 			_p_pressed = true
-			print("GOTOT-NEXT DEMO: visible=", server.gpu_cull_get_visible_count(),
+			print("GNE DEMO: visible=", server.gpu_cull_get_visible_count(),
 					" batches=", _distinct(), " groups=", server.gpu_mesh_get_batch_group_count(),
 					" draw_calls=", server.gpu_mesh_get_draw_call_count())
 	else:
@@ -251,24 +251,24 @@ func _finalize(pixels: PackedByteArray, visible: int, batches: int) -> void:
 	var ic := server.gpu_mesh_get_indirect_count()
 	var ok := true
 	if visible <= 0:
-		print("GOTOT-NEXT DEMO: FAIL visible=", visible)
+		print("GNE DEMO: FAIL visible=", visible)
 		ok = false
 	if batches < 10:
-		print("GOTOT-NEXT DEMO: FAIL batches=", batches)
+		print("GNE DEMO: FAIL batches=", batches)
 		ok = false
 	if strategy >= STRATEGY_GROUPED and dc > 5:
-		print("GOTOT-NEXT DEMO: FAIL draw_calls=", dc)
+		print("GNE DEMO: FAIL draw_calls=", dc)
 		ok = false
 	if dc != ic:
-		print("GOTOT-NEXT DEMO: FAIL draw_calls != indirect ", dc, "/", ic)
+		print("GNE DEMO: FAIL draw_calls != indirect ", dc, "/", ic)
 		ok = false
 	if groups != (5 if strategy >= STRATEGY_GROUPED else MESH_COUNT):
-		print("GOTOT-NEXT DEMO: FAIL groups=", groups)
+		print("GNE DEMO: FAIL groups=", groups)
 		ok = false
 	var order := server.gpu_mesh_get_batch_order()
 	for i in order.size():
 		if order[i] != i:
-			print("GOTOT-NEXT DEMO: FAIL order broken at ", i)
+			print("GNE DEMO: FAIL order broken at ", i)
 			ok = false
 			break
 
@@ -282,25 +282,25 @@ func _finalize(pixels: PackedByteArray, visible: int, batches: int) -> void:
 	var warm := 2
 	for w in warm:
 		if not _run_pass():
-			print("GOTOT-NEXT DEMO: FAIL DET warmup pass ", w)
+			print("GNE DEMO: FAIL DET warmup pass ", w)
 			ok = false
 	var base := server.gpu_raster_read_pixels()
 	if not _run_pass():
-		print("GOTOT-NEXT DEMO: FAIL DET compare pass")
+		print("GNE DEMO: FAIL DET compare pass")
 		ok = false
 	var pixels2 := server.gpu_raster_read_pixels()
 	if base.size() != pixels.size() or pixels2 != base:
-		print("GOTOT-NEXT DEMO: FAIL DET pixel mismatch base=", base.size(),
+		print("GNE DEMO: FAIL DET pixel mismatch base=", base.size(),
 				" det=", pixels2.size())
 		ok = false
 
-	print("GOTOT-NEXT DEMO: evidence visible=", visible, " meshes=", MESH_COUNT,
+	print("GNE DEMO: evidence visible=", visible, " meshes=", MESH_COUNT,
 			" batches=", batches, " groups=", groups, " draw_calls=", dc,
 			" indirect=", ic, " strategy=", STRATEGY_NAMES[strategy])
-	print("GOTOT-NEXT DEMO: dispatch_us=", dispatch_us, " draw_us=", draw_us,
+	print("GNE DEMO: dispatch_us=", dispatch_us, " draw_us=", draw_us,
 			" fps=", Engine.get_frames_per_second())
 	if ok:
-		print("GOTOT-NEXT DEMO: EVIDENCE OK")
+		print("GNE DEMO: EVIDENCE OK")
 		want_shot = true
 	else:
 		_fail(220, "test evidence failed")
@@ -322,12 +322,12 @@ func _on_frame_post_draw() -> void:
 	want_shot = false
 	var shot := get_viewport().get_texture().get_image()
 	var err := shot.save_png(_shot_path)
-	print("GOTOT-NEXT DEMO: window screenshot saved=", err == OK, " ", _shot_path)
+	print("GNE DEMO: window screenshot saved=", err == OK, " ", _shot_path)
 	var srv := server
 	server = null
 	srv.gpu_scene_destroy()
 	if test_mode:
-		print("GOTOT-NEXT DEMO: PASS")
+		print("GNE DEMO: PASS")
 		get_tree().quit(0)
 
 func _exit_tree() -> void:
@@ -335,7 +335,7 @@ func _exit_tree() -> void:
 		server.gpu_scene_destroy()
 
 func _fail(code: int, msg: String) -> void:
-	print("GOTOT-NEXT DEMO: FAIL code=", code, " ", msg)
+	print("GNE DEMO: FAIL code=", code, " ", msg)
 	if server != null:
 		var srv := server
 		server = null

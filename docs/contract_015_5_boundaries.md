@@ -2,18 +2,18 @@
 
 من يملك ماذا. الغرض: منع الـpool من التسرّب إلى طبقات لا نملكها، أو أن يُقرأ كـ«إدارة ذاكرة» وهو ليس كذلك.
 
-## 1. داخل الملكية (GOTOT-owned)
+## 1. داخل الملكية (GNE-owned)
 - `pool_buffer` / `pool_staging` / `persistent_buffer` + uniform sets الخاصة بها.
-- الجداول: `PoolBlock` / `PoolExtent` / `PersistentEntry` / `PoolHeader` (كلها CPU داخل `GototRenderServer`).
+- الجداول: `PoolBlock` / `PoolExtent` / `PersistentEntry` / `PoolHeader` (كلها CPU داخل `GneRenderServer`).
 
 ## 2. خارج الملكية (لا تُلمس)
 | المورد | المالك | سبب |
 |---|---|---|
 | `RenderingDevice` نفسه | Godot | وحدة نملك نسخة كسولة منها فقط (نمط `LightmapperRD`)؛ لا إنشاء/تدمير |
-| `raster_*_texture` | GOTOT لكن **خارج** الـpool | نسيج attachment/sampling؛ إدراجه شرطُ Phase 5 (§9/D1) |
-| `hzb_prod_array` | GOTOT لكن **خارج** الـpool | نسيج 2D-array 12 مستوى؛ يُدار بمرحلة 012 المؤجَّلة |
-| مخازن 014 (`gms_*`) | GOTOT، **مجمَّدة** | توقيع 014 عقد دليل؛ لا إعادة تخصيص في 015.5 إلا بقرار صريح |
-| مخازن 001A–011 | GOTOT، **مجمَّدة** | انزياح توقيع ممنوع (معيار 3/8) |
+| `raster_*_texture` | GNE لكن **خارج** الـpool | نسيج attachment/sampling؛ إدراجه شرطُ Phase 5 (§9/D1) |
+| `hzb_prod_array` | GNE لكن **خارج** الـpool | نسيج 2D-array 12 مستوى؛ يُدار بمرحلة 012 المؤجَّلة |
+| مخازن 014 (`gms_*`) | GNE، **مجمَّدة** | توقيع 014 عقد دليل؛ لا إعادة تخصيص في 015.5 إلا بقرار صريح |
+| مخازن 001A–011 | GNE، **مجمَّدة** | انزياح توقيع ممنوع (معيار 3/8) |
 
 ## 3. حدود صريحة (تُكتب في الكود كتعليقات)
 1. **الـpool ليس تخصيصاً عاماً**: لا يخدم إلا موارد الـRG المعلنة (`add_edge` bytes). أي طلب خارج ذلك ⇒ `print_error` + -1.

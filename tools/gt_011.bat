@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  gt_011.bat - GOTOT-011 3-strategy runner (before / after measurement + DET)
+REM  gt_011.bat - GNE-011 3-strategy runner (before / after measurement + DET)
 REM
 REM  Usage:  gt_011.bat <state> [maxsec]        state = before | after
 REM          gt_011.bat after 120
@@ -9,7 +9,7 @@ REM
 REM  Runs main_011 once per strategy (--strategy=0|1|2) through
 REM  harnesses\run_scene.ps1 and prints, per strategy:
 REM    rc, the "finalize_ms=<n>" timing line (Commit-2 instrumentation) and the
-REM    "GOTOT-NEXT 011-DET <sig>" line.
+REM    "GNE 011-DET <sig>" line.
 REM
 REM  R2 (evidence collision): every state/strategy gets its OWN log, sig and png
 REM  path, so before- and after-measurements cannot overwrite each other, and the

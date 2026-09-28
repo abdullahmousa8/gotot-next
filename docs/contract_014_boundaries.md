@@ -1,13 +1,13 @@
 # Contract 014 — Boundaries
 
-**GOTOT-014 — PASS (2026-09-23).** Scope of the additive TEST-ONLY manager, and what it must NOT touch.
+**GNE-014 — PASS (2026-09-23).** Scope of the additive TEST-ONLY manager, and what it must NOT touch.
 
 ## Owned by 014
 
 - `gpu_scene_manager_*` APIs: `alloc / set_instances / update / dispatch / get_stats /
   get_draw_counts / get_snapshot / get_active_ids / destroy`.
 - `_destroy_scene_manager()` (module shutdown hook).
-- Files: `modules/gotot_render/gotot_render_server.{h,cpp}`, `demo/gpu_smoke/main_014.{gd,tscn}`
+- Files: `modules/gne_render/gne_render_server.{h,cpp}`, `demo/gpu_smoke/main_014.{gd,tscn}`
   and this contract set.
 
 ## Forbidden (unchanged from Architect constraints)

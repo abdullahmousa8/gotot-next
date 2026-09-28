@@ -1,4 +1,4 @@
-# GOTOT-NEXT Dependency Register
+# GNE Dependency Register
 
 The register is the authoritative record (see `docs/open_source_system_strategy_v1.md` Section 21.5).
 
@@ -23,9 +23,9 @@ For each future dependency, record:
 | Version | v1.2 (`9d9890c73011d75920af614485296d1e03e95448`) |
 | License | MIT |
 | Category | offline tooling (build-time meshlet generation) |
-| Runtime dependency | **None** — the GOTOT-NEXT runtime module is meshoptimizer-free |
+| Runtime dependency | **None** — the GNE runtime module is meshoptimizer-free |
 | Wrapper | `tools/meshlet_import` (vendored source at `tools/meshlet_import/third_party/meshoptimizer`) |
-| Removal plan | Replace wrapper with a GOTOT-owned meshlet builder once hosted/hand-rolled tooling is feasible |
+| Removal plan | Replace wrapper with a GNE-owned meshlet builder once hosted/hand-rolled tooling is feasible |
 | Integration date | 2026-09-22 |
-| Approver | Architect (GOTOT-013 commit authorization) |
+| Approver | Architect (GNE-013 commit authorization) |
 | SBOM entry | Add when SBOM artifacts are next refreshed (strategy §17) |

@@ -1,6 +1,6 @@
-// GOTOT-NEXT Meshlet Import Tool (offline).
+// GNE Meshlet Import Tool (offline).
 // Generates a procedural high-poly torus, builds 3 LOD proxies with
-// meshoptimizer (v1.2), meshletizes each LOD, and writes the GOTOT
+// meshoptimizer (v1.2), meshletizes each LOD, and writes the GNE
 // Meshlet binary format (".gomlet") consumed by the 013 runtime.
 // MIT-licensed third-party code: meshoptimizer (in third_party/meshoptimizer).
 #include <cstdio>
@@ -110,10 +110,10 @@ int main(int argc, char **argv) {
 	setvbuf(stdout, nullptr, _IONBF, 0);
 	const char *out_path = argc > 1 ? argv[1] : "mesh_013_torus.gomlet";
 
-	printf("[GOTOT] meshlet import v1 (meshoptimizer 1.2)\n");
+	printf("[GNE] meshlet import v1 (meshoptimizer 1.2)\n");
 
 	Torus torus(300.0f, 60.0f, SEG_MAJOR, SEG_MINOR);
-	printf("[GOTOT] torus: %zu verts, %zu tris (LOD0)\n", torus.vertex_count, torus.tri_count);
+	printf("[GNE] torus: %zu verts, %zu tris (LOD0)\n", torus.vertex_count, torus.tri_count);
 
 	// LOD0: cache-optimize the full mesh before meshletizing.
 	{
@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
 
 	for (size_t l = 1; l < LOD_COUNT; l++) {
 		float target = l == 1 ? 0.5f : 0.2f;
-		printf("[GOTOT] building LOD%zu (target %.0f%% of LOD0)\n", l, target * 100.0f);
+		printf("[GNE] building LOD%zu (target %.0f%% of LOD0)\n", l, target * 100.0f);
 		LODMesh lm;
 		simplify_lod(torus.positions, torus.indices, target, lm);
 		lods[l] = std::move(lm);
@@ -149,7 +149,7 @@ int main(int argc, char **argv) {
 	for (size_t l = 0; l < LOD_COUNT; l++) {
 		LODMesh &m = lods[l];
 		fetch_optimize(m);
-		printf("[GOTOT] meshletizing LOD%zu: %zu verts, %zu tris...\n", l, m.vertex_count, m.tri_count);
+		printf("[GNE] meshletizing LOD%zu: %zu verts, %zu tris...\n", l, m.vertex_count, m.tri_count);
 
 		size_t bound = meshopt_buildMeshletsBound(m.indices.size(), ML_MAX_VERTICES, ML_MAX_TRIANGLES);
 		MeshletRec &rec = recs[l];
@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
 			total_refs += rec.meshlets[i].vertex_count;
 			total_tris += rec.meshlets[i].triangle_count;
 		}
-		printf("[GOTOT] LOD%zu: %zu meshlets, %zu refs, %zu micro-tris\n",
+		printf("[GNE] LOD%zu: %zu meshlets, %zu refs, %zu micro-tris\n",
 				l, meshlet_count, total_refs, total_tris);
 	}
 
@@ -233,8 +233,8 @@ int main(int argc, char **argv) {
 
 	uint64_t lod0_tris = lods[0].tri_count;
 	size_t lod0_meshlets = recs[0].meshlets.size();
-	printf("[GOTOT] wrote %s\n", out_path);
-	printf("[GOTOT] STATS lod0_tri_count=%llu lod0_meshlet_count=%zu"
+	printf("[GNE] wrote %s\n", out_path);
+	printf("[GNE] STATS lod0_tri_count=%llu lod0_meshlet_count=%zu"
 			" total_meshlets=%zu\n",
 			(unsigned long long)lod0_tris, lod0_meshlets, recs[0].meshlets.size() + recs[1].meshlets.size() + recs[2].meshlets.size());
 	return (lod0_tris >= 1000000 && lod0_meshlets >= 10000) ? 0 : 3;

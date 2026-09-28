@@ -1,6 +1,6 @@
 # Contract 014 — Tests
 
-**GOTOT-014 — PASS (2026-09-23).** Harness: `gt_014a.bat` → `res://main_014.tscn`.
+**GNE-014 — PASS (2026-09-23).** Harness: `gt_014a.bat` → `res://main_014.tscn`.
 
 ## 8 criteria evidence
 

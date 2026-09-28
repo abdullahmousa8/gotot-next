@@ -70,7 +70,7 @@ gt_det.bat main_014 23
 
 Runs one scene N times and requires every run to be green **and** to print the
 same `sig=` line as run 1. This exists because a single passing run cannot
-validate a fix for a *flaky* defect — the GOTOT-014 add/remove race was
+validate a fix for a *flaky* defect — the GNE-014 add/remove race was
 observed to fail roughly a quarter of the time (`0, 0, -4, 0` lost instances),
 so repetition — not one lucky run — is the evidence.
 
@@ -116,7 +116,7 @@ Nothing is written inside the repository by these runners.
 ## Result of the first full verification run (2026-09-27, current binary)
 
 The current binary was built *after* the last source edit
-(`gotot_render_server.cpp` 13:55:19 → `godot...console.exe` 13:55:49) and the
+(`gne_render_server.cpp` 13:55:19 → `godot...console.exe` 13:55:49) and the
 015 work plus the 014 race fix are in that working tree. Every signature below
 was reprinted **identically on both runs** of the scene:
 

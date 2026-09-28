@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM  gt_015_5_phase4.bat - GOTOT-015.5 Phase 4 frame-time drift runner
+REM  gt_015_5_phase4.bat - GNE-015.5 Phase 4 frame-time drift runner
 REM
 REM  Runs the 300-frame measurement (100 warm-up + 200 measured) and prints the
 REM  per-pass wall-clock table, the frame totals and the drift. Two runs are

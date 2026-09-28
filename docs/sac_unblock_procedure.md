@@ -2,7 +2,7 @@
 
 Reference document for removing the Windows **Smart App Control (SAC)** /
 **Application Control (Device Guard / WDAC)** block that prevented the
-GOTOT-NEXT dev binaries (`godot.windows.editor.dev.x86_64*.exe`) from running.
+GNE dev binaries (`godot.windows.editor.dev.x86_64*.exe`) from running.
 
 ## 1. Context
 
