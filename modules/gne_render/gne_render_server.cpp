@@ -1542,6 +1542,24 @@ layout(std140, set = 0, binding = 2) uniform ViewBlock {
 }
 viewdata;
 
+// GNE-022 S3-shading (spec_022 section 10): GI field sampling, flag-gated.
+layout(set = 1, binding = 4) uniform sampler2D gi_atlas_s;
+layout(push_constant, std430) uniform GneGiPush {
+	
+vec4 gi_min;
+	
+vec4 gi_max;
+	
+vec4 gi_dims;
+	
+vec4 gi_params; // (enabled, scale, 0, 0)
+} gi_push;
+float gne_gi_fetch_gate(vec3 a, vec3 b) {
+	
+return 1.0; // visible surface: no extra occlusion against itself
+}
+//GNE_GI_SHARED
+
 layout(std430, set = 1, binding = 0) buffer LightBuffer {
 	vec4 lights[];
 }
@@ -1846,6 +1864,9 @@ void main() {
 	} else {
 		vec3 bem = (flags.z > 0.5) ? emi : vec3(0.0);
 		col = bem;
+	}
+	if (gi_push.gi_params.x > 0.5) {
+		col += gi_push.gi_params.y * gne_gi_sample_field(gi_atlas_s, gi_push.gi_min.xyz, gi_push.gi_max.xyz, gi_push.gi_dims.xyz, v_world);
 	}
 	out_color = vec4(col, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
@@ -6838,7 +6859,7 @@ bool GneRenderServer::_light_ensure_geo() {
 		return false;
 	}
 	Vector<uint8_t> frag_spirv = rendering_device->shader_compile_spirv_from_source(
-			RD::SHADER_STAGE_FRAGMENT, _gne_glsl_with_shared(gpu_mat_light_frag_glsl, false), RD::SHADER_LANGUAGE_GLSL, &error);
+			RD::SHADER_STAGE_FRAGMENT, _gne_glsl_with_shared(gpu_mat_light_frag_glsl, false).replace("//GNE_GI_SHARED", gpu_gi_sample_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (frag_spirv.is_empty()) {
 		print_error("[GNE] light fragment shader compile failed:");
 		print_error(error);
@@ -6866,7 +6887,7 @@ bool GneRenderServer::_light_ensure_geo() {
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
 	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
 	mat_light_pipeline = rendering_device->render_pipeline_create(
-			mat_light_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
+			mat_light_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 64, 0);
 	if (mat_light_pipeline.is_null()) {
 		print_error("[GNE] light render_pipeline_create failed.");
 		return false;
@@ -6882,6 +6903,13 @@ bool GneRenderServer::_light_ensure_geo() {
 		u.append_id(lbufs[b]);
 		lu.push_back(u);
 	}
+	// GNE-022 section 10: GI atlas binding (fallback dummy when absent; scenes create the field before the first lit draw).
+	RD::Uniform u4;
+	u4.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+	u4.binding = 4;
+	u4.append_id(gi_sampler.is_valid() ? gi_sampler : tex_sampler);
+	u4.append_id(gi_atlas.is_valid() ? gi_atlas : tex_dummy);
+	lu.push_back(u4);
 	mat_light_tex_set = rendering_device->uniform_set_create(lu, mat_light_shader, 1);
 	if (mat_light_tex_set.is_null()) {
 		print_error("[GNE] light tex uniform_set_create failed.");
@@ -8477,6 +8505,18 @@ draw_frame_seq++;
 	}
 	rendering_device->draw_list_bind_render_pipeline(dl, mat_light_pipeline);
 	rendering_device->draw_list_bind_uniform_set(dl, mat_light_uniform_set, 0);
+	{
+		float gpc[16];
+		if (gi_atlas.is_valid()) {
+			gpc[0] = gi_min.x; gpc[1] = gi_min.y; gpc[2] = gi_min.z; gpc[3] = 0.0f;
+			gpc[4] = gi_max.x; gpc[5] = gi_max.y; gpc[6] = gi_max.z; gpc[7] = 0.0f;
+			gpc[8] = (float)gi_gx; gpc[9] = (float)gi_gy; gpc[10] = (float)gi_gz; gpc[11] = 0.0f;
+			gpc[12] = gne_gi_enabled ? 1.0f : 0.0f; gpc[13] = 1.0f; gpc[14] = 0.0f; gpc[15] = 0.0f;
+		} else {
+			for (int gi = 0; gi < 16; gi++) { gpc[gi] = 0.0f; }
+		}
+		rendering_device->draw_list_set_push_constant(dl, gpc, 64);
+	}
 	rendering_device->draw_list_bind_uniform_set(dl, mat_light_tex_set, 1);
 	if (shadow_set2.is_null() && !_shadow_ensure_set2()) {
 		print_error("[GNE] gpu_material_draw_lights: shadow set-2 unavailable.");

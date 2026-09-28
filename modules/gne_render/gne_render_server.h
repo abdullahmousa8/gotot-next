@@ -11,6 +11,8 @@
 #include "core/variant/variant.h"
 #include "servers/rendering/rendering_device.h"
 
+// GNE-022 shared GLSL snippet (defined in gne_gi.cpp; injected into shaders).
+extern const char *gpu_gi_sample_glsl;
 class GneRenderServer : public Object {
 	GDCLASS(GneRenderServer, Object);
 

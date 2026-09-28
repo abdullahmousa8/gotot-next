@@ -37,7 +37,7 @@ static float gi_half_to_float(uint16_t p_half) {
 // hook (gne_gi_fetch_gate) so every consumer supplies its own gating variant.
 // Sampling convention: sub-cell offset (0.31, 0.17, 0.0) removes lattice
 // degeneracy in x/y while staying unbiased in z (9.3.3).
-static const char *gpu_gi_sample_glsl = R"(
+const char *gpu_gi_sample_glsl = R"(
 vec3 gne_gi_octa_decode(vec2 f) {
 	vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
 	float t = max(-n.z, 0.0);
