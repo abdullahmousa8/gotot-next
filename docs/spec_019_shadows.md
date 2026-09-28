@@ -1,6 +1,6 @@
 # GNE-019 — Shadows + Real Depth HZB (SPEC v1.0)
 
-**Status:** FINAL v1.0 (D7 applied 2026-09-28). Ready for implementation.
+**Status:** FINAL v1.0 (D7 applied 2026-09-28). IMPLEMENTED + PASS (commit b85d4dd; progress section 36).
 **Depends:** 018 (Lighting).
 **Closes:** KI-007 (Real Depth HZB).
 **Unblocks:** 020 (GI).
