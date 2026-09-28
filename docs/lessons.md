@@ -115,3 +115,31 @@ there by mistake.
 - Every git command uses `git -C <absolute repo path>`; never rely on cwd.
 - Assert the target with `git rev-parse --show-toplevel` before add/commit/push.
 - Build host = build only; its repo state must stay untouched.
+## Lesson 7: GI Temporal Accumulation Quantization Lock (LAB/GNE-validated diagnostic)
+
+**Date:** 2026-09-29
+**Context:** GNE-022 section 11 live-loop test (EMA alpha=0.1 accumulation into an
+RGBA16F double-buffered probe atlas, 16x8x16 field).
+
+**Observed (validated diagnostic, not a bugfix):**
+- The accumulating field marches on the half-float lattice (steps of exactly
+  2^-11 = 0.00048828125 in [0.5,1)) and then HARD-FREEZES mid-range: the section-11
+  run froze at f = 0.739257812 = 1514 x 2^-11 (k=77); the displayed image froze in
+  the same frame.
+- Mechanism: when the EMA update 0.1 x (g - old) falls below the round-to-nearest
+  threshold (~half the storage quantum, i.e. ~2.44e-4/frame in this band), the
+  stored bits stop changing; the loop latches permanently. Instruments above the
+  storage (8-bit framebuffer window mean) cannot see past the latch.
+- Same class as the S2 long-window freeze (9.3.9, iz4); section 11 pinned the
+  mid-range threshold and produced direct per-frame lattice evidence.
+
+**Rule for future work (temporal GI / denoising / multi-frame lighting):**
+- Any EMA-style temporal accumulation over FP16 storage exhibits a mid/long-term
+  quantization lock; the lock point scales with the storage exponent band.
+- Budget the accumulation storage precision FIRST when designing temporal GI; an
+  FP16-only accumulator silently truncates convergence to its quantum.
+- Diagnose with per-frame lattice dumps (exact multiples of 2^-k expose the lock
+  and its onset frame immediately).
+
+**Related:** GNE-022 section 11 (spec_022), section 11-R1 (accumulation precision
+experiment).

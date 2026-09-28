@@ -734,3 +734,49 @@ the decay on the resolvable range and report the latch onset as the convergence
 endpoint; (ii) an engine-side change: higher-precision accumulation storage (32F) or
 rounding-aware writes to remove the latch from the physics. Executor recommendation:
 scope (ii) as a small unit; (i) only with architect approval, per precedent.
+## 11-R1. GI Accumulation Precision (small fix spec, pre-code; frozen 2026-09-29)
+
+**Status decision (owner, 2026-09-29):** §11 official result STAYS FAIL (clause b).
+The §11 criterion text is NOT changed; s=0.015 and r=4 are NOT changed; the scene,
+initial conditions and determinism requirement are NOT changed. This unit tests a
+targeted storage-precision fix and re-runs the SAME §11 test for a direct
+before/after comparison.
+
+**1. Current storage type (as-built):**
+- Atlases: `RD::DATA_FORMAT_R16G16B16A16_SFLOAT` (gne_gi.cpp:317), double-buffered
+  (gi_atlas/gi_atlas2), 128 x 1024 texels each, storage+sampling+copy-from usage.
+- Shader write path: `layout(set = 0, binding = 0, rgba16f) uniform image2D gi_atlas`
+  (gne_gi.cpp trace shader, line 92).
+- Readbacks (`gpu_gi_read_avg` / `gpu_gi_read_texel`): 8-byte texel stride, uint16
+  fields decoded via `gi_half_to_float`.
+
+**2. Proposed storage type (H1 under test):**
+- Atlases: `RD::DATA_FORMAT_R32G32B32A32_SFLOAT`; shader qualifier `rgba32f`;
+  readbacks straight float32 (16-byte stride). Everything else mechanically
+  unchanged (same kernels, same EMA, same alpha, same gather).
+
+**3. Cause of the problem (validated diagnostic, see Lesson 7):** the §11 latch -
+the EMA increment 0.1 x (g - old) falls below the round-to-nearest half-quantum of
+the FP16 storage (2.44e-4/frame in [0.5,1)) and the stored bits freeze; verified by
+direct per-frame lattice evidence (field froze at 1514 x 2^-11, k=77; the displayed
+image froze in the same frame).
+
+**4. Success hypotheses (ALL to be evidenced; 32F is NOT assumed final):**
+- H1: the lock disappears within the 160-frame test (no freeze; field keeps decaying).
+- H2: criterion (b) improves on the same criterion text (decay continues at the
+  expected ratio where the display instrument resolves).
+- H3: cost bounded and reported (accum p50 before: 563us; memory: +1,048,576 bytes
+  per atlas, +2 MB for the pair; bandwidth: writes double).
+- H4: determinism preserved (same in-process byte-equality requirement).
+- H5: historical sweep stays green (flag-off neutrality: GI objects do not exist
+  when the flag is off).
+
+**5. Regression requirements (same-build evidence):**
+(a) §11 rerun, same scene/parameters/criteria; (b) S2 official paired gate rerun
+(NEG byte-zero; POS inside the recorded interval - values may shift at most ~1e-3
+relative, no more per-step half rounding); (c) §10 shade ratio rerun (>= 16x);
+(d) gt_018a literal v18 + full sweep 7/7; (e) zero ERROR/leak lines; (f) in-process
+determinism byte-equal.
+
+**6. Explicit non-scope:** denoiser, temporal sophistication, algorithm changes,
+criterion/gain/window changes, S3/RT, aesthetics.
