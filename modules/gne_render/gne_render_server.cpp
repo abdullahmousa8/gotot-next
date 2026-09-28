@@ -1030,16 +1030,22 @@ vec3 gne_cull_frame(vec3 view_vec) {
 vec3 gne_normal_to_cull(mat4 view, vec3 n_world) {
 	return gne_cull_frame((view * vec4(n_world, 0.0)).xyz);
 }
-float gne_backface_dot(mat4 view, vec3 n_world, vec3 l_world, vec3 anchor_world) {
-	vec3 axis = gne_normal_to_cull(view, n_world);
-	vec3 lc = gne_cull_frame((view * vec4(l_world, 1.0)).xyz);
-	vec3 ac = gne_cull_frame((view * vec4(anchor_world, 1.0)).xyz);
-	vec3 to_l = lc - ac;
+
+// View-space (cull frame) core used by both the world-space helper below and
+// the live cull prefilter (unit 2c). Degenerate distance -> 1.0 (no cull).
+float gne_backface_dot_view(vec3 axis_cull, vec3 light_pos_cull, vec3 anchor_cull) {
+	vec3 to_l = light_pos_cull - anchor_cull;
 	float dl = length(to_l);
 	if (dl < 1e-5) {
 		return 1.0;
 	}
-	return dot(to_l / dl, axis);
+	return dot(to_l / dl, axis_cull);
+}
+float gne_backface_dot(mat4 view, vec3 n_world, vec3 l_world, vec3 anchor_world) {
+	vec3 axis = gne_normal_to_cull(view, n_world);
+	vec3 lc = gne_cull_frame((view * vec4(l_world, 1.0)).xyz);
+	vec3 ac = gne_cull_frame((view * vec4(anchor_world, 1.0)).xyz);
+	return gne_backface_dot_view(axis, lc, ac);
 }
 )";
 
@@ -1372,6 +1378,12 @@ layout(std430, set = 0, binding = 4) buffer OverflowBuffer {
 }
 ovfb;
 
+// GNE-018-rev: cluster normal cones (flag-gated prefilter; unit 2c).
+layout(std430, set = 0, binding = 6) buffer ConeBuffer {
+	vec4 cones[];
+}
+conebuf;
+
 layout(std140, set = 0, binding = 5) uniform ViewBlock {
 	mat4 vp;
 	mat4 view;
@@ -1420,6 +1432,10 @@ void main() {
 	vec3 bmax = vec3(nx1 * z1 * tanv * aspect, ny1 * z1 * tanv, z1);
 	// View-space depth convention here: +z forward (matches -vc.z usage).
 	// The box above uses +z view depth; lights convert identically below.
+	// GNE-018-rev (unit 2c): flag-gated back-face prefilter state.
+	vec4 rev_cone = conebuf.cones[tid];
+	bool rev_cullable = (params.rev.x > 0.5) && (rev_cone.w > 0.1);
+	float rev_sin = rev_cullable ? sqrt(max(0.0, 1.0 - rev_cone.w * rev_cone.w)) : 0.0;
 	for (uint i = 0u; i < nlights; i++) {
 		vec4 L0 = lightbuf.lights[i * 4u + 0u];
 		vec4 L1 = lightbuf.lights[i * 4u + 1u];
@@ -1428,6 +1444,13 @@ void main() {
 		vec3 vw = (viewdata.view * vec4(L0.xyz, 1.0)).xyz;
 		vec3 vc = vec3(vw.xy, -vw.z);
 		float rr = L0.w;
+		if (rev_cullable) {
+			// Skip lights the whole cluster faces away from (conservative: only when
+			// even the best-aligned normal direction is behind the light).
+			if (gne_backface_dot_view(rev_cone.xyz, vc, bmin) < -rev_sin) {
+				continue;
+			}
+		}
 		bool hit = sphere_vs_aabb(vc, rr, bmin, bmax);
 		if (hit && L2.w > 0.5) {
 			// Spot: cone test around the spot axis (view space).
@@ -2651,6 +2674,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_light_cone_epochs"), &GneRenderServer::gpu_light_cone_epochs);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_selftest", "mode"), &GneRenderServer::gpu_light_cones_selftest);
 	ClassDB::bind_method(D_METHOD("gpu_light_set_normal_cone", "enabled"), &GneRenderServer::gpu_light_set_normal_cone);
+	ClassDB::bind_method(D_METHOD("gpu_light_cones_clear"), &GneRenderServer::gpu_light_cones_clear);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_light_bind", "light_id", "shadow_id"), &GneRenderServer::gpu_shadow_light_bind);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_cull_dispatch"), &GneRenderServer::gpu_shadow_cull_dispatch);
@@ -6482,6 +6506,7 @@ if (!light_cone_env_checked) {
 		rendering_device->buffer_clear(cluster_count_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
 		rendering_device->buffer_clear(light_overflow_buffer, 0, 4);
 			rendering_device->buffer_clear(cluster_cone_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 16));
+		cone_src_frame = draw_frame_seq; // initial zeros count as source frame 0
 		// Static layout: cluster tid owns slots [tid*16, tid*16+16). Filled
 		// once (never changes) so no prefix-sum pass is needed for DET.
 		{
@@ -6648,16 +6673,16 @@ bool GneRenderServer::_light_ensure_geo() {
 		r_shader = rendering_device->shader_create_from_spirv(stages, p_name);
 		return r_shader.is_valid();
 	};
-	if (!compile_compute(gpu_light_cull_glsl, "gne_light_cull", light_cull_shader)) {
+	if (!compile_compute(_gne_glsl_with_shared(gpu_light_cull_glsl, true).utf8().get_data(), "gne_light_cull", light_cull_shader)) {
 		return false;
 	}
 	light_cull_pipeline = rendering_device->compute_pipeline_create(light_cull_shader);
 	Vector<RD::Uniform> cu;
-	const RID cbufs[6] = {
+	const RID cbufs[7] = {
 		light_buffer, cluster_offset_buffer, cluster_count_buffer,
-		cluster_index_buffer, light_overflow_buffer, view_ubo
+		cluster_index_buffer, light_overflow_buffer, view_ubo, cluster_cone_buffer
 	};
-	for (uint32_t b = 0; b < 6; b++) {
+	for (uint32_t b = 0; b < 7; b++) {
 		RD::Uniform u;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 		u.binding = b;
@@ -8172,6 +8197,7 @@ bool GneRenderServer::gpu_hzb_depth_feed() {
 }
 
 bool GneRenderServer::gpu_material_draw_lights() {
+draw_frame_seq++;
 	if (!gpu_scene_valid || !gpu_mesh_valid || !gpu_mesh_batch_valid) {
 		print_error("[GNE] gpu_material_draw_lights: no batch mesh. Call gpu_mesh_create first.");
 		return false;
@@ -8231,6 +8257,11 @@ bool GneRenderServer::gpu_material_draw_lights() {
 	cp.rev[2] = 0.0f;
 	cp.rev[3] = 0.0f;
 	_run_compute_pass(light_cull_pipeline, light_cull_uniform_set, &cp, sizeof(cp), 54, 1, 1);
+	int cone_age = draw_frame_seq - cone_src_frame;
+	cone_age_last = cone_age;
+	if (cone_age > cone_age_max) {
+		cone_age_max = cone_age;
+	}
 	// 2. Evidence mirrors (exact integer reads, no float involved).
 	{
 		Vector<uint8_t> cb = rendering_device->buffer_get_data(cluster_count_buffer, 0,
@@ -8331,6 +8362,11 @@ bool GneRenderServer::gpu_material_draw_lights() {
 
 	mat_dispatches++;
 	raster_epoch++;
+	// GNE-018-rev (unit 2c): per-frame cone rebuild in the live path (flag on).
+	// This frame's raster is the source; the next frame cull consumes it (R7).
+	if (light_cone_enabled) {
+		gpu_light_cones_build();
+	}
 	return true;
 }
 
@@ -8448,6 +8484,7 @@ PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
 		cp.grid[3] = far_plane;
 		_run_compute_pass(light_cone_pipeline, light_cone_uniform_set, &cp, sizeof(cp), 54, 1, 1);
 		cone_src_epoch = raster_epoch;
+		cone_src_frame = draw_frame_seq;
 		return true;
 	}
 
@@ -8456,6 +8493,8 @@ PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
 		PackedInt32Array out;
 		out.append(raster_epoch);
 		out.append(cone_src_epoch);
+		out.append(cone_age_last);
+		out.append(cone_age_max);
 		return out;
 	}
 
@@ -8639,6 +8678,14 @@ PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
 		}
 		return out;
 	}
+
+// GNE-018-rev: zero the cone buffer (A/B measurement aid: all-zero =
+// the never-cull sentinel, so the prefilter becomes a no-op).
+void GneRenderServer::gpu_light_cones_clear() {
+	if (gpu_light_valid && !cluster_cone_buffer.is_null()) {
+		rendering_device->buffer_clear(cluster_cone_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 16));
+	}
+}
 
 PackedInt32Array GneRenderServer::gpu_light_debug_cluster(int p_tx, int p_ty, int p_tz) {
 	PackedInt32Array ret;

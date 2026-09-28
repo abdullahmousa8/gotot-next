@@ -253,6 +253,28 @@ func _run() -> void:
 	_f_run_mode(2)
 	_f_run_mode(3)
 	_f_run_mode(4)
+	# F7: live-path cone prefilter proof (unit 2c) - three-point decomposition.
+	var bait := server.gpu_light_create({"type": 0, "pos": Vector3(0, 0, -3000), "range": 150.0, "color": Color(1, 1, 1), "intensity": 0.2})
+	print("R0CHK|F7|bait light id=", bait)
+	server.gpu_light_set_normal_cone(false)
+	if not server.gpu_material_draw_lights():
+		print("R0CHK|F7|draw(off) FAILED")
+	else:
+		var a0 := int(server.gpu_light_get_stats()["assignments"])
+		server.gpu_light_set_normal_cone(true)
+		server.gpu_light_cones_clear()
+		if not server.gpu_material_draw_lights():
+			print("R0CHK|F7|draw(slab) FAILED")
+		else:
+			var a_slab := int(server.gpu_light_get_stats()["assignments"])
+			if not server.gpu_material_draw_lights():
+				print("R0CHK|F7|draw(cones) FAILED")
+			else:
+				var a_cone := int(server.gpu_light_get_stats()["assignments"])
+				var ep7 := server.gpu_light_cone_epochs()
+				print("R0CHK|F7|off=", a0, " slab_only=", a_slab, " with_cones=", a_cone, " cone_saved=", a_slab - a_cone, " slab_gain=", a_slab - a0, " ep=", ep7)
+		server.gpu_light_set_normal_cone(false)
+
 	if not server.gpu_light_cones_build():
 		print("R0CHK|F4|cones_build FAILED")
 	else:
