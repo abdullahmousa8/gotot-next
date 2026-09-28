@@ -1,10 +1,12 @@
 # Contract 018-rev - Determinism
 
-**GNE-018-rev - DRAFT.** DET-gated like every milestone since 013.
+**GNE-018-rev - FINAL.** DET-gated like every milestone since 013.
 
 ## Rules
 
 - Per-frame cone rewrite; no stale reads within a frame; deterministic inputs only.
+- Cone source age (raster record -> cull use) is exposed and gated: <= 1 frame at every
+  cull (R7); exceeded => explicit FAIL.
 - Skipped-light decisions are a pure function of (cone, light set, camera) - no timers,
   no hash order, no uninitialized memory.
 - Signature `v18-rev|lc|cc|dc|ot|hr|d` (fields per SPEC 3.5; `dc` = dropped assignments).

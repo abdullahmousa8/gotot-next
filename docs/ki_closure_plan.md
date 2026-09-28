@@ -8,6 +8,7 @@
 | KI-002 | Async readback shares staging | 015.6 | Before 018 | Scheduled |
 | KI-003 | Presentation optimization no effect | 020 | Before Production | Deferred |
 | KI-007 | HZB uses AABB occluders | 019 | Before 020 | Scheduled |
+| KI-011 | Specular not gated by NdotL (pre-existing) | Unassigned | Owner decision | Open |
 
 ## Closure Schedule
 

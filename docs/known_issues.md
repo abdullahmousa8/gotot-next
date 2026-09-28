@@ -134,6 +134,35 @@
 - 019: activate `gpu_hzb_depth_source` + scene depth feed.
 - Requires: geometry pipeline + depth source binding.
 
+## KI-011: Specular Not Gated By NdotL (Pre-Existing)
+
+**Date:** 2026-09-28
+**Status:** Open - pre-existing gap; deliberately NOT part of 018-rev (Architect directive)
+**Severity:** Low-Medium (grazing/backlit specular energy; no DET/buffer impact)
+**Owner:** GNE Architecture
+
+**Details:**
+- The material fragment light loop does not gate the specular term by NdotL; the diffuse term uses max(dot(N,L), 0) but the specular add is unconditional.
+- A light with NdotL <= 0 for a surface can still contribute specular energy in grazing configurations (H midway between L and V).
+- The gap predates 018-rev. It surfaced because 018-rev R1 is the first byte-exact pixel comparison across a light-list change; without separation it would be misattributed to the new cone culling.
+
+**Impact:**
+- After a strictly back-facing light is culled, small differences (sub-LSB to small) may appear versus not culling; these belong here, not to 018-rev.
+- No effect on determinism, buffers, or any gated milestone output; the source path is unchanged.
+
+**Scope separation (Architect directive, 2026-09-28):**
+- Must NOT be fixed inside the 018-rev batch.
+- 018-rev R1 (amended): differences flag-off/on must be confined to clusters whose light lists changed; every difference must carry the NdotL <= 0 leakage signature; anything else fails as an over-cull defect.
+
+**Fix path (future milestone; Owner decision required):**
+- Option A: gate the specular term by the same NdotL factor (shading change; own SPEC + before/after pixel/DET evidence).
+- Option B: keep and document (if an impact study proves magnitudes negligible).
+- Impact study first: which configurations show it; measured magnitudes.
+
+**Evidence:**
+- Source review 2026-09-28: material fragment light-accumulate loop in gne_render_server.cpp.
+- Recorded during 018-rev SPEC review; ticket opened per Architect directive (this file).
+
 ## 015.5 C6 status (closed in 015.6)
 
 **الحالة:** مقبول + موثّق (double-buffering مؤجّل إلى 020) — "تقليل الحجم" يكسر DET.

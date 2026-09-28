@@ -1,6 +1,6 @@
 # Contract 018-rev - Cull Rules
 
-**GNE-018-rev - DRAFT.** The back-face prefilter inside `gpu_light_cull_glsl`.
+**GNE-018-rev - FINAL.** The back-face prefilter inside `gpu_light_cull_glsl`.
 
 ## Test (exact)
 
