@@ -129,6 +129,18 @@ func _ready() -> void:
 	if near.size() < 3 or far.size() < 3:
 		_fail(423, "readback short")
 		return
+	# ---- M3 accum cost (bounce + visibility-gated gather), same methodology ----
+	var atimes: Array = []
+	for k4 in range(6):
+		var t1 := Time.get_ticks_usec()
+		if not server.gpu_gi_accum_step():
+			_fail(424, "accum timed")
+			return
+		atimes.append(Time.get_ticks_usec() - t1)
+	var asorted := atimes.duplicate()
+	asorted.sort()
+	print("S1B: accum_us per run=", atimes)
+	print("S1B: accum_us sorted=", asorted, " p50=", int(asorted[3]), " min=", int(asorted[0]), " max=", int(asorted[5]))
 	var ok := true
 	if near[0] <= far[0]:
 		ok = false

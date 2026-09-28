@@ -415,3 +415,12 @@ hide the trap.
 **Verification additions:** re-measure the old-M probe and the gradient probes under
 the new mechanism (old-vs-new recorded); then the official 9.3 gate with the SAME
 criteria (interval per 9.3; negative byte-zero per 9.3).
+**M3 cost measurement (mandatory pre-merge step; S1b methodology, 6 runs, city scene,
+131,072 gated rays):**
+- Reference bare trace this build: p50 = 667 us (this run has the bounce path enabled
+  in the default config; the S1-era direct-only number was 212 us).
+- M3 accum step (bounce + visibility-gated gather): p50 = **707 us** (runs 641..1202).
+- Reading: M3 adds roughly +0.5 ms over the direct-only path; a full probe update
+  costs ~0.7 ms on the RTX 3070 - approx. 4% of a 16.6 ms frame. **Not a frame-budget
+  threat: no scope reduction (fewer probed contributors / occlusion caching) is
+  required.** Measured, not assumed.

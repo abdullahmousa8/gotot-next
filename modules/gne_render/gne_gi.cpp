@@ -63,6 +63,36 @@ vec2 octa_encode(vec3 n) {
 	}
 	return f;
 }
+// M3 (spec_022 9.3.4): analytic occlusion between two points using the existing
+// instance boxes - the by-design leak barrier for the coupling gather. A blocked
+// segment contributes zero, so a hidden source's cells cannot inject.
+bool gne_gi_seg_blocked(vec3 a, vec3 b) {
+	vec3 d = b - a;
+	float len = length(d);
+	if (len < 1e-4) {
+		return false;
+	}
+	vec3 dir = d / len;
+	uint ninst = uint(pc.dims.w + 0.5);
+	for (uint i = 0u; i < ninst; i++) {
+		vec4 trv = trs.t[i];
+		vec3 c = trv.xyz;
+		float s = trv.w;
+		vec3 lo = c - s * 0.5;
+		vec3 hi = c + s * 0.5;
+		vec3 inv = 1.0 / dir;
+		vec3 t0 = (lo - a) * inv;
+		vec3 t1 = (hi - a) * inv;
+		vec3 tsm = min(t0, t1);
+		vec3 tbg = max(t0, t1);
+		float tn = max(max(tsm.x, tsm.y), tsm.z);
+		float tf = min(min(tbg.x, tbg.y), tbg.z);
+		if (tf >= max(tn, 0.0) && tn > 0.5 && tn < len - 0.5) {
+			return true;
+		}
+	}
+	return false;
+}
 // Single-source probe-field sampler (spec_022 section 8.1 requirement 3):
 // octahedral lookup + trilinear probe blend. Used by the S2 hit-point
 // feedback; later also by the material shading integration.
@@ -92,7 +122,9 @@ vec3 gne_gi_sample_field(vec3 pos) {
 				vec2 f = octa_encode(d);
 				ivec2 lxy = ivec2(clamp((f * 0.5 + 0.5) * 8.0, vec2(0.0), vec2(7.999)));
 				ivec2 tile = ivec2(int(idx.x) * 8, (int(idx.y) + int(idx.z) * int(gsz.y)) * 8);
+				if (!gne_gi_seg_blocked(pos, center)) {
 				acc += wx * wy * wz * texelFetch(gi_prev, tile + lxy, 0).rgb;
+			}
 			}
 		}
 	}
