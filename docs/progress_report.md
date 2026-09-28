@@ -931,3 +931,17 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - Options recorded (not enacted): (i) registered amendment (instrument resolution,
   9.1 process), (ii) engine-side 32F/rounding-aware accumulation; recommendation:
   scope (ii) small, (i) with architect approval.
+## §43. GNE-022 §11-R1 — 32F accumulation experiment, all hypotheses measured (2026-09-29)
+
+- Spec + lab-memory lesson FIRST (68ef9bf): section-11 FAIL stays; criterion, gain
+  and window frozen; Lesson 7 (FP16 EMA quantization lock) recorded in the lab
+  memory (lessons.md).
+- 32F implemented (format + shader qualifier + both readbacks); build clean.
+- Results: field lock ELIMINATED (clean 0.509 decay through 160 frames, no freeze);
+  section-11 criterion (b) still FAIL - now bounded by the 8-bit display
+  instrument, not the accumulator; cost unchanged (accum p50 547us, +2 MB);
+  determinism byte-equal; regressions all green (S2 paired PASS in-interval with
+  ~1-2% value shift from removed half-rounding; section-10 18.30x; gt_018a literal;
+  sweep 7/7; zero ERROR/leak).
+- Decision items (not enacted): keep FP32 as the accumulation storage? address the
+  display-instrument resolution limit for convergence measurement?

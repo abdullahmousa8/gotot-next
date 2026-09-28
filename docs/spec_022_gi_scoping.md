@@ -780,3 +780,30 @@ determinism byte-equal.
 
 **6. Explicit non-scope:** denoiser, temporal sophistication, algorithm changes,
 criterion/gain/window changes, S3/RT, aesthetics.
+**Experiment run (2026-09-29, same build) - RESULTS (direct before/after):**
+- Storage switched: R16G16B16A16_SFLOAT -> R32G32B32A32_SFLOAT (both atlases);
+  shader image qualifier rgba16f -> rgba32f; readbacks straight float32. All else
+  mechanically unchanged (kernels, EMA, alpha, gather, scene, s=0.015, r=4).
+- H1 (lock removal): CONFIRMED at the field level - the f-sequence decays at a
+  clean 0.509 ratio through the ENTIRE 160-frame window (deltas 1.87e-1 ... 1.4e-5;
+  no freeze anywhere; the FP16 run froze at k=77). The displayed m-sequence no
+  longer freezes at k=77 either; it tracks to sample 14 then rests on the display
+  floor.
+- H2 (criterion b): still FAIL AS REGISTERED. The failure moved from the storage
+  latch (FP16: sample 8, ratio 0.713 + hard freeze) to the 8-BIT DISPLAY
+  INSTRUMENT's own resolution at the tail (quantization walk in the ratios from
+  sample ~6-7: 0.42, 0.76, 0.10, 3.36, 0.38, 0.16...) while the underlying field
+  is textbook-clean. Criterion text untouched; the remaining obstruction is a
+  measurement-instrument property, not an accumulation defect.
+- H3 (cost): accum p50 547us (before 563us); draw p50 2176us (before 2170us);
+  memory +1,048,576 B per atlas (+2 MB for the pair). Bounded.
+- H4 (determinism): in-process byte-equal PASS.
+- H5 (regressions, same build): S2 official paired gate PASS (NEG byte-zero; POS
+  est=4.3558e-5 - shifted ~1.1% from 4.309e-5 by the removal of per-step half
+  rounding - inside [1.4519e-5, 1.3068e-4]; b240=1.5417e-5 in-interval);
+  section-10 shade PASS 18.30x (was 18.29x); gt_018a literal v18 PASS; full sweep
+  7/7; zero ERROR/leak lines.
+
+**Status:** the experiment delivered the mandated direct comparison. Whether to
+KEEP the FP32 storage, and whether/how to address the display-instrument limit,
+are decision items for the owner/architect - not enacted here.

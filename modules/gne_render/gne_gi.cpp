@@ -89,7 +89,7 @@ vec3 gne_gi_sample_field(sampler2D gi_atlas_in, vec3 gmin, vec3 gmax, vec3 gsz, 
 static const char *gne_gi_trace_glsl = R"(
 #version 450
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-layout(set = 0, binding = 0, rgba16f) uniform image2D gi_atlas;
+layout(set = 0, binding = 0, rgba32f) uniform image2D gi_atlas;
 layout(set = 0, binding = 1, std430) buffer TrBuf { vec4 t[]; } trs;
 layout(set = 0, binding = 2, std430) buffer LtBuf { vec4 l[]; } lights;
 layout(set = 0, binding = 3) uniform sampler2D gi_prev;
@@ -314,7 +314,7 @@ bool GneRenderServer::gpu_gi_create(const Dictionary &p_cfg) {
 	int aw = gi_gx * 8;
 	int ah = gi_gy * gi_gz * 8;
 	RD::TextureFormat tf;
-	tf.format = RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
+	tf.format = RD::DATA_FORMAT_R32G32B32A32_SFLOAT; // GNE-022 11-R1: 32F accumulation (Lesson 7 FP16 latch)
 	tf.width = aw;
 	tf.height = ah;
 	tf.depth = 1;
@@ -481,20 +481,20 @@ PackedFloat32Array GneRenderServer::gpu_gi_read_avg(int p_probe) {
 	int px = (p_probe % gi_gx) * 8;
 	int py = (p_probe / gi_gx) * 8;
 	Vector<uint8_t> data = rendering_device->texture_get_data(src, 0);
-	if (data.size() < (size_t)(aw * (gi_gy * gi_gz * 8) * 8)) {
+	if (data.size() < (size_t)(aw * (gi_gy * gi_gz * 8) * 16)) {
 		return out;
 	}
 	double sr = 0.0, sg = 0.0, sb = 0.0;
 	for (int ly = 0; ly < 8; ly++) {
 		for (int lx = 0; lx < 8; lx++) {
-			int ofs = ((py + ly) * aw + (px + lx)) * 8;
-			uint16_t hr, hg, hb;
-			memcpy(&hr, data.ptr() + ofs + 0, 2);
-			memcpy(&hg, data.ptr() + ofs + 2, 2);
-			memcpy(&hb, data.ptr() + ofs + 4, 2);
-			sr += gi_half_to_float(hr);
-			sg += gi_half_to_float(hg);
-			sb += gi_half_to_float(hb);
+			int ofs = ((py + ly) * aw + (px + lx)) * 16;
+			float fr, fg, fb;
+			memcpy(&fr, data.ptr() + ofs + 0, 4);
+			memcpy(&fg, data.ptr() + ofs + 4, 4);
+			memcpy(&fb, data.ptr() + ofs + 8, 4);
+			sr += fr;
+			sg += fg;
+			sb += fb;
 		}
 	}
 	out.append((float)(sr / 64.0));
@@ -518,16 +518,16 @@ PackedFloat32Array GneRenderServer::gpu_gi_read_texel(int p_probe, int p_texel) 
 	int px = (p_probe % gi_gx) * 8 + (p_texel % 8);
 	int py = (p_probe / gi_gx) * 8 + (p_texel / 8);
 	Vector<uint8_t> data = rendering_device->texture_get_data(src, 0);
-	if (data.size() < (size_t)(aw * (gi_gy * gi_gz * 8) * 8)) {
+	if (data.size() < (size_t)(aw * (gi_gy * gi_gz * 8) * 16)) {
 		return out;
 	}
-	int ofs = (py * aw + px) * 8;
-	uint16_t hr, hg, hb;
-	memcpy(&hr, data.ptr() + ofs + 0, 2);
-	memcpy(&hg, data.ptr() + ofs + 2, 2);
-	memcpy(&hb, data.ptr() + ofs + 4, 2);
-	out.append(gi_half_to_float(hr));
-	out.append(gi_half_to_float(hg));
-	out.append(gi_half_to_float(hb));
+	int ofs = (py * aw + px) * 16;
+	float fr, fg, fb;
+	memcpy(&fr, data.ptr() + ofs + 0, 4);
+	memcpy(&fg, data.ptr() + ofs + 4, 4);
+	memcpy(&fb, data.ptr() + ofs + 8, 4);
+	out.append(fr);
+	out.append(fg);
+	out.append(fb);
 	return out;
 }
