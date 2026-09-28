@@ -1831,16 +1831,16 @@ void main() {
 		} else {
 			tuv2 = fract(vec2(v_world.x, v_world.y) * m2b.xy);
 		}
-		int tia = int(m2a.x + 0.5);
-		if (tia >= 0 && tia < 8) {
+		int tia = (m2a.x >= 0.0 && m2a.x <= 4.0) ? int(m2a.x + 0.5) : -1;
+		if (tia >= 0) {
 			alb = albedo * texture(tex_arr[tia], tuv2).rgb;
 		}
-		int tir = int(m2a.y + 0.5);
-		if (tir >= 0 && tir < 8) {
+		int tir = (m2a.y >= 0.0 && m2a.y <= 4.0) ? int(m2a.y + 0.5) : -1;
+		if (tir >= 0) {
 			rough = clamp(rough * texture(tex_arr[tir], tuv2).r, 0.0, 1.0);
 		}
-		int tin = int(m2a.z + 0.5);
-		if (tin >= 0 && tin < 8) {
+		int tin = (m2a.z >= 0.0 && m2a.z <= 4.0) ? int(m2a.z + 0.5) : -1;
+		if (tin >= 0) {
 			vec3 nm = texture(tex_arr[tin], tuv2).rgb * 2.0 - 1.0;
 			if (an2.x >= an2.y && an2.x >= an2.z) {
 				N = normalize(N + vec3(0.0, nm.y, nm.z) * 0.6);

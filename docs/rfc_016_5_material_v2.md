@@ -59,3 +59,29 @@ the material subsystem (Track-1 scope example: "Material System overhaul").
    albedo_slot, rough_slot, normal_slot, scale)`.
 2. Fragment integration for the three channels (with the legacy gate).
 3. Scene `main_016_5` + M2/M3 instruments; then M1/M5 runs; CVS.
+## Slice-1 RESULTS (2026-09-29) - ALL ACCEPTANCE GATES PASS
+
+Scene main_016_5 (4 boxes; inst0 enlarged to 120 for clean checker resolution;
+inst1-3 flat for coexistence; checkerboard.gtex; map slots carry the
+gpu_texture_load id; scale = UV multiplier):
+- M1 (legacy byte-identity): CVS full run 14/14 PASS - all historical literals
+  byte-exact + goldens byte-identical (the channel branch is fully skipped when
+  slots are unset).
+- M2 (map visibility): window mean shift 0.396 >= 0.05; window stddev flat 0.005
+  -> mapped 0.383 (checker clearly rendered).
+- M3 (scale repeat x2): scanline alternations 11 (s=0.0125) -> 23 (s=0.025),
+  gate n2 >= 2*n1 - 2 (documented boundary-truncation convention) PASS.
+- M4 (normal via read_normal): face normal (0,0,0.9995) -> (0.4355,0.4355,
+  0.7876); max component delta 0.4355 >= 0.05 PASS.
+- M4b (determinism): two identical ON-state draws byte-equal PASS.
+- M5 (cost): draw p50 off 1728us / on 1605us (run-noise dominated; bounded).
+- Sig: v165|m2=0.3960|n1=11|n2=23|m4=0.4355|det=1|off=1728|on=1605|d1
+Incidents recorded: (a) GLSL int() truncates toward zero: int(-1.0+0.5) = 0, so
+the -1 sentinel activated the normal channel implicitly - fixed with float-safe
+ternary gates `(x >= 0.0 && x <= 4.0) ? int(x+0.5) : -1` (brace-neutral; first
+run's M4 delta 0.0 with a perturbed-looking baseline exposed it);
+(b) slice-1 uses dominant-axis triplanar (1 fetch/map, within the M5 fetch
+budget); weighted |N| blending is slice-2 with a revised fetch budget.
+Status: 016.5 slice-1 COMPLETE (M1-M5 green; CVS clean). Slice-2 candidates:
+weighted triplanar, roughness-channel scene evidence, per-material channel
+defaults policy.

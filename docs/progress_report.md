@@ -1011,3 +1011,14 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - M1 quick evidence: gt_018a literal v18 byte-exact PASS; gt_016a literal v16
   byte-exact PASS (legacy path untouched).
 - Next: scene main_016_5 + M2/M3/M5 instruments + full CVS.
+## §49. GNE-016.5 slice-1 — acceptance M1-M5 ALL GREEN + CVS clean (2026-09-29)
+
+- Scene main_016_5 built (enlarged inst0, checkerboard.gtex, flat coexistence).
+- M2 shift 0.396 (>=0.05); M3 alternations 11->23 (>=2x-2); M4 normal delta
+  0.4355 (>=0.05, flat (0,0,0.9995) -> (0.4355,0.4355,0.7876)); M4b byte-equal;
+  M5 cost bounded (off 1728us / on 1605us p50, noise-dominated).
+- GLSL incident: int(-1.0+0.5)=0 truncation activated the normal channel for the
+  -1 sentinel; fixed with float-safe ternary gates. Recorded.
+- CVS Complete Clean Run: 14/14 PASS (all literals byte-exact, goldens identical,
+  zero errors; perf 020:22052/59486).
+- 016.5 slice-1 COMPLETE. Next: slice-2 (weighted triplanar + roughness evidence).
