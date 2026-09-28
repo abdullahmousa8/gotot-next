@@ -5,8 +5,22 @@
 ## Scope
 
 - 015.5 C6: raster+output = 81.8% of frame time (readback staging root).
-- Accepted resolution paths: reduce readback size; mitigate via
-  double-buffering; accept + document with measured numbers.
+
+## Resolved Path
+
+**Chosen:** Accept + Document (double-buffering deferred).
+
+**Rationale:**
+- "Reduce readback size" changes pixel content
+  ⇒ violates DET preservation.
+- Double-buffering is feasible but needs separate milestone
+  (touches presentation path).
+- Therefore: accept + document + schedule double-buffering for 020.
+
+**Evidence for 015.6:**
+- Baseline measurement (median/p95/max) on current scene.
+- Bytes-copied-per-frame (current).
+- Label as "known limitation", not "fixed".
 
 ## Evidence required
 

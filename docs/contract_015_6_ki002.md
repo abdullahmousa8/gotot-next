@@ -5,8 +5,23 @@
 ## Scope
 
 - KI-002: async readback shares the sync staging buffer, so no speedup.
-- Accepted resolution paths (in order): isolate staging buffers per
-  frame; reduce bytes-per-frame; accept + document.
+- Staging buffers owned by Godot RenderingDevice (engine-level).
+- Cannot be isolated from GNE side.
+
+## Resolved Path
+
+**Chosen:** Accept + Document.
+
+**Rationale:**
+- Staging buffer management is Godot-internal.
+- "Isolate buffers" would require engine patch (forbidden).
+- "Reduce bytes" would change pixel content (violates DET).
+- Therefore: accept + document + workaround in future milestone.
+
+**Workaround:**
+- Wall-clock measurement clearly labeled.
+- No claims of async speedup without bytes/timing proof.
+- Future milestone may explore double-buffering.
 
 ## Evidence required
 

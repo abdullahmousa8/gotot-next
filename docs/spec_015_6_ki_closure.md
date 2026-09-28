@@ -23,20 +23,23 @@ Close KI-001, KI-002, 015.5 C6.
 - (b) Custom timestamp via CPU timing + sync.
 - (c) Accept NA + document.
 
-**Decision:** (c) with fallback (b) where possible.
+**Resolved:** (c) Accept NA + Document.
+**Fallback:** (b) CPU timing labeled as "wall-clock", never "GPU".
+**Limitation:** All numbers from 015.6 onward are wall-clock only.
 
 ### 3.2 KI-002: Async Readback
 
-**Fix:**
-- Isolate staging buffers per frame.
-- Or: reduce bytes-per-frame.
-- Or: accept + document.
+**Resolved:** Accept + Document.
+
+**Rationale:** staging is engine-owned; cannot isolate.
+Reduce-size breaks DET. Future milestone may explore double-buffering.
 
 ### 3.3 015.5 C6: Drift
 
-**Fix:**
-- Reduce readback size.
-- Or: mitigate via double-buffering.
+**Resolved:** Accept + Document (double-buffering deferred to 020).
+
+**Rationale:** "reduce size" breaks DET.
+Double-buffering needs separate milestone.
 
 ## 4. Acceptance Criteria (5)
 1. KI-001 status updated.
