@@ -782,6 +782,7 @@ void gpu_gi_enabled_set(bool p_enabled);
 Dictionary gpu_gi_info() const;
 bool gpu_gi_trace();
 PackedFloat32Array gpu_gi_read_avg(int p_probe);
+PackedFloat32Array gpu_gi_read_texel(int p_probe, int p_texel);
 	void gpu_light_set_normal_cone(bool p_enabled); // GNE-018-rev
 	void gpu_light_cones_clear(); // GNE-018-rev tooling (A/B)
 

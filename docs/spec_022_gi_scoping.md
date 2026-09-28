@@ -221,3 +221,22 @@ Scene: full GNE-021 city (56 instances incl. ground + 256 lights). Field: 16x8x1
 - Sanity: near-street probe avg radiance 22.60 (r) vs far-field probe 1.29 (r) -
   ratio ~17.6x, both above the miss-ambient floor (0.03). Values are UNNORMALIZED
   raw radiance (normalization arrives with the shading integration).
+### 8.3 S1b.2 results - closed-form + coherent-direction (executed 2026-09-28)
+
+Closed-form case (single ground plane + single point light; the expected values come
+from an independent GDScript reimplementation of the exact model math - NOT reused
+module code):
+
+| check | got | expected | error |
+|---|---|---|---|
+| texel 3 (down ray -> lit ground) | 0.83691 | 0.83716 | 0.00024 (0.03%; half-float rounding) |
+| texel 59 (up ray -> miss -> ambient) | 0.0299988 | 0.03 | 1.2e-6 |
+| texel 0 of far probe (hit, out of light range) | 0.0 | 0.0 | 0.0 |
+
+Falloff profile (coherent-direction sample): probes (ix,1,7), ix=0..15 rise smoothly
+from 0.023 (edge) to 0.356 (near the light) - monotonic toward the light.
+
+**Normalization requirement (Architect, recorded):** when normalization/saturation
+lands (shading integration), the normalized near/far ratio must PRESERVE the measured
+~17.6x (raw 22.60 vs 1.29) - no compression or saturation - and must be tested with
+the same rigor as this section.

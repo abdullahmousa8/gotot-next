@@ -2715,6 +2715,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_gi_info"), &GneRenderServer::gpu_gi_info);
 	ClassDB::bind_method(D_METHOD("gpu_gi_trace"), &GneRenderServer::gpu_gi_trace);
 	ClassDB::bind_method(D_METHOD("gpu_gi_read_avg", "probe"), &GneRenderServer::gpu_gi_read_avg);
+	ClassDB::bind_method(D_METHOD("gpu_gi_read_texel", "probe", "texel"), &GneRenderServer::gpu_gi_read_texel);
 	ClassDB::bind_method(D_METHOD("gpu_light_set_normal_cone", "enabled"), &GneRenderServer::gpu_light_set_normal_cone);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_clear"), &GneRenderServer::gpu_light_cones_clear);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);

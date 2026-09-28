@@ -277,3 +277,29 @@ PackedFloat32Array GneRenderServer::gpu_gi_read_avg(int p_probe) {
 	out.append(64.0f);
 	return out;
 }
+PackedFloat32Array GneRenderServer::gpu_gi_read_texel(int p_probe, int p_texel) {
+	PackedFloat32Array out;
+	if (gi_atlas.is_null()) {
+		return out;
+	}
+	int np = gi_gx * gi_gy * gi_gz;
+	if (p_probe < 0 || p_probe >= np || p_texel < 0 || p_texel >= 64) {
+		return out;
+	}
+	int aw = gi_gx * 8;
+	int px = (p_probe % gi_gx) * 8 + (p_texel % 8);
+	int py = (p_probe / gi_gx) * 8 + (p_texel / 8);
+	Vector<uint8_t> data = rendering_device->texture_get_data(gi_atlas, 0);
+	if (data.size() < (size_t)(aw * (gi_gy * gi_gz * 8) * 8)) {
+		return out;
+	}
+	int ofs = (py * aw + px) * 8;
+	uint16_t hr, hg, hb;
+	memcpy(&hr, data.ptr() + ofs + 0, 2);
+	memcpy(&hg, data.ptr() + ofs + 2, 2);
+	memcpy(&hb, data.ptr() + ofs + 4, 2);
+	out.append(gi_half_to_float(hr));
+	out.append(gi_half_to_float(hg));
+	out.append(gi_half_to_float(hb));
+	return out;
+}
