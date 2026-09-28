@@ -659,3 +659,42 @@ literal); gt_019a PASS (v19 literal); gt_020a PASS (v20 literal); gt_021a PASS
 gates are now green: flag-off byte-identity, ratio 18.29x, determinism, cost,
 leak-free battery. The section-10 unit (fragment integration + normalization)
 is COMPLETE.
+## 11. Live-loop unit - displayed-image convergence (pre-registration, frozen BEFORE implementation; 2026-09-29)
+
+**Goal:** advance the field and the displayed image together in one frame loop: the
+draw reads the current front atlas; one S2 accumulation update per frame writes the
+back atlas and flips the front. This is the first unit measuring a USER-VISIBLE
+temporal property: the rendered image converging as the field converges.
+
+**Scene:** `main_022_loop` - S1b city, black albedo, witness cubes 54/55 at the same
+cells as section 10, camera and s=0.03 identical (instrument continuity: the same
+witness-window instrument, r=2, near-witness face window).
+
+**Procedure (frozen):**
+- create field; `gpu_gi_reset()` to the clean zero state; enable the flag.
+- M(0): draw + readback with the zero field (reference; expected 0).
+- for k in 1..160: accum_step (update + front flip) -> draw -> readback.
+  M(k) = near-witness window mean luminance; F(k) = read_avg(NEAR_PROBE)[0] (field
+  cross-evidence). Recorded every 10 frames (k = 10, 20, ..., 160) - mirror of the
+  9.1 cadence.
+
+**PASS criteria (ALL required):**
+(a) finiteness: every recorded M(k) finite.
+(b) geometric decay on the DISPLAYED image: every delta (delta_n = M(10n) -
+    M(10(n-1))) <= 0.6x the previous delta. Same ratio-form rationale as the 9.1
+    amendment (no fixed N; raising N cannot buy a pass).
+(c) bounded gain: the last recorded M <= 3x the first recorded M (mirror of 9.1).
+
+**Determinism (mirror of 9.2):** the 160-frame sequence is run TWICE in-process
+(reset in between); the two recorded strings must be byte-equal (gating). Two fresh
+processes: recorded and reported (9.2 precedent expects byte-equality; any
+divergence is recorded as the known cross-session microdrift class, not chased).
+
+**Cost (evidence-only):** per-frame p50 of accum_step and of the draw phase over
+the loop; combined frame cost.
+
+**Neutrality/cleanliness:** no engine changes in this unit (scene-only; the
+per-front draw sets already exist for exactly this loop). The flag-off battery
+stands from commit 5ea0c1f. The scene must exit with zero ERROR/leak lines.
+
+**Not in this unit:** denoiser, anisotropy, dynamic-light response, aesthetics, S3.
