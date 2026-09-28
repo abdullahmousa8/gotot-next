@@ -44,6 +44,7 @@ var done := false
 var wall_series: Array = []
 var run_t0 := 0
 var reads := 0
+var seg_read_us := 0
 var present_w := RASTER_W
 var present_h := RASTER_H
 var present_lowres := false
@@ -138,10 +139,13 @@ func _process(_delta: float) -> void:
 
 	# Presentation readback - the 020 target read. Same call site for
 	# before/after; the active target depends on the build + env flag only.
+	var t_rb0 := Time.get_ticks_usec()
 	var pixels: PackedByteArray = server.gpu_raster_read_pixels()
 	if present_api:
 		pixels = server.call("gpu_present_read_pixels")
 	reads += 1
+	if frame > WARMUP_FRAMES:
+		seg_read_us += Time.get_ticks_usec() - t_rb0
 	server.gpu_frame_mark(P_RASTER)
 
 	if pixels.size() == present_w * present_h * 4:
@@ -185,6 +189,14 @@ func _finish() -> void:
 	print("GNE 020: p50_us=", p50, " p95_us=", p95, " min_us=", pmin, " max_us=", pmax, " samples=", n)
 	print("GNE 020: present_tw=", present_w, " present_th=", present_h, " rb_bytes_per_frame=", present_w * present_h * 4, " lowres=", present_lowres)
 	print("GNE 020: rb_total_bytes=", reads * present_w * present_h * 4, " reads=", reads)
+	var pp: PackedFloat64Array = st["pass_cpu_us"]
+	var pnames: PackedStringArray = st["pass_names"]
+	var mf := maxi(1, MEASURE_FRAMES)
+	var parts := PackedStringArray()
+	for i in range(pp.size()):
+		parts.append(str(pnames[i]) + "=" + str(int(round(pp[i] / mf))))
+	print("GNE 020: pass_avg_us=", " ".join(parts))
+	print("GNE 020: seg_readback_avg_us=", int(seg_read_us / mf))
 	print("GNE 020: run_wall_ms=", run_wall)
 	# Low-res verification (only runs in lowres mode): the GPU blit must be
 	# the exact 2x2 box average of the full raster. Compares GPU output vs a

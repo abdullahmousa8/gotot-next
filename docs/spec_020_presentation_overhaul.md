@@ -169,8 +169,39 @@ here either way. [Executor reading under delegated authority; the intent line is
 Architect's to adjust.]
 
 **Open items after 020 (tracked):**
-- Staging / double-buffering work (D9-2, the C6 item) - unit 3.
+- Staging / double-buffering work (D9-2, the C6 item) - unit 3: COMPLETE, measured (section 14): no effect; item closed; code removed.
 - True zero-copy presentation (RHI-level integration) - future milestone; explicitly not
   claimed by this one.
 - Dense-light scenario re-test for the 018-rev `dc >= 10%` scale target (recorded
   deferral; seed: the benchmark-city work item).
+## 14. Unit 3 results - staging / double-buffering experiment (measured, 2026-09-28)
+
+**Experiments (flag-gated, measurement-only, unset in gates; REMOVED after measurement):**
+1. Deferred ping-pong readback (`GNE_PRESENT_DEFER`): frame N blits into texture A while
+   the readback takes texture B (frame N-1's result).
+2. Redundant-sync removal (`GNE_PRESENT_NOSYNC`): no sync after the blit dispatch,
+   relying on texture_get_data's flush to order it.
+
+**Results (lowres present, same scene; p50 us over 5 runs each):**
+
+| Config | p50 (runs 1-5) | median | seg_readback median |
+|---|---|---|---|
+| base (unit-2 path) | 8890 / 7142 / 8465 / 7718 / 7795 | 7795 | 3313 |
+| deferred ping-pong | 7434 / 8531 / 8964 / 7890 / 7212 | 7890 | 3292 |
+| no-sync blit | CRASH 0xC0000005 - 4/4 runs, inside the readback call (main_020.gd:145) | - | - |
+
+**Conclusions (measured, not assumed):**
+- Deferred double-buffering shows NO measurable effect (medians 7795 vs 7890 us - within
+  run noise): the readback's per-call flush waits for all submitted work regardless of
+  which texture is read, so deferral cannot skip the stall.
+- Sync elimination is INVALID in this fork: without the post-dispatch sync the readback
+  crashes (access violation, reproducible). The sync is load-bearing.
+- The per-call floor (~2.2 ms fixed + ~0.4 ms/MB from the decomposition) is engine-side
+  (the flush-and-stall inside texture_get_data); module-level double buffering does not
+  remove it.
+- Both experimental code paths were REMOVED from the module after measurement (no proven
+  benefit; a crashing path must not linger). The C6 parked item is closed with this
+  evidence: remaining levers are (a) reducing readback frequency (a presentation design
+  choice, not tested here) and (b) engine/RHI-level work (out of boundaries).
+- Decomposition tooling kept: main_020 prints `pass_avg_us` and `seg_readback_avg_us`
+  (evidence-only; never gated).

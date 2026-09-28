@@ -291,3 +291,10 @@ FIXED (gated), verified in R1.
 - median 7.58 · p95 ≈ 8.76 · max 8.76 · min 7.41.
 - البايتات/التشغيل: 7 قراءات × 8,294,400 = **58,060,800 B** (~55.4 MiB، بكسل فقط بلا عمق).
 - مُوسم صراحةً: wall-clock عملية، **ليس** زمن GPU (قاعدة KI-001).
+
+**020 unit-3 addendum (2026-09-28):** the parked double-buffering item was tested at
+module level (see spec_020 section 14): deferred ping-pong readback = no measurable
+effect (medians 7795 vs 7890 us, 5 runs each); sync removal = crash (invalid in this
+fork). The per-call readback floor is engine-side; both experimental paths were removed
+after measurement. C6 remains closed-as-accepted; zero-copy (RHI-level) stays a future
+item.
