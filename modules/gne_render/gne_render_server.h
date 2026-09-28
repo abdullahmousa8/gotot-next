@@ -226,6 +226,17 @@ class GneRenderServer : public Object {
 	RID light_cull_uniform_set;
 	RID light_overflow_buffer; // uint[1] per-cluster-cap overflow counter
 	RID cluster_cone_buffer;   // GNE-018-rev vec4[3456] cluster normal cones (0 = never cull)
+	RID light_cone_shader;
+	RID light_cone_pipeline;
+	RID light_cone_uniform_set;
+	RID light_cone_sampler;
+	RID cones_selftest_shader;
+	RID cones_selftest_pipeline;
+	RID cones_selftest_set;
+	RID cones_selftest_in_buffer;
+	RID cones_selftest_out_buffer;
+	int raster_epoch = 0; // GNE-018-rev: completed material raster count
+	int cone_src_epoch = 0; // raster_epoch sampled at the last cones build
 	int light_count = 0;
 	// GNE-018 cluster math inputs (captured in set_camera for cull + frag).
 	float cam_near_v = 300.0f;
@@ -722,6 +733,9 @@ public:
 	bool gpu_light_destroy(int p_id);
 	Dictionary gpu_light_get_stats();
 	PackedFloat32Array gpu_light_cone_read(int p_cluster); // GNE-018-rev tooling
+	bool gpu_light_cones_build(); // GNE-018-rev unit 2b
+	PackedInt32Array gpu_light_cone_epochs(); // {raster_epoch, cone_src_epoch}
+	PackedFloat32Array gpu_light_cones_selftest(int p_mode); // unit 2b isolation
 
 	// GNE-019: shadow maps + real-depth HZB flag (TEST-ONLY). p_type: 0 = CSM
 	// (res must be 2048), 1 = cube (1024), 2 = spot (2048). Returns a handle

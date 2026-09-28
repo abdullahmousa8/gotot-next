@@ -1005,6 +1005,303 @@ void main() {
 // (sorted by construction => DET-stable); the atomicAdd only hands out slots.
 // Conservative tests (may over-include, never wrongly exclude): over-inclusion
 // only costs shading, never correctness.
+// GNE-018-rev: SINGLE SOURCE of the cluster index selection (tile + euclidean
+// depth slice). Shared by the mat_light fragment shader and the cone pass so
+// the two sides cannot silently drift (D8-rev contract: divergence = over-cull).
+// frag_xy: gl_FragCoord-style pixel coords (y-down, centers at *.5);
+// z_view: euclidean camera distance; grid = (raster_w, raster_h, near, far).
+const char *gpu_cluster_index_glsl = R"(
+uint gne_cluster_index(vec2 frag_xy, float z_view, vec4 grid) {
+	float tx = clamp(floor(frag_xy.x / grid.x * 16.0), 0.0, 15.0);
+	float ty = clamp(8.0 - floor(frag_xy.y / grid.y * 9.0), 0.0, 8.0);
+	float lratio = grid.w / grid.z;
+	float tz = clamp(floor(24.0 * log(z_view / grid.z) / log(lratio)), 0.0, 23.0);
+	return uint(tz) * 144u + uint(ty) * 16u + uint(tx);
+}
+)";
+
+// GNE-018-rev: shared cone/light math in the light-cull frame (view space with
+// +z forward; the same flip the cull shader applies: vc = (v.xy, -v.z)).
+// The back-face dot convention is pinned by the unit-2b analytic selftest.
+const char *gpu_cone_math_glsl = R"(
+vec3 gne_cull_frame(vec3 view_vec) {
+	return vec3(view_vec.xy, -view_vec.z);
+}
+vec3 gne_normal_to_cull(mat4 view, vec3 n_world) {
+	return gne_cull_frame((view * vec4(n_world, 0.0)).xyz);
+}
+float gne_backface_dot(mat4 view, vec3 n_world, vec3 l_world, vec3 anchor_world) {
+	vec3 axis = gne_normal_to_cull(view, n_world);
+	vec3 lc = gne_cull_frame((view * vec4(l_world, 1.0)).xyz);
+	vec3 ac = gne_cull_frame((view * vec4(anchor_world, 1.0)).xyz);
+	vec3 to_l = lc - ac;
+	float dl = length(to_l);
+	if (dl < 1e-5) {
+		return 1.0;
+	}
+	return dot(to_l / dl, axis);
+}
+)";
+
+// GNE-018-rev: cluster normal-cone build pass. One thread owns one cluster
+// (3456 threads); a fixed-order serial scan over the cluster's raster tile
+// gives a bit-stable result (no atomics anywhere). Two passes: deterministic
+// axis reduction, then an EXACT min-dot over the same member set - identical
+// containment guarantee to the reference lab's construction. Membership uses
+// the shared gne_cluster_index (single source with the fragment) plus a small
+// conservative seam margin so float-split boundary pixels land in BOTH cones.
+const char *gpu_build_cones_glsl = R"(
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform ConeParams {
+	vec4 cam_pos; // xyz = camera world position (same value as the mat_light push)
+	vec4 grid;    // x = raster_w, y = raster_h, z = near, w = far
+}
+params;
+
+layout(set = 0, binding = 0) uniform sampler2D cone_normal_tex;
+layout(set = 0, binding = 1) uniform sampler2D cone_viewz_tex;
+
+layout(std430, set = 0, binding = 2) buffer ConeBuffer {
+	vec4 cones[];
+}
+conebuf;
+
+layout(std140, set = 0, binding = 3) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+const float SEAM_MARGIN = 2.0; // see contract: >> f32 drift, << slice widths
+
+float gne_euclid_dist(int px, int py, float lin) {
+	vec2 ndc = vec2((float(px) + 0.5) / params.grid.x * 2.0 - 1.0,
+			1.0 - (float(py) + 0.5) / params.grid.y * 2.0);
+	float tanv = viewdata.viewport.w;
+	float aspect = viewdata.viewport.x / viewdata.viewport.y;
+	float dx = ndc.x * aspect * tanv;
+	float dy = ndc.y * tanv;
+	return lin * sqrt(dx * dx + dy * dy + 1.0);
+}
+
+bool gne_member(int px, int py, uint tid, float s0, float s1, out float dist) {
+	float vz = texelFetch(cone_viewz_tex, ivec2(px, py), 0).r;
+	if (vz >= 0.0) {
+		return false; // cleared/empty (covered writes are negative)
+	}
+	dist = gne_euclid_dist(px, py, -vz);
+	uint cid = gne_cluster_index(vec2(float(px) + 0.5, float(py) + 0.5), dist, params.grid);
+	if (cid == tid) {
+		return true;
+	}
+	int d = int(cid) - int(tid);
+	if (d == -144 || d == 144) {
+		return (dist >= s0 - SEAM_MARGIN) && (dist <= s1 + SEAM_MARGIN);
+	}
+	return false;
+}
+
+void main() {
+	uint tid = gl_GlobalInvocationID.x;
+	if (tid >= 3456u) {
+		return;
+	}
+	uint tx = tid % 16u;
+	uint ty = (tid / 16u) % 9u;
+	uint tz = tid / 144u;
+	int px0 = int(tx) * 120;
+	int py0 = int(ty) * 120;
+	int wpx = int(params.grid.x);
+	int wpy = int(params.grid.y);
+	float lratio = params.grid.w / params.grid.z;
+	float s0 = params.grid.z * pow(lratio, float(tz) / 24.0);
+	float s1 = params.grid.z * pow(lratio, float(tz + 1u) / 24.0);
+	vec3 sum = vec3(0.0);
+	uint count = 0u;
+	for (int y = 0; y < 120; y++) {
+		int py = py0 + y;
+		if (py >= wpy) {
+			break;
+		}
+		for (int x = 0; x < 120; x++) {
+			int px = px0 + x;
+			if (px >= wpx) {
+				break;
+			}
+			float dist;
+			if (!gne_member(px, py, tid, s0, s1, dist)) {
+				continue;
+			}
+			vec3 nw = texelFetch(cone_normal_tex, ivec2(px, py), 0).xyz;
+			if (dot(nw, nw) < 0.25) {
+				continue; // unwritten attachment texel
+			}
+			sum += gne_normal_to_cull(viewdata.view, nw);
+			count += 1u;
+		}
+	}
+	if (count == 0u) {
+		conebuf.cones[tid] = vec4(0.0); // "never cull" sentinel
+		return;
+	}
+	float sl = length(sum);
+	if (sl < 1e-6) {
+		conebuf.cones[tid] = vec4(0.0);
+		return;
+	}
+	vec3 axis = sum / sl;
+	float mindp = 1.0;
+	for (int y = 0; y < 120; y++) {
+		int py = py0 + y;
+		if (py >= wpy) {
+			break;
+		}
+		for (int x = 0; x < 120; x++) {
+			int px = px0 + x;
+			if (px >= wpx) {
+				break;
+			}
+			float dist;
+			if (!gne_member(px, py, tid, s0, s1, dist)) {
+				continue;
+			}
+			vec3 nw = texelFetch(cone_normal_tex, ivec2(px, py), 0).xyz;
+			if (dot(nw, nw) < 0.25) {
+				continue;
+			}
+			mindp = min(mindp, dot(axis, gne_normal_to_cull(viewdata.view, nw)));
+		}
+	}
+	if (mindp <= 0.1) {
+		conebuf.cones[tid] = vec4(0.0); // incoherent -> never cull
+		return;
+	}
+	conebuf.cones[tid] = vec4(axis, mindp);
+}
+)";
+
+// GNE-018-rev: isolation-test compute (unit 2b). Modes:
+//  1: slice formula cross-check - shared gne_cluster_index vs a character-exact
+//     copy of the pre-refactor fragment lines, same inputs.
+//  2: back-face transform analytic cases (identity/rotations), outputs the
+//     gne_backface_dot value and the transformed axis length.
+//  3: cull-side AABB replica (verbatim math of gpu_light_cull_glsl lines
+//     1076-1084) vs the fragment-side slice for the same view-space point.
+const char *gpu_cones_selftest_glsl = R"(
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform TestParams {
+	uint mode;
+	uint count;
+}
+params;
+
+layout(std430, set = 0, binding = 0) buffer TestIn {
+	float inp[];
+}
+tin;
+
+layout(std430, set = 0, binding = 1) buffer TestOut {
+	float outp[];
+}
+tout;
+
+// Literal reference (pre-refactor fragment lines, character-exact). Kept only
+// so the isolation test compares the shared helper against the original math
+// on identical inputs (a passing helper alone would not catch a shared drift).
+uint gne_cluster_index_literal(vec2 frag_xy, float z_view, vec4 grid) {
+	float tx = clamp(floor(frag_xy.x / grid.x * 16.0), 0.0, 15.0);
+	float ty = clamp(8.0 - floor(frag_xy.y / grid.y * 9.0), 0.0, 8.0);
+	float lratio = grid.w / grid.z;
+	float tz = clamp(floor(24.0 * log(z_view / grid.z) / log(lratio)), 0.0, 23.0);
+	return uint(tz) * 144u + uint(ty) * 16u + uint(tx);
+}
+
+void main() {
+	uint i = gl_GlobalInvocationID.x;
+	if (i >= params.count) {
+		return;
+	}
+	if (params.mode == 1u) {
+		uint base = i * 7u;
+		vec2 fxy = vec2(tin.inp[base], tin.inp[base + 1u]);
+		vec4 grid = vec4(tin.inp[base + 2u], tin.inp[base + 3u], tin.inp[base + 4u], tin.inp[base + 5u]);
+		float z = tin.inp[base + 6u];
+		tout.outp[i * 2u + 0u] = float(gne_cluster_index(fxy, z, grid));
+		tout.outp[i * 2u + 1u] = float(gne_cluster_index_literal(fxy, z, grid));
+	} else if (params.mode == 2u) {
+		uint base = i * 28u;
+		mat4 view = mat4(
+			vec4(tin.inp[base + 0u], tin.inp[base + 1u], tin.inp[base + 2u], tin.inp[base + 3u]),
+			vec4(tin.inp[base + 4u], tin.inp[base + 5u], tin.inp[base + 6u], tin.inp[base + 7u]),
+			vec4(tin.inp[base + 8u], tin.inp[base + 9u], tin.inp[base + 10u], tin.inp[base + 11u]),
+			vec4(tin.inp[base + 12u], tin.inp[base + 13u], tin.inp[base + 14u], tin.inp[base + 15u]));
+		vec3 nw = vec3(tin.inp[base + 16u], tin.inp[base + 17u], tin.inp[base + 18u]);
+		vec3 lw = vec3(tin.inp[base + 20u], tin.inp[base + 21u], tin.inp[base + 22u]);
+		vec3 aw = vec3(tin.inp[base + 24u], tin.inp[base + 25u], tin.inp[base + 26u]);
+		tout.outp[i * 2u + 0u] = gne_backface_dot(view, nw, lw, aw);
+		tout.outp[i * 2u + 1u] = length(gne_normal_to_cull(view, nw));
+	} else {
+		uint base = i * 12u;
+		float fx = tin.inp[base + 0u];
+		float fy = tin.inp[base + 1u];
+		float W = tin.inp[base + 2u];
+		float H = tin.inp[base + 3u];
+		float near = tin.inp[base + 4u];
+		float far = tin.inp[base + 5u];
+		float tanv = tin.inp[base + 6u];
+		float aspect = tin.inp[base + 7u];
+		float e_e = tin.inp[base + 8u];
+		float xl = tin.inp[base + 9u];
+		float yl = tin.inp[base + 10u];
+		float zl = tin.inp[base + 11u];
+		uint cid = gne_cluster_index(vec2(fx, fy), e_e, vec4(W, H, near, far));
+		uint ctx = cid % 16u;
+		uint cty = (cid / 16u) % 9u;
+		uint ctz = cid / 144u;
+		float lratio = far / near;
+		float z0 = near * pow(lratio, float(ctz) / 24.0);
+		float z1 = near * pow(lratio, float(ctz + 1u) / 24.0);
+		float nx0 = float(ctx) / 16.0 * 2.0 - 1.0;
+		float nx1 = float(ctx + 1u) / 16.0 * 2.0 - 1.0;
+		float ny0 = float(cty) / 9.0 * 2.0 - 1.0;
+		float ny1 = float(cty + 1u) / 9.0 * 2.0 - 1.0;
+		vec3 bmin = vec3(nx0 * z1 * tanv * aspect, ny0 * z1 * tanv, z0);
+		vec3 bmax = vec3(nx1 * z1 * tanv * aspect, ny1 * z1 * tanv, z1);
+		vec3 p = vec3(xl, yl, zl);
+		bool inb = all(greaterThanEqual(p, bmin)) && all(lessThanEqual(p, bmax));
+		tout.outp[i * 5u + 0u] = float(cid);
+		tout.outp[i * 5u + 1u] = z0;
+		tout.outp[i * 5u + 2u] = z1;
+		tout.outp[i * 5u + 3u] = inb ? 1.0 : 0.0;
+		tout.outp[i * 5u + 4u] = z0 - zl;
+	}
+}
+)";
+
+// GNE-018-rev: build-time injection of the shared GLSL pieces. The single
+// source lives in gpu_cluster_index_glsl / gpu_cone_math_glsl; shaders consume
+// it via this replace so no consumer carries a private copy (besides the
+// selftest's explicitly-labelled pre-refactor reference).
+static String _gne_glsl_with_shared(const char *p_src, bool p_with_cone_math) {
+	String s = String(p_src);
+	String shared = String(gpu_cluster_index_glsl);
+	if (p_with_cone_math) {
+		shared += String(gpu_cone_math_glsl);
+	}
+	return s.replace("#version 450", String("#version 450\n") + shared);
+}
 const char *gpu_light_cull_glsl = R"(
 #version 450
 
@@ -1421,13 +1718,13 @@ void main() {
 		// Y MUST be flipped: gl_FragCoord row 0 is the framebuffer TOP, which
 		// is NDC +y, i.e. cull row 8 (cull rows are NDC-bottom-up). Without
 		// the flip the frag reads mirrored, mostly-empty clusters.
-		float tx = clamp(floor(gl_FragCoord.x / params.grid_dims.x * 16.0), 0.0, 15.0);
-		float ty = clamp(8.0 - floor(gl_FragCoord.y / params.grid_dims.y * 9.0), 0.0, 8.0);
-		vec3 vvc = (params.cam_pos.xyz - v_world);
-		float z_view = length(vvc);
-		float lratio = params.grid_dims.w / params.grid_dims.z;
-		float tz = clamp(floor(24.0 * log(z_view / params.grid_dims.z) / log(lratio)), 0.0, 23.0);
-		uint cid = uint(tz) * 144u + uint(ty) * 16u + uint(tx);
+		float z_view = length(params.cam_pos.xyz - v_world);
+		// GNE-018-rev: single-source slice helper (same math as the lines it
+		// replaces; D8-rev contract forbids divergent copies).
+		uint cid = gne_cluster_index(gl_FragCoord.xy, z_view, params.grid_dims);
+
+
+
 		uint coff = cid * 16u;
 		uint ccnt = clcnt.cnt[cid];
 		for (uint j = 0u; j < ccnt && j < 64u; j++) {
@@ -2311,6 +2608,9 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_light_destroy", "id"), &GneRenderServer::gpu_light_destroy);
 	ClassDB::bind_method(D_METHOD("gpu_light_get_stats"), &GneRenderServer::gpu_light_get_stats);
 	ClassDB::bind_method(D_METHOD("gpu_light_cone_read", "cluster"), &GneRenderServer::gpu_light_cone_read);
+	ClassDB::bind_method(D_METHOD("gpu_light_cones_build"), &GneRenderServer::gpu_light_cones_build);
+	ClassDB::bind_method(D_METHOD("gpu_light_cone_epochs"), &GneRenderServer::gpu_light_cone_epochs);
+	ClassDB::bind_method(D_METHOD("gpu_light_cones_selftest", "mode"), &GneRenderServer::gpu_light_cones_selftest);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_light_bind", "light_id", "shadow_id"), &GneRenderServer::gpu_shadow_light_bind);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_cull_dispatch"), &GneRenderServer::gpu_shadow_cull_dispatch);
@@ -5835,6 +6135,7 @@ bool GneRenderServer::gpu_material_draw() {
 	rendering_device->sync();
 
 	mat_dispatches++;
+	raster_epoch++;
 	return true;
 }
 
@@ -6329,7 +6630,7 @@ bool GneRenderServer::_light_ensure_geo() {
 		return false;
 	}
 	Vector<uint8_t> frag_spirv = rendering_device->shader_compile_spirv_from_source(
-			RD::SHADER_STAGE_FRAGMENT, String(gpu_mat_light_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+			RD::SHADER_STAGE_FRAGMENT, _gne_glsl_with_shared(gpu_mat_light_frag_glsl, false), RD::SHADER_LANGUAGE_GLSL, &error);
 	if (frag_spirv.is_empty()) {
 		print_error("[GNE] light fragment shader compile failed:");
 		print_error(error);
@@ -7973,6 +8274,7 @@ bool GneRenderServer::gpu_material_draw_lights() {
 	rendering_device->sync();
 
 	mat_dispatches++;
+	raster_epoch++;
 	return true;
 }
 
@@ -7996,6 +8298,271 @@ PackedFloat32Array GneRenderServer::gpu_light_cone_read(int p_cluster) {
 	}
 	return out;
 }
+
+	// GNE-018-rev: build the per-cluster normal cones from the last completed
+	// raster (normal + viewz attachments; one fixed-order thread per cluster;
+	// no atomics -> bit-stable). Structural 1-frame lag: built after a raster,
+	// consumed by a later frame (R7 gate; see gpu_light_cone_epochs).
+	bool GneRenderServer::gpu_light_cones_build() {
+		if (!gpu_light_valid || cluster_cone_buffer.is_null()) {
+			print_error("[GNE] gpu_light_cones_build: no light store. Call gpu_light_create first.");
+			return false;
+		}
+		if (!gpu_raster_valid) {
+			print_error("[GNE] gpu_light_cones_build: no raster.");
+			return false;
+		}
+		if (light_cone_pipeline.is_null()) {
+			String error;
+			Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
+					RD::SHADER_STAGE_COMPUTE, _gne_glsl_with_shared(gpu_build_cones_glsl, true),
+					RD::SHADER_LANGUAGE_GLSL, &error);
+			if (spirv.is_empty()) {
+				print_error("[GNE] cones shader compile failed:");
+				print_error(error);
+				return false;
+			}
+			Vector<RD::ShaderStageSPIRVData> stages;
+			RD::ShaderStageSPIRVData cs;
+			cs.shader_stage = RD::SHADER_STAGE_COMPUTE;
+			cs.spirv = spirv;
+			stages.push_back(cs);
+			light_cone_shader = rendering_device->shader_create_from_spirv(stages, "gne_build_cones");
+			if (light_cone_shader.is_null()) {
+				print_error("[GNE] cones shader_create failed.");
+				return false;
+			}
+			light_cone_pipeline = rendering_device->compute_pipeline_create(light_cone_shader);
+			if (light_cone_pipeline.is_null()) {
+				print_error("[GNE] cones pipeline_create failed.");
+				return false;
+			}
+			RD::SamplerState ss;
+			light_cone_sampler = rendering_device->sampler_create(ss);
+			if (light_cone_sampler.is_null()) {
+				print_error("[GNE] cones sampler_create failed.");
+				return false;
+			}
+			Vector<RD::Uniform> cu;
+			RD::Uniform u0;
+			u0.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+			u0.binding = 0;
+			u0.append_id(light_cone_sampler);
+			u0.append_id(raster_normal_texture);
+			cu.push_back(u0);
+			RD::Uniform u1;
+			u1.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+			u1.binding = 1;
+			u1.append_id(light_cone_sampler);
+			u1.append_id(raster_viewz_texture);
+			cu.push_back(u1);
+			RD::Uniform u2;
+			u2.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+			u2.binding = 2;
+			u2.append_id(cluster_cone_buffer);
+			cu.push_back(u2);
+			RD::Uniform u3;
+			u3.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+			u3.binding = 3;
+			u3.append_id(view_ubo);
+			cu.push_back(u3);
+			light_cone_uniform_set = rendering_device->uniform_set_create(cu, light_cone_shader, 0);
+			if (light_cone_uniform_set.is_null()) {
+				print_error("[GNE] cones uniform_set_create failed.");
+				return false;
+			}
+		}
+		struct ConePush {
+			float cam[4];
+			float grid[4];
+		};
+		ConePush cp;
+		cp.cam[0] = meshlet_camera_position[0];
+		cp.cam[1] = meshlet_camera_position[1];
+		cp.cam[2] = meshlet_camera_position[2];
+		cp.cam[3] = 0.0f;
+		cp.grid[0] = 1920.0f;
+		cp.grid[1] = 1080.0f;
+		cp.grid[2] = cam_near_v;
+		cp.grid[3] = far_plane;
+		_run_compute_pass(light_cone_pipeline, light_cone_uniform_set, &cp, sizeof(cp), 54, 1, 1);
+		cone_src_epoch = raster_epoch;
+		return true;
+	}
+
+	// GNE-018-rev: {raster_epoch, cone_src_epoch} - the R7 frame-delta evidence.
+	PackedInt32Array GneRenderServer::gpu_light_cone_epochs() {
+		PackedInt32Array out;
+		out.append(raster_epoch);
+		out.append(cone_src_epoch);
+		return out;
+	}
+
+	// GNE-018-rev unit-2b isolation selftest. Returns [count, in_stride, out_stride,
+	// inputs..., outputs...] so the caller can verify expectations independently.
+	// Mode 1: slice cross-check (7 in / 2 out) - shared helper vs the literal
+	// pre-refactor fragment lines on identical inputs. Mode 2: back-face analytic
+	// cases (28 in / 2 out). Mode 3: cull-AABB replica vs fragment slice (12 in / 5 out).
+	PackedFloat32Array GneRenderServer::gpu_light_cones_selftest(int p_mode) {
+		PackedFloat32Array out;
+		if (rendering_device == nullptr) {
+			return out;
+		}
+		if (cones_selftest_pipeline.is_null()) {
+			String error;
+			Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
+					RD::SHADER_STAGE_COMPUTE, _gne_glsl_with_shared(gpu_cones_selftest_glsl, true),
+					RD::SHADER_LANGUAGE_GLSL, &error);
+			if (spirv.is_empty()) {
+				print_error("[GNE] selftest shader compile failed:");
+				print_error(error);
+				return out;
+			}
+			Vector<RD::ShaderStageSPIRVData> stages;
+			RD::ShaderStageSPIRVData cs;
+			cs.shader_stage = RD::SHADER_STAGE_COMPUTE;
+			cs.spirv = spirv;
+			stages.push_back(cs);
+			cones_selftest_shader = rendering_device->shader_create_from_spirv(stages, "gne_cones_selftest");
+			cones_selftest_pipeline = rendering_device->compute_pipeline_create(cones_selftest_shader);
+			cones_selftest_in_buffer = rendering_device->storage_buffer_create(65536);
+			cones_selftest_out_buffer = rendering_device->storage_buffer_create(65536);
+			if (cones_selftest_pipeline.is_null() || cones_selftest_in_buffer.is_null() || cones_selftest_out_buffer.is_null()) {
+				print_error("[GNE] selftest create failed.");
+				return out;
+			}
+			Vector<RD::Uniform> cu;
+			RD::Uniform u0;
+			u0.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+			u0.binding = 0;
+			u0.append_id(cones_selftest_in_buffer);
+			cu.push_back(u0);
+			RD::Uniform u1;
+			u1.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+			u1.binding = 1;
+			u1.append_id(cones_selftest_out_buffer);
+			cu.push_back(u1);
+			cones_selftest_set = rendering_device->uniform_set_create(cu, cones_selftest_shader, 0);
+			if (cones_selftest_set.is_null()) {
+				print_error("[GNE] selftest set create failed.");
+				return out;
+			}
+		}
+		Vector<float> cases;
+		int count = 0;
+		int in_stride = 0;
+		int out_stride = 0;
+		if (p_mode == 1) {
+			static const float kW = 1920.0f, kH = 1080.0f, kNear = 300.0f, kFar = 4000.0f;
+			static const float kCases[][2] = {
+				{ 0.5f, 300.0f }, { 0.5f, 1095.4f }, { 0.5f, 3999.9f },
+				{ 1919.5f, 300.0f }, { 1919.5f, 1095.4f }, { 1919.5f, 4000.1f },
+				{ 960.5f, 300.0f }, { 960.5f, 4000.1f }, { 119.5f, 800.0f },
+				{ 120.5f, 800.0f }, { 959.5f, 2000.0f }, { 960.5f, 2000.0f },
+				{ 960.5f, 119.5f }, { 960.5f, 120.5f }, { 1919.5f, 0.5f },
+				{ 0.5f, 1079.5f }, { 960.5f, 573.45f }, { 960.5f, 573.55f },
+				{ 300.5f, 2400.0f }, { 1500.5f, 3200.0f }, { 960.5f, 1095.4f },
+				{ 960.5f, 1095.45f }, { 1800.5f, 3400.0f }, { 100.5f, 300.5f }
+			};
+			for (int i = 0; i < 24; i++) {
+				cases.push_back(kCases[i][0]);
+				cases.push_back(kCases[i][1]);
+				cases.push_back(kW);
+				cases.push_back(kH);
+				cases.push_back(kNear);
+				cases.push_back(kFar);
+				cases.push_back(kCases[i][1]);
+			}
+			count = 24; in_stride = 7; out_stride = 2;
+		} else if (p_mode == 2) {
+			static const float kI[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+			static const float kRY90[16] = { 0,0,-1,0, 0,1,0,0, 1,0,0,0, 0,0,0,1 };
+			static const float kRX90[16] = { 1,0,0,0, 0,0,-1,0, 0,1,0,0, 0,0,0,1 };
+			static const float kRY45[16] = { 0.7071f,0,-0.7071f,0, 0,1,0,0, 0.7071f,0,0.7071f,0, 5,6,7,1 };
+			static const float kT4[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 10,20,30,1 };
+			struct Case2 { const float *v; float n[3]; float l[3]; float a[3]; };
+			static const Case2 kCases[] = {
+				{ kI, { 0,1,0 }, { 0,10,0 }, { 0,0,0 } },
+				{ kI, { 0,1,0 }, { 0,-10,0 }, { 0,0,0 } },
+				{ kI, { 1,0,0 }, { 10,0,0 }, { 0,0,0 } },
+				{ kRY90, { 1,0,0 }, { 0,0,10 }, { 0,0,0 } },
+				{ kRY90, { 0,0,1 }, { 10,0,0 }, { 0,0,0 } },
+				{ kRX90, { 0,1,0 }, { 0,0,10 }, { 0,0,0 } },
+				{ kRY45, { 0,1,0 }, { 0,50,0 }, { 0,0,0 } },
+				{ kT4, { 0,0,-1 }, { 10,20,29 }, { 10,20,30 } }
+			};
+			for (int i = 0; i < 8; i++) {
+				for (int j = 0; j < 16; j++) { cases.push_back(kCases[i].v[j]); }
+				cases.push_back(kCases[i].n[0]); cases.push_back(kCases[i].n[1]); cases.push_back(kCases[i].n[2]); cases.push_back(0.0f);
+				cases.push_back(kCases[i].l[0]); cases.push_back(kCases[i].l[1]); cases.push_back(kCases[i].l[2]); cases.push_back(0.0f);
+				cases.push_back(kCases[i].a[0]); cases.push_back(kCases[i].a[1]); cases.push_back(kCases[i].a[2]); cases.push_back(0.0f);
+			}
+			count = 8; in_stride = 28; out_stride = 2;
+		} else {
+			static const float kTiles[3][2] = { { 5.5f, 1075.5f }, { 60.5f, 1020.5f }, { 1914.5f, 60.5f } };
+			static const float kPix[3][2] = { { 5.5f, 1075.5f }, { 960.5f, 540.5f }, { 1860.5f, 60.5f } };
+			static const float kE[2] = { 750.0f, 2500.0f };
+			float tanv = tan(60.0f * 3.14159265358979f / 360.0f);
+			float aspect = 1920.0f / 1080.0f;
+			for (int t = 0; t < 3; t++) {
+				for (int p = 0; p < 3; p++) {
+					if (t == 0 && p > 0) { continue; }
+					float fx = kPix[p][0];
+					float fy = kPix[p][1];
+					float ndx = fx / 1920.0f * 2.0f - 1.0f;
+					float ndy = 1.0f - fy / 1080.0f * 2.0f;
+					float dx = ndx * aspect * tanv;
+					float dy = ndy * tanv;
+					float nrm = sqrt(dx * dx + dy * dy + 1.0f);
+					for (int eI = 0; eI < 2; eI++) {
+						float e = kE[eI];
+						cases.push_back(fx); cases.push_back(fy);
+						cases.push_back(1920.0f); cases.push_back(1080.0f);
+						cases.push_back(300.0f); cases.push_back(4000.0f);
+						cases.push_back(tanv); cases.push_back(aspect);
+						cases.push_back(e);
+						cases.push_back(e * dx / nrm);
+						cases.push_back(e * dy / nrm);
+						cases.push_back(e / nrm);
+						count++;
+					}
+				}
+			}
+			in_stride = 12; out_stride = 5;
+			// (tile table kept for source parity with the analytic plan; the per-case
+			//  input already encodes the pixel the fragment would use.)
+		}
+		if (count == 0) {
+			return out;
+		}
+		rendering_device->buffer_update(cones_selftest_in_buffer, 0, (uint32_t)(cases.size() * 4), cases.ptr());
+		struct TestPush {
+			uint32_t mode;
+			uint32_t count;
+		};
+		TestPush tp;
+		tp.mode = (uint32_t)p_mode;
+		tp.count = (uint32_t)count;
+		_run_compute_pass(cones_selftest_pipeline, cones_selftest_set, &tp, sizeof(tp), (count + 63) / 64, 1, 1);
+		Vector<uint8_t> inb = rendering_device->buffer_get_data(cones_selftest_in_buffer, 0, (uint32_t)(cases.size() * 4));
+		Vector<uint8_t> ob = rendering_device->buffer_get_data(cones_selftest_out_buffer, 0, (uint32_t)(count * out_stride * 4));
+		if (inb.size() != (int)(cases.size() * 4) || ob.size() != count * out_stride * 4) {
+			print_error("[GNE] selftest readback size mismatch.");
+			return out;
+		}
+		out.append((float)count);
+		out.append((float)in_stride);
+		out.append((float)out_stride);
+		const float *inf = (const float *)inb.ptr();
+		for (int i = 0; i < (int)(cases.size()); i++) {
+			out.append(inf[i]);
+		}
+		const float *of = (const float *)ob.ptr();
+		for (int i = 0; i < count * out_stride; i++) {
+			out.append(of[i]);
+		}
+		return out;
+	}
 
 PackedInt32Array GneRenderServer::gpu_light_debug_cluster(int p_tx, int p_ty, int p_tz) {
 	PackedInt32Array ret;

@@ -247,3 +247,119 @@ func _run() -> void:
 	var c3455 := server.gpu_light_cone_read(3455)
 	var cbad := server.gpu_light_cone_read(3456)
 	print("R0CHK|E|cone0=", c0, "|cone3455=", c3455, "|cone3456_size=", cbad.size())
+
+	# F: unit-2b isolation tests + cone build evidence
+	_f_run_mode(1)
+	_f_run_mode(2)
+	_f_run_mode(3)
+	if not server.gpu_light_cones_build():
+		print("R0CHK|F4|cones_build FAILED")
+	else:
+		var nonzero := 0
+		var bad := 0
+		var first := PackedFloat32Array()
+		var c := 0
+		while c < 3456:
+			var rec := server.gpu_light_cone_read(c)
+			if rec.size() == 4:
+				var w: float = rec[3]
+				if w != 0.0:
+					nonzero += 1
+					var axl := sqrt(rec[0] * rec[0] + rec[1] * rec[1] + rec[2] * rec[2])
+					if w < 0.1 or w > 1.0 or absf(axl - 1.0) > 0.01:
+						bad += 1
+					if first.is_empty():
+						first = rec
+					if nonzero <= 4:
+						print("R0CHK|F4|cone[", c, "]=", rec)
+			c += 1
+		print("R0CHK|F4|cones full_scan nonzero=", nonzero, " bad=", bad, " first=", first)
+		var vzp := server.gpu_raster_read_viewz(968, 545)
+		var lin := -vzp
+		var ndx := 968.5 / 1920.0 * 2.0 - 1.0
+		var ndy := 1.0 - 545.5 / 1080.0 * 2.0
+		var tanv := tan(60.0 * PI / 360.0)
+		var aspect := 1920.0 / 1080.0
+		var dxv := ndx * aspect * tanv
+		var dyv := ndy * tanv
+		var edist := lin * sqrt(dxv * dxv + dyv * dyv + 1.0)
+		var pcid := _f_mode1_expected(968.5, 545.5, 1920.0, 1080.0, 1.0, 6000.0, edist)
+		var prc := server.gpu_light_cone_read(pcid)
+		print("R0CHK|F5|probe vz=", vzp, " edist=", edist, " pcid=", pcid, " cone=", prc)
+		var ep := server.gpu_light_cone_epochs()
+		print("R0CHK|F4|epochs raster=", ep[0], " cone_src=", ep[1])
+		server.gpu_material_draw()
+		server.gpu_light_cones_build()
+		var ep2 := server.gpu_light_cone_epochs()
+		print("R0CHK|F4|epochs2 raster=", ep2[0], " cone_src=", ep2[1], " age_at_build=", ep2[0] - ep2[1])
+func _f_mv(view16: PackedFloat32Array, v: Vector3, is_point: bool) -> Vector3:
+	var w := 1.0 if is_point else 0.0
+	var x: float = view16[0] * v.x + view16[4] * v.y + view16[8] * v.z + view16[12] * w
+	var y: float = view16[1] * v.x + view16[5] * v.y + view16[9] * v.z + view16[13] * w
+	var z: float = view16[2] * v.x + view16[6] * v.y + view16[10] * v.z + view16[14] * w
+	return Vector3(x, y, z)
+
+func _f_flip(v: Vector3) -> Vector3:
+	return Vector3(v.x, v.y, -v.z)
+
+func _f_mode1_expected(fx: float, fy: float, W: float, H: float, nr: float, far: float, z: float) -> int:
+	var tx := clampf(floor(fx / W * 16.0), 0.0, 15.0)
+	var ty := clampf(8.0 - floor(fy / H * 9.0), 0.0, 8.0)
+	var lratio := far / nr
+	var tz := clampf(floor(24.0 * log(z / nr) / log(lratio)), 0.0, 23.0)
+	return int(tz) * 144 + int(ty) * 16 + int(tx)
+
+func _f_run_mode(md: int) -> void:
+	var res := server.gpu_light_cones_selftest(md)
+	if res.size() < 3:
+		print("R0CHK|F|mode=", md, " EMPTY (size=", res.size(), ")")
+		return
+	var cnt := int(res[0])
+	var ins := int(res[1])
+	var outs := int(res[2])
+	var n_in := cnt * ins
+	if md == 1:
+		var mismatch := 0
+		for i in cnt:
+			var b := 3 + i * ins
+			var ob := 3 + n_in + i * outs
+			var helper := int(res[ob])
+			var literal := int(res[ob + 1])
+			var expected := _f_mode1_expected(res[b], res[b + 1], res[b + 2], res[b + 3], res[b + 4], res[b + 5], res[b + 6])
+			if helper != literal or helper != expected:
+				mismatch += 1
+				print("R0CHK|F1|MISMATCH case=", i, " fx=", res[b], " fy=", res[b + 1], " z=", res[b + 6], " helper=", helper, " literal=", literal, " expected=", expected)
+		print("R0CHK|F1|slice_crosscheck cases=", cnt, " mismatches=", mismatch)
+	elif md == 2:
+		var maxerr := 0.0
+		for i in cnt:
+			var b := 3 + i * ins
+			var v16 := PackedFloat32Array()
+			for j in 16:
+				v16.append(res[b + j])
+			var n := Vector3(res[b + 16], res[b + 17], res[b + 18])
+			var l := Vector3(res[b + 20], res[b + 21], res[b + 22])
+			var a := Vector3(res[b + 24], res[b + 25], res[b + 26])
+			var axis := _f_flip(_f_mv(v16, n, false))
+			var to_l := _f_flip(_f_mv(v16, l, true)) - _f_flip(_f_mv(v16, a, true))
+			var dl := to_l.length()
+			var expected := 1.0
+			if dl >= 1e-5:
+				expected = (to_l / dl).dot(axis)
+			var ob := 3 + n_in + i * outs
+			var got := res[ob]
+			var err2 := absf(got - expected)
+			if err2 > maxerr:
+				maxerr = err2
+			if err2 > 0.0005:
+				print("R0CHK|F2|ERR case=", i, " got=", got, " expected=", expected)
+		print("R0CHK|F2|backface cases=", cnt, " max_err=", maxerr)
+	else:
+		var not_in := 0
+		for i in cnt:
+			var ob := 3 + n_in + i * outs
+			if res[ob + 3] < 0.5:
+				not_in += 1
+			if i < 6:
+				print("R0CHK|F3|case=", i, " cid=", int(res[ob]), " z0=", res[ob + 1], " z1=", res[ob + 2], " in_box=", int(res[ob + 3]), " gap=", res[ob + 4])
+		print("R0CHK|F3|cull_vs_frag cases=", cnt, " not_in_box=", not_in)
