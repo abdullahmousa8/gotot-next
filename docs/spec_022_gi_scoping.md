@@ -327,3 +327,18 @@ no-visibility characteristic - range-plus-first-hit approximation - so a bounce-
 leak is consistent with the model's declared tier rather than an unexpected
 regression. A full stop would be disproportionate; the KI plus the honest status
 preserves both momentum and accuracy.)
+### 9.3.2 Gate run log (construction rounds, 2026-09-28) - FACTS ONLY
+
+- NEGATIVE test: PASS through 240 accumulation frames - deep-probe and mid-probe
+  readings are byte-literal 0.0 (direct B also 0.0; A zone lit at 1.61 raw). No leak:
+  the pre-registered 9.3.1 failure branch was NOT triggered.
+- POSITIVE test: bounce is measurable locally - the mid probe (1 cell behind the
+  boundary) rose from 0.00614 (direct) to 0.00911 at 240 frames (+48% over direct).
+  The deep probe (2+ cells behind) read 0.0 within the 240-frame window; the
+  pre-computed interval check therefore did NOT pass. THE OFFICIAL GATE HAS NOT
+  PASSED YET; the "GI" label stays closed.
+- Candidate explanations (observed + candidate, NOT confirmed): (i) per-cell transport
+  decay is steeper than the coarse estimate; (ii) lattice-degenerate sampling - hit
+  points landing exactly on ground-plane lattice nodes self-sample (the y=0 row is
+  only weakly diffusive). To be diagnosed with targeted reads (next construction
+  round) BEFORE any official gate re-run: the acceptance criteria stay untouched.
