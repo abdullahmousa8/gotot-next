@@ -1,6 +1,6 @@
 # GNE-020 - Presentation Overhaul (Readback Bytes + Staging) - SPEC DRAFT v0.1
 
-**Status:** DRAFT v0.1 (2026-09-28) - awaiting Architect decision set D9 (safe defaults adopted for unit 1 - section 11). No module changes yet: unit 1 is the baseline measurement scene/harness only.
+**Status:** DRAFT v0.1 (2026-09-28) - D9 safe defaults adopted (section 11); units 1-2 executed (baseline + reduced-resolution path, section 12); readback framing per Architect directive (section 13); unit 3 (staging/double-buffering) next.
 **Depends:** 015.5 (Resource Pool), 015.6 (KI sprint), 009 (raster readback), 018 / 018-rev / 019 gates.
 **Closes (planned):** KI-003 follow-up (presentation cost floor) + 015.5 C6 double-buffering item (deferred here by contract_015_6_c6).
 **Scope guard:** presentation / readback path only. No engine edits (KI-001 / KI-002 / KI-003 consistency rule). No pixel-content change in any existing gated path: the reduced-resolution output lands only behind a new opt-in flag + new scene, so every legacy literal (v18, v18-rev, v19, ...) stays byte-exact.
@@ -149,3 +149,28 @@ Signatures: `v20|tw=1920|th=1080|rb=8294400|rf=60|d1` vs `v20|tw=960|th=540|rb=2
   sessions; the load-bearing comparison is same-session full vs reduced.
 - Not yet covered (remaining units): staging / double-buffering (D9-2 item), KI-003 + C6
   status updates, closure docs.
+## 13. Mitigation framing + scope intent (Architect-directed, 2026-09-28)
+
+**Readback problem status: MITIGATED, not solved.** Unit 2 reduced the presentation
+readback volume 4x (8,294,400 -> 2,073,600 bytes per frame) and measurably cut frame
+time (-43..-54% p50, same-session runs). It did NOT remove the CPU roundtrip: the pixels
+still travel GPU -> CPU (texture readback) on every measured frame, and no zero-copy
+path with `RenderingServer` exists in this milestone. Reading this as "the readback
+problem is solved" (the KI-011 style of misreading) is wrong: the remaining transfer cost
+and the zero-copy question stay open (open items below).
+
+**Scope intent of the reduced-resolution path (settled):** deliberate reduced-quality
+presentation - FINAL for this prototype track: a usable mode for preview/thumbnail-style
+output and the measurement vehicle that proves byte reduction moves wall time. It is NOT
+a general replacement for full-res presentation (default stays flag-off / full-res; every
+gated scene is untouched), and it is NOT presented as a bridge that makes zero-copy
+unnecessary - zero-copy is a separate future item with RHI scope, and no claim is made
+here either way. [Executor reading under delegated authority; the intent line is the
+Architect's to adjust.]
+
+**Open items after 020 (tracked):**
+- Staging / double-buffering work (D9-2, the C6 item) - unit 3.
+- True zero-copy presentation (RHI-level integration) - future milestone; explicitly not
+  claimed by this one.
+- Dense-light scenario re-test for the 018-rev `dc >= 10%` scale target (recorded
+  deferral; seed: the benchmark-city work item).
