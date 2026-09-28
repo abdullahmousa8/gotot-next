@@ -247,6 +247,17 @@ bool gne_present_lowres = false;
 	RID cones_selftest_set;
 	RID cones_selftest_in_buffer;
 	RID cones_selftest_out_buffer;
+// GNE-022 S1a: probe field (direct + occlusion; spec_022 section 8).
+RID gi_atlas;
+RID gi_trace_shader;
+RID gi_trace_pipeline;
+RID gi_trace_set;
+bool gne_gi_enabled = false;
+Vector3 gi_min;
+Vector3 gi_max;
+int gi_gx = 16;
+int gi_gy = 8;
+int gi_gz = 16;
 	int raster_epoch = 0; // GNE-018-rev: completed material raster count
 	int cone_src_epoch = 0; // raster_epoch sampled at the last cones build
 	int draw_frame_seq = 0;  // draw_lights invocations (R7 frame delta)
@@ -765,6 +776,12 @@ PackedByteArray gpu_present_read_pixels();
 // GNE-022 R0-RT: RD ray-tracing isolation test (test-only, additive).
 // Returns [status, hit_t, miss_marker, expected_t, bytes]; status 0 = pass.
 PackedFloat32Array gpu_rt_selftest();
+// GNE-022 S1: probe-based direct lighting + occlusion (NOT GI; section 8.1).
+bool gpu_gi_create(const Dictionary &p_cfg);
+void gpu_gi_enabled_set(bool p_enabled);
+Dictionary gpu_gi_info() const;
+bool gpu_gi_trace();
+PackedFloat32Array gpu_gi_read_avg(int p_probe);
 	void gpu_light_set_normal_cone(bool p_enabled); // GNE-018-rev
 	void gpu_light_cones_clear(); // GNE-018-rev tooling (A/B)
 

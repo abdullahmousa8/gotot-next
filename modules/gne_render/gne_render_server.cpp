@@ -2710,6 +2710,11 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_light_cone_epochs"), &GneRenderServer::gpu_light_cone_epochs);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_selftest", "mode"), &GneRenderServer::gpu_light_cones_selftest);
 	ClassDB::bind_method(D_METHOD("gpu_rt_selftest"), &GneRenderServer::gpu_rt_selftest);
+	ClassDB::bind_method(D_METHOD("gpu_gi_create", "config"), &GneRenderServer::gpu_gi_create);
+	ClassDB::bind_method(D_METHOD("gpu_gi_enabled_set", "enabled"), &GneRenderServer::gpu_gi_enabled_set);
+	ClassDB::bind_method(D_METHOD("gpu_gi_info"), &GneRenderServer::gpu_gi_info);
+	ClassDB::bind_method(D_METHOD("gpu_gi_trace"), &GneRenderServer::gpu_gi_trace);
+	ClassDB::bind_method(D_METHOD("gpu_gi_read_avg", "probe"), &GneRenderServer::gpu_gi_read_avg);
 	ClassDB::bind_method(D_METHOD("gpu_light_set_normal_cone", "enabled"), &GneRenderServer::gpu_light_set_normal_cone);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_clear"), &GneRenderServer::gpu_light_cones_clear);
 	ClassDB::bind_method(D_METHOD("gpu_shadow_map_create", "type", "resolution"), &GneRenderServer::gpu_shadow_map_create);
@@ -2905,6 +2910,25 @@ void GneRenderServer::_destroy_mesh() {
 	// mat_light_shader, which dies below (same auto-invalidate rule).
 	_destroy_shadow();
 	if (rendering_device != nullptr) {
+		// GNE-022 S1: free probe-field objects BEFORE their dependency buffers
+		// (light_buffer/transform_buffer) - the RD auto-invalidates sets whose
+		// dependencies are freed first (found by the S1a teardown probe).
+		if (gi_trace_set.is_valid()) {
+			rendering_device->free_rid(gi_trace_set);
+			gi_trace_set = RID();
+		}
+		if (gi_trace_pipeline.is_valid()) {
+			rendering_device->free_rid(gi_trace_pipeline);
+			gi_trace_pipeline = RID();
+		}
+		if (gi_trace_shader.is_valid()) {
+			rendering_device->free_rid(gi_trace_shader);
+			gi_trace_shader = RID();
+		}
+		if (gi_atlas.is_valid()) {
+			rendering_device->free_rid(gi_atlas);
+			gi_atlas = RID();
+		}
 		if (light_cull_uniform_set.is_valid()) {
 			rendering_device->free_rid(light_cull_uniform_set);
 			light_cull_uniform_set = RID();
