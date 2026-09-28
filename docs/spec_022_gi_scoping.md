@@ -507,3 +507,32 @@ Sampled 16 texels each of the deep-B, mid-M and near-A probes:
   continues under diagnostic item #2 (instrument the -700 row and the growth curves) -
   and the c-calibration itself (single M datum extrapolated over 2 more hops) becomes a
   candidate for the discrepancy rather than the gate.
+### 9.3.8 Multi-point chain measurement (Architect-ordered: measure c at EVERY cell) - RESULT
+
+Row ix=8, iy=1, iz=3..12 (z = -900..+900), after 240 frames, POS scene, ambient 0:
+
+| iz | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| raw | 0.0 | 0.0 | 0.00251 | 0.02935 | 0.08905 | 0.19763 | 0.45331 | 0.80571 | 1.05132 | 0.96005 |
+| fin | 0.0 | 1.51e-5 | 0.00394 | 0.04342 | 0.13299 | 0.29481 | 0.66635 | 1.17379 | 1.52194 | 1.39002 |
+
+Hop ratios toward B (fin): c(12->11)=1.095, 0.771, 0.568, 0.442, 0.451, 0.326, **0.091, 0.004, 0.000**.
+
+**Findings (observed):**
+1. c is NOT constant: the decay steepens systematically toward B, ending in a cliff at
+   the last hops (0.091, 0.004, 0.0) - i.e., NOT a clean exponential and NOT a single
+   hard gate either.
+2. Every intermediate cell gains a bounce echo over its raw (e.g., iz=6: 0.0293 ->
+   0.0434); iz=4 is created from NOTHING (raw 0.0 -> 1.51e-5) - transport demonstrably
+   reaches 1 cell short of the deep probe.
+3. Single-point calibration c=0.282 (9.3.6) is therefore REJECTED as invalid - exactly
+   the statistical hazard the Architect flagged. The ~1e5 "gap" was largely an artifact
+   of that extrapolation.
+
+**Candidate explanation (to verify next, NOT assumed):** temporal convergence delay -
+each hop of the cascade lags the previous one, so tail cells need far more than 240
+frames to approach their steady state; the spatial ratio measured at a fixed frame
+time mixes spatial decay with per-hop time lag and steepens toward the tail. Check:
+growth of the iz=4/iz=3 values over 1000+ frames (cheap - ~0.7 ms per frame).
+The official gate has no fixed N in its criteria (9.3), so a longer accumulation window
+is legitimate IF this candidate confirms.

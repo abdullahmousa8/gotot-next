@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://bgt022chain"]
+
+[ext_resource type="Script" path="res://main_022_chain.gd" id="1_chain"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_chain")
