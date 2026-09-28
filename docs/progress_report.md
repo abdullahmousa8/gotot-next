@@ -986,3 +986,15 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   soft-shadow work goes to VSM/EVSM (moments + blur). Clean negative result with
   reusable instruments; RFC updated with full evidence.
 - Commits: 40d9f00, 4ffc125, + implementation/results commit.
+## §47. GNE policy v2.0 formalized + CVS v1.1 (render diff + perf) + 016.5 opened (2026-09-29)
+
+- v2.0 directive executed: STEP 1 (KI-016/11-M1 parked, no loop), STEP 2 (CVS
+  extended), STEP 3 (next architecture milestone opened with a short RFC).
+- CVS v1.1: added golden render regression (main_018/main_019 vs stored PNGs,
+  SHA256 byte-compare) and perf baseline logging into the history row. First v1.1
+  run: 14/14 PASS (render_main_018/019 PASS; perf 020:24706/62867 - evidence).
+- Next architecture milestone: 016.5 Material System v2 (texture-driven albedo/
+  roughness/normal channels + proper triaxial triplanar; legacy-byte-identity
+  invariant; acceptance M1-M6 pre-registered in the RFC). Implementation begins
+  on presentation per v2.0.
+- Commits: golden+verifier v1.1, RFC 016.5.

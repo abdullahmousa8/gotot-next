@@ -51,6 +51,21 @@ Record 'gi_gate2' $ok ''
 & $exe --path $proj --rendering-method forward_plus res://main_022_shade.tscn > (Join-Path $logDir 'gi_shade.log') 2>&1
 $ok = ((Select-String -LiteralPath (Join-Path $logDir 'gi_shade.log') -Pattern 'SHADE: GATE2 PASS' | Measure-Object).Count -ge 1)
 Record 'gi_shade' $ok ''
+# render regression: golden byte-compare (018 + 019)
+foreach ($gs in @(@('main_018','main_018.png'), @('main_019','main_019.png'))) {
+  $scene = $gs[0]
+  $gold = Join-Path $root ('tools\golden\' + $gs[1])
+  $cur = Join-Path $logDir ($scene + '_cur.png')
+  if (Test-Path $cur) { Remove-Item $cur }
+  & $exe --path $proj --rendering-method forward_plus ("res://" + $scene + ".tscn") -- ("--shot=" + $cur) > (Join-Path $logDir ($scene + '_render.log')) 2>&1
+  $ok = $false
+  if ((Test-Path $gold) -and (Test-Path $cur)) {
+    $h1 = (Get-FileHash $gold -Algorithm SHA256).Hash
+    $h2 = (Get-FileHash $cur -Algorithm SHA256).Hash
+    $ok = ($h1 -eq $h2)
+  }
+  Record ('render_' + $scene) $ok ''
+}
 # error scan
 $errs = @()
 Get-ChildItem (Join-Path $logDir '*.log') | ForEach-Object {
@@ -61,11 +76,16 @@ Record 'no_errors' ($errs.Count -eq 0) ($errs.Count.ToString() + ' error lines')
 # summary
 Write-Output '==== GNE VERIFY ===='
 $script:lines | ForEach-Object { Write-Output $_ }
+# perf baseline (020 wall times, evidence-only)
+$perf = ''
+$m20 = Select-String -LiteralPath (Join-Path $logDir 'gt_020a.log') -Pattern 'wall_avg_us=(\d+) wall_peak_us=(\d+)' | Select-Object -Last 1
+if ($m20) { $perf = ('020:' + $m20.Matches[0].Groups[1].Value + '/' + $m20.Matches[0].Groups[2].Value) }
+if ($perf -ne '') { Write-Output ('perf ' + $perf) }
 if ($script:overall) { Write-Output 'GNE_VERIFY: PASS' } else { Write-Output 'GNE_VERIFY: FAIL' }
 # history
 $commit = (& git -C $root rev-parse --short HEAD 2>$null)
 $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
 $compact = (($script:lines | ForEach-Object { $p = ($_ -split '\s+'); $p[0] + ':' + $p[1] }) -join ';')
-$row = ($stamp + "`t" + $commit + "`t" + $(if ($script:overall) { 'PASS' } else { 'FAIL' }) + "`t" + $compact)
+$row = ($stamp + "`t" + $commit + "`t" + $(if ($script:overall) { 'PASS' } else { 'FAIL' }) + "`t" + $compact + "`t" + $perf)
 [System.IO.File]::AppendAllText((Join-Path $root 'tools\verify_history.tsv'), ($row + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 if ($script:overall) { exit 0 } else { exit 1 }
