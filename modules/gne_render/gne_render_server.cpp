@@ -6903,11 +6903,22 @@ int GneRenderServer::gpu_shadow_map_create(int p_type, int p_resolution) {
 	}
 	// First create: shared resources (sampler, dummies, buffers, depth pipeline).
 	if (!gpu_shadow_valid) {
+		// KI-009: reuse-only. _shadow_ensure_set2 (the 018-safe lazy path) may
+		// have created these already; recreating orphaned them (1 Sampler + 2
+		// Textures + 1 StorageBuffer leaked per run).
 		RD::SamplerState ss; // nearest; texelFetch ignores filtering
-		shadow_sampler = rendering_device->sampler_create(ss);
-		shadow_dummy_tex = _shadow_make_r32(1, 1, false, 1, false);
-		shadow_dummy_arr = _shadow_make_r32(1, 1, true, 1, false);
-		shadow_dummy_buf = rendering_device->storage_buffer_create(4);
+		if (shadow_sampler.is_null()) {
+			shadow_sampler = rendering_device->sampler_create(ss);
+		}
+		if (shadow_dummy_tex.is_null()) {
+			shadow_dummy_tex = _shadow_make_r32(1, 1, false, 1, false);
+		}
+		if (shadow_dummy_arr.is_null()) {
+			shadow_dummy_arr = _shadow_make_r32(1, 1, true, 1, false);
+		}
+		if (shadow_dummy_buf.is_null()) {
+			shadow_dummy_buf = rendering_device->storage_buffer_create(4);
+		}
 		shadow_record_buffer = rendering_device->storage_buffer_create(GNE_SHADOW_MAX_BINDS * 416);
 		shadow_lut_buffer = rendering_device->storage_buffer_create(GNE_LIGHT_MAX * 4);
 		shadow_cull_planes_buffer = rendering_device->storage_buffer_create(GNE_SHADOW_MAX_BINDS * 6 * 16);
