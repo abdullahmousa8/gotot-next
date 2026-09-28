@@ -3058,14 +3058,20 @@ bool GototRenderServer::gpu_hzb_build() {
 	// Patch the shared view UBO for the production square grid on EVERY build
 	// (previously this was skipped entirely whenever !same_vp, so the reader
 	// never even saw the production texel count).
-	int32_t texel_count = HZB_PROD_TEXEL_COUNT;
+	// TYPE DISCIPLINE: viewport[] is float[4] in the UBO - writing int32 bits
+	// here stores 2.8e-42 (~0.0f), which collapses every level/texel computation
+	// in the phase-2 reader (observed: sim2 level=-138). Must write float.
+	float texel_count = (float)HZB_PROD_TEXEL_COUNT;
 	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
 	int32_t occ_count = occluder_count;
 	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &occ_count);
 
 	// Frame 1 only: no pyramid has been produced yet, so stay conservative
 	// (frustum-only). This is the single frame that is allowed to skip phase 2.
+	// Arm the temporal chain here: without this flag the second build below is
+	// unreachable and hzb_valid stays 0 forever (production occlusion never runs).
 	if (!hzb_pyramid_fresh) {
+		hzb_pyramid_fresh = true;
 		hzb_stable_frames = 1;
 		uint32_t zero = 0;
 		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, hzb_valid), 4, &zero);
@@ -3101,8 +3107,9 @@ bool GototRenderServer::gpu_visibility_prod_dispatch() {
 
 	// Patch the shared view UBO for the production square grid + the freshest
 	// occluder count (hzb_valid reflects what gpu_hzb_build left in the UBO).
+	// Same type discipline as gpu_hzb_build: viewport[] is float.
 	{
-		int32_t texel_count = HZB_PROD_TEXEL_COUNT;
+		float texel_count = (float)HZB_PROD_TEXEL_COUNT;
 		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &texel_count);
 		int32_t occ_count = occluder_count;
 		rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &occ_count);
@@ -4451,7 +4458,8 @@ bool GototRenderServer::gpu_mesh_batch_draw() {
 	// cross-submission - the ONE reliable GPU route in this RDG fork (R32
 	// attachment writes and compute-image loads are both stale). This draw
 	// submission only patches the shared view UBO; nothing pyramid-related.
-	int32_t otexel_count = HZB_PROD_TEXEL_COUNT;
+	// (the old code wrote int32 bits into this float field: 2.8e-42 reads as ~0).
+	float otexel_count = (float)HZB_PROD_TEXEL_COUNT;
 	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, viewport) + 2 * sizeof(float), 4, &otexel_count);
 	int32_t oocc_count = occluder_count;
 	rendering_device->buffer_update(view_ubo, offsetof(GototViewData, occ_count), 4, &oocc_count);
