@@ -855,6 +855,115 @@ void main() {
 }
 )";
 
+// GNE-016: material vertex shader. Same instance iteration as the batch path
+// (batch_instances + mesh_id + transform) plus the interpolated world position
+// the fragment needs for dFdx/dFdy face normals. Bindings 0-3 identical.
+const char *gpu_mat_batch_vert_glsl = R"(
+#version 450
+
+layout(location = 0) in vec3 vertex_position;
+
+layout(std430, set = 0, binding = 0) buffer BatchInstancesBuffer {
+	uint instances[];
+}
+batch_instances;
+
+layout(std430, set = 0, binding = 1) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std140, set = 0, binding = 2) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+layout(std430, set = 0, binding = 3) buffer MeshIdBuffer {
+	uint mesh_id[];
+}
+meshids;
+
+layout(location = 1) flat out uint v_mesh_id;
+layout(location = 0) out vec3 v_world;
+
+void main() {
+	uint orig = batch_instances.instances[gl_InstanceIndex];
+	uint m = meshids.mesh_id[orig];
+	vec4 ts = transforms.position_scale[orig];
+	vec3 world = ts.xyz + vertex_position * ts.w;
+	gl_Position = viewdata.vp * vec4(world, 1.0);
+	v_mesh_id = m;
+	v_world = world;
+}
+)";
+
+// GNE-016: material fragment shader (Lambert + Blinn-Phong, SPEC 016 section
+// 3.3). Face normals via derivatives (no normal attribute exists); backfaces
+// get diffuse/specular = 0 and emission only when explicitly enabled (D4-4).
+// Writes the same view-z attachment as the other raster paths so the shared
+// framebuffer attachments stay consistent.
+const char *gpu_mat_batch_frag_glsl = R"(
+#version 450
+
+layout(early_fragment_tests) in;
+
+layout(location = 1) flat in uint v_mesh_id;
+layout(location = 0) in vec3 v_world;
+
+layout(std430, set = 0, binding = 4) buffer MaterialBuffer {
+	vec4 mats[];
+}
+materials;
+
+layout(push_constant, std430) uniform MatParams {
+	vec4 light_dir_ambient;
+	vec4 cam_pos;
+	vec4 light_color;
+}
+params;
+
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out float out_view_z;
+
+void main() {
+	uint m = v_mesh_id * 4u;
+	vec3 albedo = materials.mats[m + 0u].rgb;
+	float rough = materials.mats[m + 0u].a;
+	vec3 emissive = materials.mats[m + 1u].rgb;
+	float metal = materials.mats[m + 1u].a;
+	vec3 spec_col = materials.mats[m + 2u].rgb;
+	float shiny = materials.mats[m + 2u].a;
+	vec4 flags = materials.mats[m + 3u];
+	vec3 N = normalize(cross(dFdx(v_world), dFdy(v_world)));
+	vec3 Vv = normalize(params.cam_pos.xyz - v_world);
+	vec3 emi = (flags.x > 0.5) ? emissive * flags.y : vec3(0.0);
+	if (dot(N, Vv) < 0.0) {
+		vec3 bem = (flags.z > 0.5) ? emi : vec3(0.0);
+		out_color = vec4(bem, 1.0);
+		out_view_z = -1.0 / gl_FragCoord.w;
+		return;
+	}
+	vec3 L = params.light_dir_ambient.xyz;
+	float AMB = params.light_dir_ambient.w;
+	float ndl = max(dot(N, L), 0.0);
+	vec3 diff = albedo * ndl * params.light_color.rgb;
+	vec3 H = normalize(L + Vv);
+	float shiny_eff = max(shiny * (1.2 - rough), 1.0);
+	float spec = pow(max(dot(N, H), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
+	vec3 sc = mix(spec_col, albedo, metal);
+	vec3 specular = spec * sc * params.light_color.rgb;
+	out_color = vec4(AMB * albedo + diff + specular + emi, 1.0);
+	out_view_z = -1.0 / gl_FragCoord.w;
+}
+)";
+
 // GNE-011: procedural (non-indexed) batch vertex shader used by the GROUPED /
 // REORDERED multi-batch draw. One VkDrawIndirectCommand covers every instance of
 // every member mesh of a group: command.vertexCount == the largest member
@@ -1500,6 +1609,15 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_order"), &GneRenderServer::gpu_mesh_get_batch_order);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_indirect_count"), &GneRenderServer::gpu_mesh_get_indirect_count);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_draw_call_count"), &GneRenderServer::gpu_mesh_get_draw_call_count);
+	ClassDB::bind_method(D_METHOD("gpu_material_create"), &GneRenderServer::gpu_material_create);
+	ClassDB::bind_method(D_METHOD("gpu_material_set_albedo", "id", "color"), &GneRenderServer::gpu_material_set_albedo);
+	ClassDB::bind_method(D_METHOD("gpu_material_set_params", "id", "roughness", "metallic"), &GneRenderServer::gpu_material_set_params);
+	ClassDB::bind_method(D_METHOD("gpu_material_set_specular", "id", "color", "shininess"), &GneRenderServer::gpu_material_set_specular);
+	ClassDB::bind_method(D_METHOD("gpu_material_set_emissive", "id", "color", "strength", "on", "backface"), &GneRenderServer::gpu_material_set_emissive);
+	ClassDB::bind_method(D_METHOD("gpu_material_readback", "id"), &GneRenderServer::gpu_material_readback);
+	ClassDB::bind_method(D_METHOD("gpu_material_set_light", "dir"), &GneRenderServer::gpu_material_set_light);
+	ClassDB::bind_method(D_METHOD("gpu_material_stats"), &GneRenderServer::gpu_material_stats);
+	ClassDB::bind_method(D_METHOD("gpu_material_draw"), &GneRenderServer::gpu_material_draw);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_PER_MESH", GNE_BATCH_STRATEGY_PER_MESH);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_GROUPED", GNE_BATCH_STRATEGY_GROUPED);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_REORDERED", GNE_BATCH_STRATEGY_REORDERED);
@@ -1674,6 +1792,29 @@ void GneRenderServer::_destroy_mesh_batch() {
 }
 
 void GneRenderServer::_destroy_mesh() {
+	// GNE-016: material teardown FIRST: the mat set references batch/scene
+	// buffers freed below, and RD auto-invalidates sets whose buffers die.
+	// Guarded by the same rendering_device check as the mesh sets below.
+	if (rendering_device != nullptr) {
+		if (mat_batch_uniform_set.is_valid()) {
+			rendering_device->free_rid(mat_batch_uniform_set);
+			mat_batch_uniform_set = RID();
+		}
+		if (mat_batch_pipeline.is_valid()) {
+			rendering_device->free_rid(mat_batch_pipeline);
+			mat_batch_pipeline = RID();
+		}
+		if (mat_batch_shader.is_valid()) {
+			rendering_device->free_rid(mat_batch_shader);
+			mat_batch_shader = RID();
+		}
+		if (mat_buffer.is_valid()) {
+			rendering_device->free_rid(mat_buffer);
+			mat_buffer = RID();
+		}
+	}
+	gpu_material_valid = false;
+	mat_dispatches = 0;
 	// GNE-010: the batch path's 010 vertex/index arrays reference the shared
 	// mesh vertex/index buffers below, so they must be released first.
 	_destroy_mesh_batch();
@@ -4474,6 +4615,302 @@ bool GneRenderServer::gpu_mesh_batch_draw() {
 	rendering_device->submit();
 	rendering_device->sync();
 
+	return true;
+}
+
+// GNE-016: material store + mat raster path (all additive; the flat-color
+// paths, vertex format and mesh table are untouched).
+bool GneRenderServer::gpu_material_create() {
+	static_assert(sizeof(GneMaterial) == 64, "GneMaterial must be 64 bytes (contract_016_data).");
+	if (!gpu_scene_valid || !gpu_mesh_valid) {
+		print_error("[GNE] gpu_material_create: no gpu scene/mesh. Call gpu_mesh_create first.");
+		return false;
+	}
+	if (gpu_material_valid) {
+		print_error("[GNE] gpu_material_create: material store already exists (non-destructive guard).");
+		return false;
+	}
+	String error;
+	mat_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_MESH_TABLE_SIZE * 64));
+	if (mat_buffer.is_null()) {
+		print_error("[GNE] gpu_material_create: buffer_create failed.");
+		return false;
+	}
+	// Defaults mirror the flat palette visually (continuity) with neutral PBR
+	// params: rough 0.5, metal 0, emissive off, white spec, shininess 32.
+	for (int i = 0; i < GNE_MESH_TABLE_SIZE; i++) {
+		GneMaterial m;
+		m.albedo[0] = mesh_colors[i].r;
+		m.albedo[1] = mesh_colors[i].g;
+		m.albedo[2] = mesh_colors[i].b;
+		m.roughness = 0.5f;
+		m.emissive[0] = 0.0f;
+		m.emissive[1] = 0.0f;
+		m.emissive[2] = 0.0f;
+		m.metallic = 0.0f;
+		m.spec[0] = 1.0f;
+		m.spec[1] = 1.0f;
+		m.spec[2] = 1.0f;
+		m.shininess = 32.0f;
+		m.flags = 0.0f;
+		m.emissive_strength = 0.0f;
+		m.emission_backface = 0.0f;
+		m.pad = 0.0f;
+		mat_cpu[i] = m;
+	}
+	rendering_device->buffer_update(mat_buffer, 0, (uint32_t)(GNE_MESH_TABLE_SIZE * 64), mat_cpu);
+
+	Vector<uint8_t> vert_spirv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_VERTEX, String(gpu_mat_batch_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+	if (vert_spirv.is_empty()) {
+		print_error("[GNE] material vertex shader compile failed:");
+		print_error(error);
+		return false;
+	}
+	Vector<uint8_t> frag_spirv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_FRAGMENT, String(gpu_mat_batch_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+	if (frag_spirv.is_empty()) {
+		print_error("[GNE] material fragment shader compile failed:");
+		print_error(error);
+		return false;
+	}
+	Vector<RD::ShaderStageSPIRVData> stages;
+	RD::ShaderStageSPIRVData vs;
+	vs.shader_stage = RD::SHADER_STAGE_VERTEX;
+	vs.spirv = vert_spirv;
+	stages.push_back(vs);
+	RD::ShaderStageSPIRVData fs;
+	fs.shader_stage = RD::SHADER_STAGE_FRAGMENT;
+	fs.spirv = frag_spirv;
+	stages.push_back(fs);
+	mat_batch_shader = rendering_device->shader_create_from_spirv(stages, "gne_mat_batch");
+	if (mat_batch_shader.is_null()) {
+		print_error("[GNE] material shader_create_from_spirv failed.");
+		return false;
+	}
+
+	RD::PipelineRasterizationState rs;
+	RD::PipelineMultisampleState ms;
+	RD::PipelineDepthStencilState ds;
+	ds.enable_depth_test = true;
+	ds.enable_depth_write = true;
+	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
+	mat_batch_pipeline = rendering_device->render_pipeline_create(
+			mat_batch_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
+	if (mat_batch_pipeline.is_null()) {
+		print_error("[GNE] material render_pipeline_create failed.");
+		return false;
+	}
+
+	Vector<RD::Uniform> uniforms;
+	const RID draw_buffers[5] = {
+		batch_instances_buffer, transform_buffer, view_ubo, mesh_id_buffer, mat_buffer
+	};
+	for (uint32_t b = 0; b < 5; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		if (b == 2) {
+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		}
+		u.append_id(draw_buffers[b]);
+		uniforms.push_back(u);
+	}
+	mat_batch_uniform_set = rendering_device->uniform_set_create(uniforms, mat_batch_shader, 0);
+	if (mat_batch_uniform_set.is_null()) {
+		print_error("[GNE] material uniform_set_create failed.");
+		return false;
+	}
+
+	mat_light_dir = Vector3(-0.5f, -1.0f, -0.5f).normalized();
+	mat_dispatches = 0;
+	gpu_material_valid = true;
+	print_line("[GNE] Material store (GNE-016) initialized. slots=64 bytes=4096.");
+	return true;
+}
+
+bool GneRenderServer::_mat_check_id(int p_id, const char *p_what) const {
+	if (!gpu_material_valid) {
+		print_error(String("[GNE] ") + p_what + ": no material store. Call gpu_material_create first.");
+		return false;
+	}
+	if (p_id < 0 || p_id >= GNE_MESH_TABLE_SIZE) {
+		print_error(String("[GNE] ") + p_what + ": slot id out of range [0,64): " + itos(p_id) + ".");
+		return false;
+	}
+	return true;
+}
+
+void GneRenderServer::_mat_upload(int p_id) {
+	rendering_device->buffer_update(mat_buffer, (uint32_t)(p_id * 64), 64, &mat_cpu[p_id]);
+}
+
+bool GneRenderServer::gpu_material_set_albedo(int p_id, const Color &p_color) {
+	if (!_mat_check_id(p_id, "gpu_material_set_albedo")) {
+		return false;
+	}
+	mat_cpu[p_id].albedo[0] = p_color.r;
+	mat_cpu[p_id].albedo[1] = p_color.g;
+	mat_cpu[p_id].albedo[2] = p_color.b;
+	_mat_upload(p_id);
+	return true;
+}
+
+bool GneRenderServer::gpu_material_set_params(int p_id, float p_roughness, float p_metallic) {
+	if (!_mat_check_id(p_id, "gpu_material_set_params")) {
+		return false;
+	}
+	if (p_roughness < 0.0f || p_roughness > 1.0f || p_metallic < 0.0f || p_metallic > 1.0f) {
+		print_error("[GNE] gpu_material_set_params: roughness/metallic must be in [0,1].");
+		return false;
+	}
+	mat_cpu[p_id].roughness = p_roughness;
+	mat_cpu[p_id].metallic = p_metallic;
+	_mat_upload(p_id);
+	return true;
+}
+
+bool GneRenderServer::gpu_material_set_specular(int p_id, const Color &p_color, float p_shininess) {
+	if (!_mat_check_id(p_id, "gpu_material_set_specular")) {
+		return false;
+	}
+	if (p_shininess <= 0.0f) {
+		print_error("[GNE] gpu_material_set_specular: shininess must be > 0.");
+		return false;
+	}
+	mat_cpu[p_id].spec[0] = p_color.r;
+	mat_cpu[p_id].spec[1] = p_color.g;
+	mat_cpu[p_id].spec[2] = p_color.b;
+	mat_cpu[p_id].shininess = p_shininess;
+	_mat_upload(p_id);
+	return true;
+}
+
+bool GneRenderServer::gpu_material_set_emissive(int p_id, const Color &p_color, float p_strength, bool p_on, bool p_backface) {
+	if (!_mat_check_id(p_id, "gpu_material_set_emissive")) {
+		return false;
+	}
+	mat_cpu[p_id].emissive[0] = p_color.r;
+	mat_cpu[p_id].emissive[1] = p_color.g;
+	mat_cpu[p_id].emissive[2] = p_color.b;
+	mat_cpu[p_id].emissive_strength = p_strength;
+	mat_cpu[p_id].flags = p_on ? 1.0f : 0.0f;
+	mat_cpu[p_id].emission_backface = p_backface ? 1.0f : 0.0f;
+	_mat_upload(p_id);
+	return true;
+}
+
+Dictionary GneRenderServer::gpu_material_readback(int p_id) {
+	Dictionary d;
+	if (!_mat_check_id(p_id, "gpu_material_readback")) {
+		return d;
+	}
+	Vector<uint8_t> bytes = rendering_device->buffer_get_data(mat_buffer, (uint32_t)(p_id * 64), 64);
+	if (bytes.size() != 64) {
+		print_error("[GNE] gpu_material_readback: buffer_get_data failed.");
+		return Dictionary();
+	}
+	const float *f = (const float *)bytes.ptr();
+	d["albedo"] = Vector3(f[0], f[1], f[2]);
+	d["roughness"] = f[3];
+	d["emissive"] = Vector3(f[4], f[5], f[6]);
+	d["metallic"] = f[7];
+	d["spec"] = Vector3(f[8], f[9], f[10]);
+	d["shininess"] = f[11];
+	d["flags"] = f[12];
+	d["emissive_strength"] = f[13];
+	d["emission_backface"] = f[14];
+	return d;
+}
+
+bool GneRenderServer::gpu_material_set_light(const Vector3 &p_dir) {
+	if (!gpu_material_valid) {
+		print_error("[GNE] gpu_material_set_light: no material store. Call gpu_material_create first.");
+		return false;
+	}
+	if (p_dir.length() < 1e-6f) {
+		print_error("[GNE] gpu_material_set_light: zero direction.");
+		return false;
+	}
+	mat_light_dir = p_dir.normalized();
+	return true;
+}
+
+Dictionary GneRenderServer::gpu_material_stats() {
+	Dictionary d;
+	d["slots"] = GNE_MESH_TABLE_SIZE;
+	d["bytes"] = GNE_MESH_TABLE_SIZE * 64;
+	d["dispatches"] = mat_dispatches;
+	d["valid"] = gpu_material_valid;
+	return d;
+}
+
+bool GneRenderServer::gpu_material_draw() {
+	if (!gpu_scene_valid || !gpu_mesh_valid || !gpu_mesh_batch_valid) {
+		print_error("[GNE] gpu_material_draw: no batch mesh. Call gpu_mesh_create first.");
+		return false;
+	}
+	if (!gpu_material_valid) {
+		print_error("[GNE] gpu_material_draw: no material store. Call gpu_material_create first.");
+		return false;
+	}
+	if (!frustum_valid) {
+		print_error("[GNE] gpu_material_draw: no camera. Call gpu_scene_set_camera first.");
+		return false;
+	}
+	// The mat path replays the per-mesh indirect args; the grouped path uses
+	// a different (procedural) command layout it cannot consume.
+	if (mesh_batch_strategy != GNE_BATCH_STRATEGY_PER_MESH) {
+		print_error("[GNE] gpu_material_draw: requires PER_MESH strategy (uses batch_args from the last gpu_mesh_batch_dispatch).");
+		return false;
+	}
+	if (last_batch_count <= 0) {
+		print_error("[GNE] gpu_material_draw: empty batch (run gpu_mesh_batch_dispatch first).");
+		return false;
+	}
+
+	struct MatPush {
+		float light_xyz_amb[4];
+		float cam_xyz[4];
+		float light_rgb[4];
+	};
+	MatPush push;
+	push.light_xyz_amb[0] = mat_light_dir.x;
+	push.light_xyz_amb[1] = mat_light_dir.y;
+	push.light_xyz_amb[2] = mat_light_dir.z;
+	push.light_xyz_amb[3] = 0.1f;
+	push.cam_xyz[0] = meshlet_camera_position[0];
+	push.cam_xyz[1] = meshlet_camera_position[1];
+	push.cam_xyz[2] = meshlet_camera_position[2];
+	push.cam_xyz[3] = 0.0f;
+	push.light_rgb[0] = 1.0f;
+	push.light_rgb[1] = 1.0f;
+	push.light_rgb[2] = 1.0f;
+	push.light_rgb[3] = 0.0f;
+
+	Vector<Color> clear_colors;
+	clear_colors.push_back(Color(0, 0, 0, 0));
+	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
+	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_COLOR_1 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
+	if (dl == RD::INVALID_ID) {
+		print_error("[GNE] gpu_material_draw: draw_list_begin failed.");
+		return false;
+	}
+	rendering_device->draw_list_bind_render_pipeline(dl, mat_batch_pipeline);
+	rendering_device->draw_list_bind_uniform_set(dl, mat_batch_uniform_set, 0);
+	rendering_device->draw_list_bind_vertex_array(dl, mesh_010_vertex_array);
+	rendering_device->draw_list_bind_index_array(dl, mesh_010_index_array);
+	rendering_device->draw_list_set_push_constant(dl, &push, sizeof(push));
+	// Per-mesh path (010): draw_count == distinct visible meshes, 20 bytes per
+	// VkDrawIndexedIndirectCommand - identical command stream to batch_draw.
+	rendering_device->draw_list_draw_indirect(dl, true, batch_args_buffer, 0, (uint32_t)last_batch_count, 20);
+	rendering_device->draw_list_end();
+
+	rendering_device->submit();
+	rendering_device->sync();
+
+	mat_dispatches++;
 	return true;
 }
 

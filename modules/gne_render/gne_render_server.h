@@ -149,6 +149,31 @@ class GneRenderServer : public Object {
 	RID mesh_010_vertex_array;
 	RID mesh_010_index_array;
 
+	// GNE-016: materials. ADDITIVE ONLY, never replaces. A 64-slot material
+	// store parallel to the mesh table (material slot id == mesh table id),
+	// evaluated by a NEW *_mat_* raster path. The flat-color paths, the vertex
+	// format (position-only, 12 B stride) and the mesh table are untouched.
+	struct GneMaterial {
+		float albedo[3];
+		float roughness;
+		float emissive[3];
+		float metallic;
+		float spec[3];
+		float shininess;
+		float flags;
+		float emissive_strength;
+		float emission_backface;
+		float pad;
+	};
+	bool gpu_material_valid = false;
+	GneMaterial mat_cpu[GNE_MESH_TABLE_SIZE];
+	RID mat_buffer; // GneMaterial[64] (64 bytes each, 4096 B)
+	RID mat_batch_shader;
+	RID mat_batch_pipeline;
+	RID mat_batch_uniform_set;
+	Vector3 mat_light_dir = Vector3(-0.40824829f, -0.81649661f, -0.40824829f);
+	int mat_dispatches = 0;
+
 	// GNE-011: multi-batch grouping + dynamic indirect count. ADDS (over 010,
 	// additive only) a batch strategy toggle (PER_MESH / GROUPED / REORDERED), a
 	// workgroup-parallel prefix-sum batch assembly pass, <=5 batched draw
@@ -370,6 +395,8 @@ class GneRenderServer : public Object {
 	void _destroy_gpu_scene();
 	void _destroy_mesh();
 	void _destroy_mesh_batch();
+	bool _mat_check_id(int p_id, const char *p_what) const;
+	void _mat_upload(int p_id);
 	bool _create_hzb_passes();
 	bool _create_raster_pipeline();
 	bool _create_mesh_pipeline();
@@ -503,6 +530,23 @@ public:
 	PackedInt32Array gpu_mesh_get_batch_args(int p_batch_index);
 	// The flat color the batch fragment shader uses for the given mesh.
 	Color gpu_mesh_get_mesh_color(int p_mesh_id) const;
+
+	// GNE-016: material API (TEST-ONLY, additive). Slot id == mesh table id.
+	// All setters validate ranges/ids: violation => print_error + reject
+	// (return false), never a silent fallback. Readback returns the record
+	// exactly as stored on the GPU.
+	bool gpu_material_create();
+	bool gpu_material_set_albedo(int p_id, const Color &p_color);
+	bool gpu_material_set_params(int p_id, float p_roughness, float p_metallic);
+	bool gpu_material_set_specular(int p_id, const Color &p_color, float p_shininess);
+	bool gpu_material_set_emissive(int p_id, const Color &p_color, float p_strength, bool p_on, bool p_backface);
+	Dictionary gpu_material_readback(int p_id);
+	bool gpu_material_set_light(const Vector3 &p_dir);
+	Dictionary gpu_material_stats();
+	// Material draw: same framebuffer/clear/depth as the batch path, but the
+	// NEW mat pipeline. Requires PER_MESH strategy (uses batch_args from the
+	// last gpu_mesh_batch_dispatch) + frustum/camera set.
+	bool gpu_material_draw();
 
 	// GNE-011: batch strategy + multi-batch evidence API (TEST-ONLY). All of
 	// the 011 extra getters below are pure readback bridges of the GPU state
