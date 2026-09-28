@@ -112,6 +112,18 @@
 - GNE-010 — Batch Instance Rendering (3 meshes multi-draw): PASS
 - GNE-011 — Multi-Draw / Multi-Batch (≤5 grouped/reordered draws, dynamic draw count, parallel prefix-sum): PASS
 - GNE-011 Demo — Interactive (main_demo + camera_controller + hud, strategy live-switch): PASS
+- GNE-012 - Production HZB: PASS (012-revised, closed)
+- GNE-013 - Meshlets + LOD + Cluster Culling: PASS
+- GNE-014 - GPU Scene Manager: PASS (race fix included)
+- GNE-015 - Render Graph: PASS
+- GNE-015.5 - Resource Pool: PARTIAL (5/8 criteria + documented KIs)
+- GNE-015.6 - KI Closure: PASS
+- GNE-016 - Materials: PASS
+- GNE-017 - Textures: PASS
+- GNE-018 - Clustered Lighting: PASS
+- GNE-018-rev - Normal-Cone Back-Face Culling: PASS (R1 gate; flag OFF by default)
+- GNE-019 - Shadows + Real Depth HZB: PASS
+- GNE-020 - Presentation Overhaul: PASS (flag-gated reduced-res path; C6 closed)
 
 Current architecture status:
 
@@ -169,7 +181,7 @@ Next milestone:
 
 ## 16. المرحلة القادمة
 
-**GNE-011 — Multi-Draw / Multi-Batch** اكتمل PASS (3 استراتيجيات + demo تفاعلي، انظر الأقسام 19/20). **GNE-012 — Production HZB** بانتظار SPEC الرسمي.
+**GNE-021 - Benchmark City + Dense-Light Validation** (proposal awaiting Architect approval; the dense-light test bed for the 018-rev dc>=10% retest and the remaining structural prototype-checklist item).
 
 ## 17. GNE-008B — برهان الرسم متعدد النسخ (Multi-Instance Mesh Rendering Proof)
 
@@ -851,3 +863,13 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 **ot=9 note:** the KI-014 fix expands lists; 9 clusters exceed the 16 cap on this scene (loud marker in the signature; OFF path stays ot=0). Overflow semantics / cap policy tracked in KI-014's R1 addendum.
 **Artifacts:** main_018_rev.gd/.tscn, tools/gt_018a_rev.bat, docs/rev_r1_evidence.md. Commits: 51fbf5c (2a), ef0d402 (2b), 9fa2de1 (KI-014), a3d5e8e (2c), a696b9f (R1).
 **Next:** 020 (open scope decision: presentation/KI-003 vs GI).
+
+## 38. GNE-020 - Presentation Overhaul (CLOSED - units 1-3, flag-gated)
+
+**Outcome:** reduced-resolution presentation path (960x540, deterministic 2x2 box blit) behind `GNE_PRESENT_LOWRES` (default OFF); readback bytes exactly 4x fewer (8,294,400 -> 2,073,600 per frame); measured frame time -43..-54% p50 (same-session); blit verified against a CPU-side 2x2 box average (bad_over1=0, maxdiff=1). The readback problem is MITIGATED, not solved: the CPU roundtrip persists; zero-copy stays a future item (spec section 13).
+**Units:** 1 - baseline scene + harness (main_020 / gt_020a, signature v20, d1==d2); 2 - reduced-res path + in-scene verification + full battery; 3 - C6 double-buffering experiment: deferred ping-pong = NO measurable effect (medians 7795 vs 7890us, 5 runs each), sync removal = crash (invalid; root cause NOT diagnosed, gap recorded in spec section 14); experimental code removed after measurement; decomposition tooling kept.
+**Battery:** 11/11 green on the final rebuilt binary (8 classic gates + 018a_rev + gt_020a full + gt_020a lowres); all legacy literals intact.
+**Decisions:** D9 defaults adopted (section 11); framing per Architect directive (section 13); cone-culling default state recorded separately (spec_018_rev section 12: flag OFF until dense-light evidence); C6 item closed with measured evidence.
+**Incidents:** a stray git commit hit the build-host repo (no remote, no effect); restored exactly; Lesson 6 recorded.
+**Commits:** 74d2790 (kickoff) -> 607b620 (unit1) -> 66ee082 (unit2) -> 9f0454e (framing) -> 0250fc7 (cone default-state) -> c742dda (unit3 + C6) -> 1583225 (Lesson 6).
+**Next:** GNE-021 proposal pending Architect approval (Benchmark City + Dense-Light Validation; seed for the 018-rev dc>=10% retest). GI remains a later milestone with its own future spec.

@@ -1,6 +1,6 @@
 # GNE-020 - Presentation Overhaul (Readback Bytes + Staging) - SPEC DRAFT v0.1
 
-**Status:** DRAFT v0.1 (2026-09-28) - D9 safe defaults adopted (section 11); units 1-2 executed (baseline + reduced-resolution path, section 12); readback framing per Architect directive (section 13); unit 3 (staging/double-buffering) next.
+**Status:** DRAFT v0.1 (2026-09-28) - units 1-3 complete (sections 11-14); readback framing per Architect directive (section 13); C6 item closed with measured evidence (section 14); closure recorded in progress_report section 38. D9 defaults remain subject to the Architect final stamp.
 **Depends:** 015.5 (Resource Pool), 015.6 (KI sprint), 009 (raster readback), 018 / 018-rev / 019 gates.
 **Closes (planned):** KI-003 follow-up (presentation cost floor) + 015.5 C6 double-buffering item (deferred here by contract_015_6_c6).
 **Scope guard:** presentation / readback path only. No engine edits (KI-001 / KI-002 / KI-003 consistency rule). No pixel-content change in any existing gated path: the reduced-resolution output lands only behind a new opt-in flag + new scene, so every legacy literal (v18, v18-rev, v19, ...) stays byte-exact.
@@ -195,7 +195,17 @@ Architect's to adjust.]
   run noise): the readback's per-call flush waits for all submitted work regardless of
   which texture is read, so deferral cannot skip the stall.
 - Sync elimination is INVALID in this fork: without the post-dispatch sync the readback
-  crashes (access violation, reproducible). The sync is load-bearing.
+  crashes (access violation 0xC0000005, reproducible, 4/4 runs).
+- Crash-diagnosis status (recorded gap): ROOT CAUSE NOT CONFIRMED. Established: the causal
+  relation (remove sync -> crash; restore -> clean full battery) and the crash site from
+  the minidump: inside the NVIDIA driver's vkCmdPipelineBarrier, reached from
+  texture_get_data -> _flush_and_stall_for_all_frames -> RenderingDevice::_end_frame ->
+  RenderingDeviceGraph::_group_barriers_for_render_commands (dump frames [8]-[13]).
+  Candidate causes, NOT distinguished: (i) the un-synced submission leaves the RD graph's
+  barrier bookkeeping inconsistent for this texture (fork-level ordering issue, conceivably
+  avoidable in principle with a different ordering), (ii) a driver-level fault on that
+  specific barrier. Whether it is substantively a GPU/CPU race or fork bookkeeping remains
+  open. Any future attempt to lighten this sync must treat the cause as un-understood.
 - The per-call floor (~2.2 ms fixed + ~0.4 ms/MB from the decomposition) is engine-side
   (the flush-and-stall inside texture_get_data); module-level double buffering does not
   remove it.

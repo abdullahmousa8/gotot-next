@@ -34,7 +34,8 @@
 **Target:** After 019.
 **Scope:**
 - KI-003 (presentation).
-- Kickoff: `docs/spec_020_presentation_overhaul.md` (DRAFT v0.1, 2026-09-28; decisions D9 pending).
+- Kickoff: `docs/spec_020_presentation_overhaul.md` (DRAFT v0.1, 2026-09-28; D9 defaults adopted).
+- Closed 2026-09-28: units 1-3 + C6 experiment complete - see progress_report section 38.
 
 ## Rule
 
