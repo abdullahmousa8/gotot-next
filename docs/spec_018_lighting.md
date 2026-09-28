@@ -1,6 +1,6 @@
 # GNE-018 — Lighting Extension (SPEC v1.0)
 
-**Status:** DRAFT v1.0.
+**Status:** FINAL v1.0 — Architect approved (D6-1..D6-8 resolved).
 **Depends:** 016 (Materials PASS), 017 (Textures PASS), 015.6 (KI Closure PASS).
 **Unblocks:** 019 (Shadows + Real Depth HZB).
 
@@ -21,41 +21,50 @@ Extend 016 (single directional + ambient) to multiple lights:
 
 ## 3. Design
 
-### 3.1 Light Types (D6-1: final list at FINAL)
+### 3.1 Light Types (D6-1 FINAL)
 - Point lights (position + range, omni falloff).
 - Spot lights (position + direction + inner/outer cone).
 - Directional from 016 preserved verbatim (same `L`, same ambient).
+- Max **1024** lights (counter-guarded, no silent overflow).
 
-### 3.2 Clustered Forward+ (D6-2: grid frozen at FINAL)
-- Proposed grid: **16×9×24** = 3,456 clusters (1920/16 = 120, 1080/9 = 120 ⇒ 120×120 px tiles × 24 depth slices, exponential split).
+### 3.2 Clustered Forward+ (D6-2 FINAL: fixed grid)
+- Grid: **16×9×24** = 3,456 clusters (1920/16 = 120, 1080/9 = 120 ⇒ 120×120 px tiles × 24 exponential depth slices).
 - Cluster assignment is screen-space + view-depth: no CPU per-light work.
 
-### 3.3 Light Buffer — SSBO (D6-3: layout frozen at FINAL)
-- Proposed record 3×vec4 = 48 B: `[pos.xyz, range] [color.rgb, intensity] [dir.xyz, type/flags]`, + spot cone in a 4th vec4 if needed (64 B variant — decided at FINAL).
-- Proposed cap: **1024 lights** (48–64 KB, bounded and counter-guarded).
+### 3.3 Light Buffer — SSBO (D6-3 FINAL: 64 B record)
+| vec4 | x | y | z | w |
+|---|---|---|---|---|
+| l+0 | pos.x | pos.y | pos.z | range (>0) |
+| l+1 | color.r | color.g | color.b | intensity (≥0) |
+| l+2 | dir.x | dir.y | dir.z | type (0=point, 1=spot) |
+| l+3 | cone_inner | cone_outer | pad | pad |
+- 1024 × 64 B = **65,536 B**, bounded and counter-guarded.
+- `range ≤ 0`, negative intensity, cone outside (0, π/2], or id ≥ 1024 ⇒ `print_error` + reject.
 
-### 3.4 Cluster-Light Index (D6-4: format frozen at FINAL)
-- Proposed: per-cluster offset+count into a flat light-index list (built by compute, prefix-sum pattern from 011 precedent).
+### 3.4 Cluster-Light Index (D6-4 FINAL)
+- Per-cluster `(offset, count)` into a flat light-index list (011 prefix-sum precedent).
+- Light ids appended in **SORTED** order per cluster (deterministic regardless of GPU scheduling).
 - Per-cluster light cap with loud overflow counter (no silent drop).
 
-### 3.5 Culling Pass (D6-5: design frozen at FINAL)
-- Compute pass: sphere/cone vs cluster frustum → append light id.
-- Zero CPU intervention between upload and shading (014-waves barrier pattern).
+### 3.5 Culling Pass (D6-5 FINAL)
+- Compute dispatch of **3,456 threads** (one per cluster): sphere test for points, sphere+cone test for spots, against the cluster frustum.
+- Zero CPU intervention between upload and shading (014-waves barrier pattern: submit+sync per pass).
 - Deterministic ordering (sorted ids per cluster) for DET stability.
 
-### 3.6 Shading Extension (D6-6: exact equations frozen at FINAL)
+### 3.6 Shading Extension (D6-6 FINAL)
 - Loop over the cluster's light list (uniform-bounded iterations, early-out at count).
+- Per light: **Lambert diffuse + Blinn-Phong specular** (016 equations reused verbatim for the directional term) × **attenuation** (smooth distance falloff to `range` + smooth cone falloff between inner/outer for spots).
 - Accumulate: `diffuse + specular` per light with distance/cone attenuation × material response (016 model reused verbatim for the directional term).
 - New lights add; directional + ambient + emissive paths unchanged.
 
-## 4. Acceptance Criteria (8)
-1. Point light visible (single point light changes pixels in the predicted region).
-2. Spot light visible (cone falloff measurable: inside vs outside).
-3. Multiple lights (>10) with stable frame (no overflow, counters exact).
-4. Clustered Forward+ active (cluster buffer non-empty, index counts match light assignment).
-5. GPU-driven light culling (a light affecting zero clusters contributes zero shading cost — measured, not claimed).
-6. Histogram evidence (multi-light image differs from 016 single-light in the predicted direction).
-7. DET stable (`v18|...` identical d1/d2).
+## 4. Acceptance Criteria (8 — initial thresholds, frozen at FINAL after measurement)
+1. Point light visible: ON vs OFF ⇒ changed pixels > 1000 AND probe brightens > 0.1 (C4 pattern).
+2. Spot light visible: inside-cone vs outside-cone mean ratio > 2 (measurable falloff).
+3. Multiple lights (>10): 16 lights stable, counters exact (16/16 assigned), no overflow, exit 0.
+4. Clustered Forward+ active: non-empty clusters > 0 AND total assignments match the CPU-predicted count for the test layout.
+5. GPU-driven light culling: a light affecting zero clusters contributes zero shading (pixels identical with/without it).
+6. Histogram evidence: multi-light image differs from the 016-baseline reproduction; hr ≥ 0.3 (D4-3 precedent).
+7. DET stable (`v18|lc|cc|ot|hr|d` identical d1/d2).
 8. Regressions 001A–017 PASS.
 
 ## 5. APIs
@@ -84,20 +93,22 @@ All TEST-ONLY first; stats dict independent (never inside DET-feeding dicts).
 - Harness (gt_018a, d1/d2 + sig compare pattern).
 - Contract docs ×5.
 
-## 9. D6 Decisions Required (unresolved — do not guess)
-- D6-1: Light types (final list).
-- D6-2: Cluster grid size.
-- D6-3: Light buffer layout (48 B vs 64 B record).
-- D6-4: Cluster index format (offset+count vs bitmask).
-- D6-5: Culling pass design (sphere/cone tests, ordering).
-- D6-6: Shading extension (exact per-light equations).
-- D6-7: Signature format (`v18|…` fields).
-- D6-8: Acceptance criteria (thresholds for 1–6 above).
+## 9. D6 Decisions — resolved (Architect, 2026-09-28)
+| # | Decision | Value |
+|---|---|---|
+| D6-1 | Light types | Point + Spot + Directional (max 1024) |
+| D6-2 | Cluster grid | 16×9×24 = 3,456 clusters (fixed) |
+| D6-3 | Buffer record | 64 B (4×vec4) with cone row |
+| D6-4 | Index format | Offset+count + flat SORTED list |
+| D6-5 | Cull pass | Compute, 3456 threads, sphere/cone tests |
+| D6-6 | Shading | Lambert + Blinn-Phong + attenuation |
+| D6-7 | Signature | `v18\|lc\|cc\|ot\|hr\|d` |
+| D6-8 | Thresholds | §4 initial values above (frozen at FINAL after measurement) |
 
 ## 10. Risks
 - Cluster overflow (mitigated: cap + loud counter, D6-4).
 - Performance regression (mitigated: culling must reduce shading work — measured per D6-5, wall-clock labeled per KI-001).
 - Signature drift (mitigated: full gates; any byte change ⇒ STOP + rollback).
-- Memory (light buffer bounded 48–64 KB + index list bounded; counters guard both).
+- Memory (light buffer 64 KB + index list bounded; counters guard both).
 
-**State:** DRAFT v1.0 — awaiting Architect review + D6-1..D6-8. No implementation, no build, no code commit before approval. (This file = documentation only.)
+**State:** FINAL v1.0 — Architect approved (D6-1..D6-8). Ready for implementation.

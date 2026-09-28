@@ -1,8 +1,8 @@
 # Contract 018 — Cluster Grid
 
-**GNE-018 — DRAFT.** Screen-space subdivision (frozen at FINAL, D6-2).
+**GNE-018 — FINAL (D6-2 resolved: fixed 16×9×24 grid).**
 
-## Proposed grid
+## Grid (D6-2 FINAL)
 
 - **16 × 9 × 24** = 3,456 clusters over 1920×1080 (120×120 px tiles).
 - Depth: 24 exponential slices from near to far (exact split frozen at FINAL).

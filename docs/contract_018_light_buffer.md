@@ -1,14 +1,14 @@
 # Contract 018 — Light Buffer
 
-**GNE-018 — DRAFT.** SSBO layouts (frozen at FINAL, D6-3/D6-4).
+**GNE-018 — FINAL (D6-3/D6-4 resolved: 64 B record, offset+count sorted list).**
 
-## Light store (proposed)
+## Light store (D6-3 FINAL)
 
-- 3×vec4 = 48 B per light (64 B variant with spot cone row — decided at FINAL).
-- Proposed cap: **1024 lights** (≤64 KB, bounded).
+- 4×vec4 = **64 B** per light: `[pos.xyz, range] [color.rgb, intensity] [dir.xyz, type] [cone_inner, cone_outer, pad, pad]`.
+- Cap **1024** lights = **65,536 B**, bounded and counter-guarded.
 - CPU mirror + `buffer_update` per write; readback verifies bytes (014/016 precedent).
 
-## Cluster index (proposed)
+## Cluster index (D6-4 FINAL)
 
 - Flat `uint` index list + per-cluster `(offset, count)` (011 prefix-sum precedent).
 - Light ids appended in SORTED order per cluster (DET stability — unsorted

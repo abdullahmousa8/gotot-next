@@ -1,6 +1,6 @@
 # Contract 018 — Determinism
 
-**GNE-018 — DRAFT.** DET + guards; methods here, numbers frozen at FINAL.
+**GNE-018 — FINAL (D6-7/D6-8 resolved).** DET + guards.
 
 ## Determinism rules
 
@@ -8,17 +8,17 @@
 - Fixed grid, fixed light set per run ⇒ identical cluster assignment.
 - `sig=` content-only, no timings (015.5 lesson); harness compares byte-for-byte.
 
-## 8 criteria evidence (D6-8)
+## 8 criteria evidence (D6-8 FINAL — initial thresholds, frozen at FINAL after measurement)
 
-| # | Criterion | Method (thresholds at FINAL) |
+| # | Criterion | Method |
 |---|---|---|
-| L1 | Point light visible | single point ⇒ predicted-region pixels change |
-| L2 | Spot light visible | inside-cone vs outside-cone measurable falloff |
-| L3 | Multiple lights (>10) | stable frame, counters exact, no overflow |
-| L4 | Clustered Forward+ active | cluster buffer non-empty, index counts match assignment |
-| L5 | GPU-driven culling | zero-cluster light ⇒ zero shading contribution (measured) |
-| L6 | Histogram | multi-light vs 016 single-light differs in predicted direction |
-| L7 | DET | 2 runs, identical `sig=` (`d1`), zero `ERROR:` |
+| L1 | Point light visible | ON vs OFF ⇒ changed pixels > 1000 AND probe brightens > 0.1 |
+| L2 | Spot light visible | inside-cone vs outside-cone mean ratio > 2 |
+| L3 | Multiple lights (>10) | 16 lights stable, counters exact (16/16), no overflow, exit 0 |
+| L4 | Clustered Forward+ active | non-empty clusters > 0 AND assignments match CPU-predicted count |
+| L5 | GPU-driven culling | zero-cluster light ⇒ pixels identical with/without it |
+| L6 | Histogram | differs from 016-baseline reproduction; hr ≥ 0.3 |
+| L7 | DET | 2 runs, identical `sig=` (`v18\|lc\|cc\|ot\|hr\|d`, `d1`), zero `ERROR:` |
 | L8 | Regressions | 001A–017 PASS + `main_012 → XFAIL` |
 
 ## Regression delta guard

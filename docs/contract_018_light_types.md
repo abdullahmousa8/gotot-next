@@ -1,8 +1,8 @@
 # Contract 018 — Light Types
 
-**GNE-018 — DRAFT.** Which lights exist, and their exact parameters (frozen at FINAL, D6-1).
+**GNE-018 — FINAL (D6-1 resolved: Point + Spot + Directional, max 1024).**
 
-## Types (proposed)
+## Types (D6-1 FINAL)
 
 | Type | Parameters | Notes |
 |---|---|---|
