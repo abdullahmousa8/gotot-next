@@ -194,6 +194,56 @@ class GneRenderServer : public Object {
 	RID tex_dummy;      // 1x1 white texture for unbound array slots
 	RID tex_array[GNE_TEX_ARRAY]; // CPU mirror of the sampler-array entries
 
+	// GNE-018: lights. ADDITIVE ONLY. Light store (1024 x 64 B) + cluster
+	// buffers evaluated by later phases; the 016 directional/ambient path and
+	// every earlier milestone are untouched.
+	struct GneLight {
+		float pos[3];
+		float range;
+		float color[3];
+		float intensity;
+		float dir[3];
+		float type; // 0 = point, 1 = spot
+		float cone_inner;
+		float cone_outer;
+		float pad[2];
+	};
+	static constexpr int GNE_LIGHT_MAX = 1024;
+	static constexpr int GNE_CLUSTER_X = 16;
+	static constexpr int GNE_CLUSTER_Y = 9;
+	static constexpr int GNE_CLUSTER_Z = 24;
+	static constexpr int GNE_CLUSTER_COUNT = 3456;
+	static constexpr int GNE_CLUSTER_LIGHT_CAP = 16;
+	bool gpu_light_valid = false;
+	GneLight light_cpu[GNE_LIGHT_MAX];
+	RID light_buffer;          // GneLight[1024] (65536 B)
+	RID cluster_offset_buffer; // uint[3456] flat-list offsets
+	RID cluster_count_buffer;  // uint[3456] per-cluster counts
+	RID cluster_index_buffer;  // uint[3456*16] flat sorted light ids
+	RID light_cull_shader;
+	RID light_cull_pipeline;
+	RID light_cull_uniform_set;
+	RID light_overflow_buffer; // uint[1] per-cluster-cap overflow counter
+	int light_count = 0;
+	// GNE-018 cluster math inputs (captured in set_camera for cull + frag).
+	float cam_near_v = 300.0f;
+	float cam_tan_v = 1.0f;
+	// GNE-018 light raster path (separate pipeline; the 016 mat pipeline and
+	// its set are frozen). Set 0 is SHARED with the mat pipeline (identical
+	// layout by construction: shared vert + same set-0 declarations); set 1
+	// is the light set below, built lazily on first draw_lights.
+	RID mat_light_shader;
+	RID mat_light_pipeline;
+	RID mat_light_tex_set; // set 1: light/offset/count/index buffers
+	// Set 0 DEDICATED to the light pipeline (identical 7-binding layout to the
+	// mat set, but a separate object: RD sets are shader-bound and sharing
+	// across pipelines is rejected). Rebuilt whenever texture binds change it.
+	RID mat_light_uniform_set;
+	bool light_set0_dirty = true;
+	int light_clusters_touched = 0;
+	int light_assignments = 0;
+	int light_overflows = 0;
+
 	// GNE-011: multi-batch grouping + dynamic indirect count. ADDS (over 010,
 	// additive only) a batch strategy toggle (PER_MESH / GROUPED / REORDERED), a
 	// workgroup-parallel prefix-sum batch assembly pass, <=5 batched draw
@@ -418,6 +468,9 @@ class GneRenderServer : public Object {
 	bool _mat_check_id(int p_id, const char *p_what) const;
 	void _mat_upload(int p_id);
 	bool _mat_tex_refresh_set();
+	bool _light_read_params(const Dictionary &p_params, GneLight &r_out);
+	bool _light_ensure_geo();
+	bool _light_build_set0();
 	bool _create_hzb_passes();
 	bool _create_raster_pipeline();
 	bool _create_mesh_pipeline();
@@ -576,6 +629,22 @@ public:
 	bool gpu_texture_bind(int p_mat, int p_slot, int p_tex);
 	PackedInt32Array gpu_texture_get_stats();
 	int gpu_texture_get_binding(int p_mat, int p_slot);
+
+	// GNE-018: clustered raster path (TEST-ONLY, additive). Builds the light
+	// pipeline + sets lazily; culls (3456 threads) then draws the same
+	// per-mesh indirect commands as gpu_material_draw. Requires PER_MESH.
+	bool gpu_material_draw_lights();
+	// Verify-bridge: [count, id0..id3] of one cluster (L4 spot checks).
+	PackedInt32Array gpu_light_debug_cluster(int p_tx, int p_ty, int p_tz);
+
+	// GNE-018: light API (TEST-ONLY, additive). Params dict keys: type
+	// (0 point, 1 spot), pos (Vector3), range, color (Color), intensity,
+	// dir (Vector3, spots), cone_inner, cone_outer (spots, radians, inner<outer).
+	// Violations => print_error + reject value (-1 / false), never silent.
+	int gpu_light_create(const Dictionary &p_params);
+	bool gpu_light_update(int p_id, const Dictionary &p_params);
+	bool gpu_light_destroy(int p_id);
+	Dictionary gpu_light_get_stats();
 
 	// GNE-011: batch strategy + multi-batch evidence API (TEST-ONLY). All of
 	// the 011 extra getters below are pure readback bridges of the GPU state

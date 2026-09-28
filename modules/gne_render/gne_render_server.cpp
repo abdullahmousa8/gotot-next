@@ -992,6 +992,273 @@ void main() {
 }
 )";
 
+// GNE-018: cluster cull compute. 3456 threads (16x9x24, one per cluster).
+// Each thread owns its cluster, so per-cluster appends run in light-id order
+// (sorted by construction => DET-stable); the atomicAdd only hands out slots.
+// Conservative tests (may over-include, never wrongly exclude): over-inclusion
+// only costs shading, never correctness.
+const char *gpu_light_cull_glsl = R"(
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform CullParams {
+	vec4 dims;   // x = light_count, y = tan_half_fov_v, z = aspect, w = unused
+	vec4 range;  // x = near, y = far, z = raster_w, w = raster_h
+}
+params;
+
+layout(std430, set = 0, binding = 0) buffer LightBuffer {
+	vec4 lights[];
+}
+lightbuf;
+
+layout(std430, set = 0, binding = 1) buffer ClOffsetBuffer {
+	uint off[];
+}
+cloff;
+
+layout(std430, set = 0, binding = 2) buffer ClCountBuffer {
+	uint cnt[];
+}
+clcnt;
+
+layout(std430, set = 0, binding = 3) buffer ClIndexBuffer {
+	uint idx[];
+}
+clidx;
+
+layout(std430, set = 0, binding = 4) buffer OverflowBuffer {
+	uint ovf[];
+}
+ovfb;
+
+layout(std140, set = 0, binding = 5) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+bool sphere_vs_aabb(vec3 c, float r, vec3 bmin, vec3 bmax) {
+	vec3 q = clamp(c, bmin, bmax);
+	vec3 d = c - q;
+	return dot(d, d) <= r * r;
+}
+
+void main() {
+	uint tid = gl_GlobalInvocationID.x;
+	if (tid >= 3456u) {
+		return;
+	}
+	uint tx = tid % 16u;
+	uint ty = (tid / 16u) % 9u;
+	uint tz = tid / 144u;
+	uint nlights = uint(params.dims.x);
+	float tanv = params.dims.y;
+	float aspect = params.dims.z;
+	float znear = params.range.x;
+	float zfar = params.range.y;
+	float lratio = zfar / znear;
+	float z0 = znear * pow(lratio, float(tz) / 24.0);
+	float z1 = znear * pow(lratio, float(tz + 1u) / 24.0);
+	// NDC tile rect -> view-space AABB (conservative: far-z extents).
+	float nx0 = float(tx) / 16.0 * 2.0 - 1.0;
+	float nx1 = float(tx + 1u) / 16.0 * 2.0 - 1.0;
+	float ny0 = float(ty) / 9.0 * 2.0 - 1.0;
+	float ny1 = float(ty + 1u) / 9.0 * 2.0 - 1.0;
+	vec3 bmin = vec3(nx0 * z1 * tanv * aspect, ny0 * z1 * tanv, z0);
+	vec3 bmax = vec3(nx1 * z1 * tanv * aspect, ny1 * z1 * tanv, z1);
+	// View-space depth convention here: +z forward (matches -vc.z usage).
+	// The box above uses +z view depth; lights convert identically below.
+	for (uint i = 0u; i < nlights; i++) {
+		vec4 L0 = lightbuf.lights[i * 4u + 0u];
+		vec4 L1 = lightbuf.lights[i * 4u + 1u];
+		vec4 L2 = lightbuf.lights[i * 4u + 2u];
+		vec4 L3 = lightbuf.lights[i * 4u + 3u];
+		vec3 vw = (viewdata.view * vec4(L0.xyz, 1.0)).xyz;
+		vec3 vc = vec3(vw.xy, -vw.z);
+		float rr = L0.w;
+		bool hit = sphere_vs_aabb(vc, rr, bmin, bmax);
+		if (hit && L2.w > 0.5) {
+			// Spot: cone test around the spot axis (view space).
+			vec3 sd = normalize((viewdata.view * vec4(L2.xyz, 0.0)).xyz);
+			sd = vec3(sd.xy, -sd.z);
+			vec3 bc = (bmin + bmax) * 0.5;
+			vec3 to_b = bc - vc;
+			float dist = max(length(to_b), 1e-4);
+			float ang = acos(clamp(dot(to_b / dist, sd), -1.0, 1.0));
+			float outer = L3.y;
+			float margin = asin(clamp(rr / dist, 0.0, 1.0));
+			hit = ang <= outer + margin;
+		}
+		if (hit) {
+			uint slot = atomicAdd(clcnt.cnt[tid], 1u);
+			if (slot < 16u) {
+				clidx.idx[tid * 16u + slot] = i;
+			} else {
+				atomicAdd(ovfb.ovf[0], 1u);
+			}
+		}
+	}
+}
+)";
+
+// GNE-018: material+lights fragment shader. Identical 016 base (directional +
+// ambient + emissive + backface rule), then the per-cluster light loop.
+// Cluster id from framebuffer pixels + view depth, with the SAME slice math
+// as the cull pass (any divergence breaks the mechanism - keep in sync).
+const char *gpu_mat_light_frag_glsl = R"(
+#version 450
+
+layout(early_fragment_tests) in;
+
+layout(location = 1) flat in uint v_mesh_id;
+layout(location = 0) in vec3 v_world;
+
+layout(std430, set = 0, binding = 4) buffer MaterialBuffer {
+	vec4 mats[];
+}
+materials;
+
+layout(set = 0, binding = 5) uniform sampler2D tex_arr[8];
+layout(std430, set = 0, binding = 6) buffer MatTexBuffer {
+	int tex_ids[];
+}
+mattex;
+
+layout(std140, set = 0, binding = 2) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+layout(std430, set = 1, binding = 0) buffer LightBuffer {
+	vec4 lights[];
+}
+lightbuf;
+
+layout(std430, set = 1, binding = 1) buffer ClOffsetBuffer {
+	uint off[];
+}
+cloff;
+
+layout(std430, set = 1, binding = 2) buffer ClCountBuffer {
+	uint cnt[];
+}
+clcnt;
+
+layout(std430, set = 1, binding = 3) buffer ClIndexBuffer {
+	uint idx[];
+}
+clidx;
+
+layout(push_constant, std430) uniform MatLightParams {
+	vec4 light_dir_ambient;
+	vec4 cam_pos;
+	vec4 light_color;
+	vec4 tex_slot_pad;
+	vec4 grid_dims;   // x = raster_w, y = raster_h, z = near, w = far
+}
+params;
+
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out float out_view_z;
+
+void main() {
+	uint m = v_mesh_id * 4u;
+	vec3 albedo = materials.mats[m + 0u].rgb;
+	float rough = materials.mats[m + 0u].a;
+	vec3 emissive = materials.mats[m + 1u].rgb;
+	float metal = materials.mats[m + 1u].a;
+	vec3 spec_col = materials.mats[m + 2u].rgb;
+	float shiny = materials.mats[m + 2u].a;
+	vec4 flags = materials.mats[m + 3u];
+	vec3 N = normalize(cross(dFdx(v_world), dFdy(v_world)));
+	vec3 Vv = normalize(params.cam_pos.xyz - v_world);
+	vec3 emi = (flags.x > 0.5) ? emissive * flags.y : vec3(0.0);
+	int tid = mattex.tex_ids[int(v_mesh_id) * 5 + int(params.tex_slot_pad.x)];
+	vec3 texel = vec3(1.0);
+	if (tid >= 0 && tid < 8) {
+		vec3 an = abs(N);
+		vec2 tuv;
+		if (an.x >= an.y && an.x >= an.z) {
+			tuv = fract(vec2(v_world.z, v_world.y) * 0.01);
+		} else if (an.y >= an.x && an.y >= an.z) {
+			tuv = fract(vec2(v_world.x, v_world.z) * 0.01);
+		} else {
+			tuv = fract(vec2(v_world.x, v_world.y) * 0.01);
+		}
+		texel = texture(tex_arr[tid], tuv).rgb;
+	}
+	vec3 alb = albedo * texel;
+	vec3 L = params.light_dir_ambient.xyz;
+	float AMB = params.light_dir_ambient.w;
+	float ndl = max(dot(N, L), 0.0);
+	vec3 V = Vv;
+	vec3 diff = alb * ndl * params.light_color.rgb;
+	vec3 H = normalize(L + V);
+	float shiny_eff = max(shiny * (1.2 - rough), 1.0);
+	float spec = pow(max(dot(N, H), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
+	vec3 sc = mix(spec_col, alb, metal);
+	vec3 specular = spec * sc * params.light_color.rgb;
+	vec3 col = AMB * alb + diff + specular + emi;
+	if (dot(N, Vv) >= 0.0) {
+		// Cluster lookup: framebuffer tile + exponential depth slice.
+		// Y MUST be flipped: gl_FragCoord row 0 is the framebuffer TOP, which
+		// is NDC +y, i.e. cull row 8 (cull rows are NDC-bottom-up). Without
+		// the flip the frag reads mirrored, mostly-empty clusters.
+		float tx = clamp(floor(gl_FragCoord.x / params.grid_dims.x * 16.0), 0.0, 15.0);
+		float ty = clamp(8.0 - floor(gl_FragCoord.y / params.grid_dims.y * 9.0), 0.0, 8.0);
+		vec3 vvc = (params.cam_pos.xyz - v_world);
+		float z_view = length(vvc);
+		float lratio = params.grid_dims.w / params.grid_dims.z;
+		float tz = clamp(floor(24.0 * log(z_view / params.grid_dims.z) / log(lratio)), 0.0, 23.0);
+		uint cid = uint(tz) * 144u + uint(ty) * 16u + uint(tx);
+		uint coff = cid * 16u;
+		uint ccnt = clcnt.cnt[cid];
+		for (uint j = 0u; j < ccnt && j < 64u; j++) {
+			uint lid = clidx.idx[coff + j];
+			vec4 A0 = lightbuf.lights[lid * 4u + 0u];
+			vec4 A1 = lightbuf.lights[lid * 4u + 1u];
+			vec4 A2 = lightbuf.lights[lid * 4u + 2u];
+			vec4 A3 = lightbuf.lights[lid * 4u + 3u];
+			vec3 to_l = A0.xyz - v_world;
+			float dd = length(to_l);
+			vec3 Ld = dd > 1e-4 ? to_l / dd : vec3(0.0);
+			float att = 1.0 / (1.0 + (dd * dd) / (A0.w * A0.w));
+			float ndl2 = max(dot(N, Ld), 0.0);
+			float cone_f = 1.0;
+			if (A2.w > 0.5) {
+				float ang = acos(clamp(dot(-Ld, normalize(A2.xyz)), -1.0, 1.0));
+				cone_f = 1.0 - smoothstep(A3.x, A3.y, ang);
+			}
+			vec3 ldiff = alb * ndl2 * A1.rgb * (A1.a * att * cone_f);
+			vec3 H2 = normalize(Ld + V);
+			float s2 = pow(max(dot(N, H2), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
+			vec3 lspec = s2 * sc * A1.rgb * (A1.a * att * cone_f);
+			col += ldiff + lspec;
+		}
+	} else {
+		vec3 bem = (flags.z > 0.5) ? emi : vec3(0.0);
+		col = bem;
+	}
+	out_color = vec4(col, 1.0);
+	out_view_z = -1.0 / gl_FragCoord.w;
+}
+)";
+
 // GNE-011: procedural (non-indexed) batch vertex shader used by the GROUPED /
 // REORDERED multi-batch draw. One VkDrawIndirectCommand covers every instance of
 // every member mesh of a group: command.vertexCount == the largest member
@@ -1650,6 +1917,12 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_texture_bind", "material_id", "slot", "texture_id"), &GneRenderServer::gpu_texture_bind);
 	ClassDB::bind_method(D_METHOD("gpu_texture_get_stats"), &GneRenderServer::gpu_texture_get_stats);
 	ClassDB::bind_method(D_METHOD("gpu_texture_get_binding", "material_id", "slot"), &GneRenderServer::gpu_texture_get_binding);
+	ClassDB::bind_method(D_METHOD("gpu_light_create", "params"), &GneRenderServer::gpu_light_create);
+	ClassDB::bind_method(D_METHOD("gpu_light_update", "id", "params"), &GneRenderServer::gpu_light_update);
+	ClassDB::bind_method(D_METHOD("gpu_light_destroy", "id"), &GneRenderServer::gpu_light_destroy);
+	ClassDB::bind_method(D_METHOD("gpu_light_get_stats"), &GneRenderServer::gpu_light_get_stats);
+	ClassDB::bind_method(D_METHOD("gpu_material_draw_lights"), &GneRenderServer::gpu_material_draw_lights);
+	ClassDB::bind_method(D_METHOD("gpu_light_debug_cluster", "tx", "ty", "tz"), &GneRenderServer::gpu_light_debug_cluster);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_PER_MESH", GNE_BATCH_STRATEGY_PER_MESH);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_GROUPED", GNE_BATCH_STRATEGY_GROUPED);
 	ClassDB::bind_integer_constant("GneRenderServer", "GneBatchStrategy", "GNE_BATCH_STRATEGY_REORDERED", GNE_BATCH_STRATEGY_REORDERED);
@@ -1824,8 +2097,67 @@ void GneRenderServer::_destroy_mesh_batch() {
 }
 
 void GneRenderServer::_destroy_mesh() {
-	// GNE-016: material teardown FIRST: the mat set references batch/scene
-	// buffers freed below, and RD auto-invalidates sets whose buffers die.
+	// GNE-018: light store teardown. ORDER: sets first (they reference the
+	// buffers), then pipelines/shaders, then buffers. (016-lifetime lesson:
+	// RD auto-invalidates sets whose buffers die first.)
+	if (rendering_device != nullptr) {
+		if (light_cull_uniform_set.is_valid()) {
+			rendering_device->free_rid(light_cull_uniform_set);
+			light_cull_uniform_set = RID();
+		}
+		if (mat_light_tex_set.is_valid()) {
+			rendering_device->free_rid(mat_light_tex_set);
+			mat_light_tex_set = RID();
+		}
+		if (mat_light_uniform_set.is_valid()) {
+			rendering_device->free_rid(mat_light_uniform_set);
+			mat_light_uniform_set = RID();
+		}
+		if (light_cull_pipeline.is_valid()) {
+			rendering_device->free_rid(light_cull_pipeline);
+			light_cull_pipeline = RID();
+		}
+		if (light_cull_shader.is_valid()) {
+			rendering_device->free_rid(light_cull_shader);
+			light_cull_shader = RID();
+		}
+		if (mat_light_pipeline.is_valid()) {
+			rendering_device->free_rid(mat_light_pipeline);
+			mat_light_pipeline = RID();
+		}
+		if (mat_light_shader.is_valid()) {
+			rendering_device->free_rid(mat_light_shader);
+			mat_light_shader = RID();
+		}
+		if (light_buffer.is_valid()) {
+			rendering_device->free_rid(light_buffer);
+			light_buffer = RID();
+		}
+		if (cluster_offset_buffer.is_valid()) {
+			rendering_device->free_rid(cluster_offset_buffer);
+			cluster_offset_buffer = RID();
+		}
+		if (cluster_count_buffer.is_valid()) {
+			rendering_device->free_rid(cluster_count_buffer);
+			cluster_count_buffer = RID();
+		}
+		if (cluster_index_buffer.is_valid()) {
+			rendering_device->free_rid(cluster_index_buffer);
+			cluster_index_buffer = RID();
+		}
+		if (light_overflow_buffer.is_valid()) {
+			rendering_device->free_rid(light_overflow_buffer);
+			light_overflow_buffer = RID();
+		}
+	}
+	for (int i = 0; i < GNE_LIGHT_MAX; i++) {
+		memset(&light_cpu[i], 0, sizeof(GneLight));
+	}
+	light_count = 0;
+	gpu_light_valid = false;
+	// GNE-016: material teardown (after the light block above): the mat set
+	// references batch/scene buffers freed below, and RD auto-invalidates
+	// sets whose buffers die.
 	// Guarded by the same rendering_device check as the mesh sets below.
 	if (rendering_device != nullptr) {
 		if (mat_batch_uniform_set.is_valid()) {
@@ -2553,6 +2885,9 @@ void GneRenderServer::gpu_scene_set_camera(const Transform3D &p_camera_transform
 	meshlet_camera_position[1] = p_camera_transform.origin.y;
 	meshlet_camera_position[2] = p_camera_transform.origin.z;
 	far_plane = p_projection.get_z_far();
+	// GNE-018: cluster inputs (unconditional, like the meshlet capture above).
+	cam_near_v = p_projection.get_z_near();
+	cam_tan_v = _projection_tan_half_fov_v(p_projection);
 	{
 		Projection ml_cam_view(p_camera_transform.inverse());
 		Projection ml_vp_mat = p_projection * ml_cam_view;
@@ -5094,6 +5429,9 @@ bool GneRenderServer::_mat_tex_refresh_set() {
 		print_error("[GNE] _mat_tex_refresh_set: uniform_set_create failed.");
 		return false;
 	}
+	// The light pipeline's set 0 mirrors the same buffers: mark stale so the
+	// next draw_lights rebuilds it (it cannot share the object: shader-bound).
+	light_set0_dirty = true;
 	return true;
 }
 
@@ -5252,6 +5590,170 @@ PackedInt32Array GneRenderServer::gpu_texture_get_stats() {
 	return ret;
 }
 
+// GNE-018 Phase 1: light store (additive; cull compute + shading land in
+// later phases, same commit only after the Phase-4 gates pass).
+bool GneRenderServer::_light_read_params(const Dictionary &p_params, GneLight &r_out) {
+	memset(&r_out, 0, sizeof(r_out));
+	int type = 0;
+	if (p_params.has("type")) {
+		type = (int)p_params["type"];
+	}
+	if (type != 0 && type != 1) {
+		print_error("[GNE] light params: type must be 0 (point) or 1 (spot).");
+		return false;
+	}
+	if (!p_params.has("pos") || !p_params.has("color")) {
+		print_error("[GNE] light params: pos and color are required.");
+		return false;
+	}
+	Vector3 pos = p_params["pos"];
+	float range = p_params.has("range") ? (float)p_params["range"] : 0.0f;
+	if (range <= 0.0f) {
+		print_error("[GNE] light params: range must be > 0.");
+		return false;
+	}
+	Color color = p_params["color"];
+	float intensity = p_params.has("intensity") ? (float)p_params["intensity"] : 1.0f;
+	if (intensity < 0.0f) {
+		print_error("[GNE] light params: intensity must be >= 0.");
+		return false;
+	}
+	Vector3 dir(0, -1, 0);
+	float ci = 0.0f, co = 0.0f;
+	if (type == 1) {
+		if (!p_params.has("dir")) {
+			print_error("[GNE] light params: spots require dir.");
+			return false;
+		}
+		dir = ((Vector3)p_params["dir"]);
+		if (dir.length() < 1e-6f) {
+			print_error("[GNE] light params: zero direction.");
+			return false;
+		}
+		dir = dir.normalized();
+		ci = p_params.has("cone_inner") ? (float)p_params["cone_inner"] : 0.0f;
+		co = p_params.has("cone_outer") ? (float)p_params["cone_outer"] : 0.0f;
+		if (!(ci > 0.0f && co > ci && co <= 1.5707964f)) {
+			print_error("[GNE] light params: need 0 < cone_inner < cone_outer <= pi/2.");
+			return false;
+		}
+	}
+	r_out.pos[0] = pos.x;
+	r_out.pos[1] = pos.y;
+	r_out.pos[2] = pos.z;
+	r_out.range = range;
+	r_out.color[0] = color.r;
+	r_out.color[1] = color.g;
+	r_out.color[2] = color.b;
+	r_out.intensity = intensity;
+	r_out.dir[0] = dir.x;
+	r_out.dir[1] = dir.y;
+	r_out.dir[2] = dir.z;
+	r_out.type = (float)type;
+	r_out.cone_inner = ci;
+	r_out.cone_outer = co;
+	return true;
+}
+
+int GneRenderServer::gpu_light_create(const Dictionary &p_params) {
+	if (rendering_device == nullptr) {
+		print_error("[GNE] gpu_light_create: no RenderingDevice.");
+		return -1;
+	}
+	if (!gpu_light_valid) {
+		light_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_LIGHT_MAX * 64));
+		cluster_offset_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 4));
+		cluster_count_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 4));
+		cluster_index_buffer = rendering_device->storage_buffer_create(
+				(uint32_t)(GNE_CLUSTER_COUNT * GNE_CLUSTER_LIGHT_CAP * 4));
+		light_overflow_buffer = rendering_device->storage_buffer_create(4);
+		if (light_buffer.is_null() || cluster_offset_buffer.is_null()
+				|| cluster_count_buffer.is_null() || cluster_index_buffer.is_null()
+				|| light_overflow_buffer.is_null()) {
+			print_error("[GNE] gpu_light_create: buffer_create failed.");
+			return -1;
+		}
+		for (int i = 0; i < GNE_LIGHT_MAX; i++) {
+			memset(&light_cpu[i], 0, sizeof(GneLight));
+		}
+		rendering_device->buffer_clear(cluster_offset_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
+		rendering_device->buffer_clear(cluster_count_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
+		rendering_device->buffer_clear(light_overflow_buffer, 0, 4);
+		// Static layout: cluster tid owns slots [tid*16, tid*16+16). Filled
+		// once (never changes) so no prefix-sum pass is needed for DET.
+		{
+			Vector<uint32_t> offs;
+			offs.resize(GNE_CLUSTER_COUNT);
+			uint32_t *w = offs.ptrw();
+			for (int i = 0; i < GNE_CLUSTER_COUNT; i++) {
+				w[i] = (uint32_t)(i * GNE_CLUSTER_LIGHT_CAP);
+			}
+			rendering_device->buffer_update(cluster_offset_buffer, 0,
+					(uint32_t)(GNE_CLUSTER_COUNT * 4), w);
+		}
+		light_count = 0;
+		gpu_light_valid = true;
+		print_line("[GNE] Light store (GNE-018) initialized. max=1024 clusters=3456.");
+	}
+	if (light_count >= GNE_LIGHT_MAX) {
+		print_error("[GNE] gpu_light_create: light store full (1024).");
+		return -1;
+	}
+	GneLight rec;
+	if (!_light_read_params(p_params, rec)) {
+		return -1;
+	}
+	int id = light_count;
+	light_cpu[id] = rec;
+	rendering_device->buffer_update(light_buffer, (uint32_t)(id * 64), 64, &light_cpu[id]);
+	light_count++;
+	return id;
+}
+
+bool GneRenderServer::gpu_light_update(int p_id, const Dictionary &p_params) {
+	if (!gpu_light_valid) {
+		print_error("[GNE] gpu_light_update: no light store. Call gpu_light_create first.");
+		return false;
+	}
+	if (p_id < 0 || p_id >= light_count) {
+		print_error("[GNE] gpu_light_update: id out of allocated range.");
+		return false;
+	}
+	GneLight rec;
+	if (!_light_read_params(p_params, rec)) {
+		return false;
+	}
+	light_cpu[p_id] = rec;
+	rendering_device->buffer_update(light_buffer, (uint32_t)(p_id * 64), 64, &light_cpu[p_id]);
+	return true;
+}
+
+bool GneRenderServer::gpu_light_destroy(int p_id) {
+	if (!gpu_light_valid) {
+		print_error("[GNE] gpu_light_destroy: no light store.");
+		return false;
+	}
+	if (p_id < 0 || p_id >= light_count) {
+		print_error("[GNE] gpu_light_destroy: id out of allocated range.");
+		return false;
+	}
+	memset(&light_cpu[p_id], 0, sizeof(GneLight));
+	rendering_device->buffer_update(light_buffer, (uint32_t)(p_id * 64), 64, &light_cpu[p_id]);
+	return true;
+}
+
+Dictionary GneRenderServer::gpu_light_get_stats() {
+	Dictionary d;
+	d["count"] = light_count;
+	d["bytes"] = GNE_LIGHT_MAX * 64;
+	d["clusters"] = GNE_CLUSTER_COUNT;
+	d["valid"] = gpu_light_valid;
+	d["clusters_touched"] = light_clusters_touched;
+	d["assignments"] = light_assignments;
+	d["overflows"] = light_overflows;
+	return d;
+}
+
 int GneRenderServer::gpu_texture_get_binding(int p_mat, int p_slot) {
 	if (!gpu_material_valid) {
 		print_error("[GNE] gpu_texture_get_binding: no material store.");
@@ -5271,6 +5773,315 @@ int GneRenderServer::gpu_texture_get_binding(int p_mat, int p_slot) {
 	int32_t v = 0;
 	memcpy(&v, bytes.ptr() + (p_mat * GNE_MAT_TEX_SLOTS + p_slot) * 4, 4);
 	return (int)v;
+}
+
+// GNE-018 Phase 2/3: clustered raster path. Lazy-builds the cull pipeline
+// and the light pipeline + light set on first draw_lights (all buffers it
+// needs are guaranteed by then). The 016 mat pipeline and its set are NEVER
+// touched here, so 016 evidence cannot drift by construction.
+// Builds the light pipeline's OWN set 0: identical 7-binding layout to the
+// mat set (shared vert + same set-0 declarations => same layout), but a
+// separate object because RD sets are shader-bound.
+bool GneRenderServer::_light_build_set0() {
+	if (mat_light_uniform_set.is_valid()) {
+		rendering_device->free_rid(mat_light_uniform_set);
+		mat_light_uniform_set = RID();
+	}
+	Vector<RD::Uniform> uniforms;
+	const RID draw_buffers[5] = {
+		batch_instances_buffer, transform_buffer, view_ubo, mesh_id_buffer, mat_buffer
+	};
+	for (uint32_t b = 0; b < 5; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		if (b == 2) {
+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		}
+		u.append_id(draw_buffers[b]);
+		uniforms.push_back(u);
+	}
+	RD::Uniform u5;
+	u5.uniform_type = RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+	u5.binding = 5;
+	for (int i = 0; i < GNE_TEX_ARRAY; i++) {
+		u5.append_id(tex_sampler);
+		u5.append_id(tex_array[i].is_valid() ? tex_array[i] : tex_dummy);
+	}
+	uniforms.push_back(u5);
+	RD::Uniform u6;
+	u6.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+	u6.binding = 6;
+	u6.append_id(mat_tex_buffer);
+	uniforms.push_back(u6);
+	mat_light_uniform_set = rendering_device->uniform_set_create(uniforms, mat_light_shader, 0);
+	if (mat_light_uniform_set.is_null()) {
+		print_error("[GNE] light set-0 uniform_set_create failed.");
+		return false;
+	}
+	light_set0_dirty = false;
+	return true;
+}
+
+bool GneRenderServer::_light_ensure_geo() {
+	if (mat_light_pipeline.is_valid()) {
+		return true;
+	}
+	String error;
+	auto compile_compute = [&](const char *p_glsl, const char *p_name, RID &r_shader) -> bool {
+		Vector<uint8_t> spirv = rendering_device->shader_compile_spirv_from_source(
+				RD::SHADER_STAGE_COMPUTE, String(p_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+		if (spirv.is_empty()) {
+			print_error(String("[GNE] ") + p_name + " shader compile failed:");
+			print_error(error);
+			return false;
+		}
+		RD::ShaderStageSPIRVData stage;
+		stage.shader_stage = RD::SHADER_STAGE_COMPUTE;
+		stage.spirv = spirv;
+		Vector<RD::ShaderStageSPIRVData> stages;
+		stages.push_back(stage);
+		r_shader = rendering_device->shader_create_from_spirv(stages, p_name);
+		return r_shader.is_valid();
+	};
+	if (!compile_compute(gpu_light_cull_glsl, "gne_light_cull", light_cull_shader)) {
+		return false;
+	}
+	light_cull_pipeline = rendering_device->compute_pipeline_create(light_cull_shader);
+	Vector<RD::Uniform> cu;
+	const RID cbufs[6] = {
+		light_buffer, cluster_offset_buffer, cluster_count_buffer,
+		cluster_index_buffer, light_overflow_buffer, view_ubo
+	};
+	for (uint32_t b = 0; b < 6; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		if (b == 5) {
+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		}
+		u.append_id(cbufs[b]);
+		cu.push_back(u);
+	}
+	light_cull_uniform_set = rendering_device->uniform_set_create(cu, light_cull_shader, 0);
+	if (light_cull_uniform_set.is_null()) {
+		print_error("[GNE] light cull uniform_set_create failed.");
+		return false;
+	}
+	Vector<uint8_t> vert_spirv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_VERTEX, String(gpu_mat_batch_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+	if (vert_spirv.is_empty()) {
+		print_error("[GNE] light vertex shader compile failed:");
+		print_error(error);
+		return false;
+	}
+	Vector<uint8_t> frag_spirv = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_FRAGMENT, String(gpu_mat_light_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+	if (frag_spirv.is_empty()) {
+		print_error("[GNE] light fragment shader compile failed:");
+		print_error(error);
+		return false;
+	}
+	Vector<RD::ShaderStageSPIRVData> stages;
+	RD::ShaderStageSPIRVData vs;
+	vs.shader_stage = RD::SHADER_STAGE_VERTEX;
+	vs.spirv = vert_spirv;
+	stages.push_back(vs);
+	RD::ShaderStageSPIRVData fs;
+	fs.shader_stage = RD::SHADER_STAGE_FRAGMENT;
+	fs.spirv = frag_spirv;
+	stages.push_back(fs);
+	mat_light_shader = rendering_device->shader_create_from_spirv(stages, "gne_mat_light");
+	if (mat_light_shader.is_null()) {
+		print_error("[GNE] light shader_create_from_spirv failed.");
+		return false;
+	}
+	RD::PipelineRasterizationState rs;
+	RD::PipelineMultisampleState ms;
+	RD::PipelineDepthStencilState ds;
+	ds.enable_depth_test = true;
+	ds.enable_depth_write = true;
+	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(2);
+	mat_light_pipeline = rendering_device->render_pipeline_create(
+			mat_light_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
+	if (mat_light_pipeline.is_null()) {
+		print_error("[GNE] light render_pipeline_create failed.");
+		return false;
+	}
+	Vector<RD::Uniform> lu;
+	const RID lbufs[4] = {
+		light_buffer, cluster_offset_buffer, cluster_count_buffer, cluster_index_buffer
+	};
+	for (uint32_t b = 0; b < 4; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		u.append_id(lbufs[b]);
+		lu.push_back(u);
+	}
+	mat_light_tex_set = rendering_device->uniform_set_create(lu, mat_light_shader, 1);
+	if (mat_light_tex_set.is_null()) {
+		print_error("[GNE] light tex uniform_set_create failed.");
+		return false;
+	}
+	return _light_build_set0();
+}
+
+bool GneRenderServer::gpu_material_draw_lights() {
+	if (!gpu_scene_valid || !gpu_mesh_valid || !gpu_mesh_batch_valid) {
+		print_error("[GNE] gpu_material_draw_lights: no batch mesh. Call gpu_mesh_create first.");
+		return false;
+	}
+	if (!gpu_material_valid) {
+		print_error("[GNE] gpu_material_draw_lights: no material store. Call gpu_material_create first.");
+		return false;
+	}
+	if (!gpu_light_valid) {
+		print_error("[GNE] gpu_material_draw_lights: no light store. Call gpu_light_create first.");
+		return false;
+	}
+	if (!frustum_valid) {
+		print_error("[GNE] gpu_material_draw_lights: no camera. Call gpu_scene_set_camera first.");
+		return false;
+	}
+	if (mesh_batch_strategy != GNE_BATCH_STRATEGY_PER_MESH) {
+		print_error("[GNE] gpu_material_draw_lights: requires PER_MESH strategy.");
+		return false;
+	}
+	if (last_batch_count <= 0) {
+		print_error("[GNE] gpu_material_draw_lights: empty batch (run gpu_mesh_batch_dispatch first).");
+		return false;
+	}
+	if (!_light_ensure_geo()) {
+		return false;
+	}
+	if (light_set0_dirty && !_light_build_set0()) {
+		return false;
+	}
+	// 1. Cull: clear counts + overflow, dispatch 3456 threads, sync.
+	rendering_device->buffer_clear(cluster_count_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
+	rendering_device->buffer_clear(light_overflow_buffer, 0, 4);
+	struct CullPush {
+		float dims[4];  // light_count, tan_half_fov_v, aspect, unused
+		float range[4]; // near, far, raster_w, raster_h
+	};
+	CullPush cp;
+	cp.dims[0] = (float)light_count;
+	cp.dims[1] = cam_tan_v;
+	cp.dims[2] = 1920.0f / 1080.0f;
+	cp.dims[3] = 0.0f;
+	cp.range[0] = cam_near_v;
+	cp.range[1] = far_plane;
+	cp.range[2] = 1920.0f;
+	cp.range[3] = 1080.0f;
+	_run_compute_pass(light_cull_pipeline, light_cull_uniform_set, &cp, sizeof(cp), 54, 1, 1);
+	// 2. Evidence mirrors (exact integer reads, no float involved).
+	{
+		Vector<uint8_t> cb = rendering_device->buffer_get_data(cluster_count_buffer, 0,
+				(uint32_t)(GNE_CLUSTER_COUNT * 4));
+		light_clusters_touched = 0;
+		light_assignments = 0;
+		if (cb.size() == (int)(GNE_CLUSTER_COUNT * 4)) {
+			const uint32_t *c = (const uint32_t *)cb.ptr();
+			for (int i = 0; i < GNE_CLUSTER_COUNT; i++) {
+				if (c[i] > 0) {
+					light_clusters_touched++;
+					light_assignments += (int)c[i];
+				}
+			}
+		}
+		Vector<uint8_t> ob = rendering_device->buffer_get_data(light_overflow_buffer, 0, 4);
+		light_overflows = 0;
+		if (ob.size() == 4) {
+			uint32_t o = 0;
+			memcpy(&o, ob.ptr(), 4);
+			light_overflows = (int)o;
+		}
+	}
+	// 3. Raster with the light pipeline (set 0 shared with mat pipeline by
+	// identical layout; set 1 = light set). Same clear/depth/commands.
+	struct LightPush {
+		float light_xyz_amb[4];
+		float cam_xyz[4];
+		float light_rgb[4];
+		float tex_slot_pad[4];
+		float grid_dims[4]; // raster_w, raster_h, near, far
+	};
+	LightPush push;
+	push.light_xyz_amb[0] = mat_light_dir.x;
+	push.light_xyz_amb[1] = mat_light_dir.y;
+	push.light_xyz_amb[2] = mat_light_dir.z;
+	push.light_xyz_amb[3] = 0.1f;
+	push.cam_xyz[0] = meshlet_camera_position[0];
+	push.cam_xyz[1] = meshlet_camera_position[1];
+	push.cam_xyz[2] = meshlet_camera_position[2];
+	push.cam_xyz[3] = 0.0f;
+	push.light_rgb[0] = 1.0f;
+	push.light_rgb[1] = 1.0f;
+	push.light_rgb[2] = 1.0f;
+	push.light_rgb[3] = 0.0f;
+	push.tex_slot_pad[0] = 0.0f;
+	push.tex_slot_pad[1] = 0.0f;
+	push.tex_slot_pad[2] = 0.0f;
+	push.tex_slot_pad[3] = 0.0f;
+	push.grid_dims[0] = 1920.0f;
+	push.grid_dims[1] = 1080.0f;
+	push.grid_dims[2] = cam_near_v;
+	push.grid_dims[3] = far_plane;
+	Vector<Color> clear_colors;
+	clear_colors.push_back(Color(0, 0, 0, 0));
+	clear_colors.push_back(Color(far_plane, 0.0f, 0.0f, 0.0f));
+	RD::DrawListID dl = rendering_device->draw_list_begin(raster_framebuffer, RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_COLOR_1 | RD::DRAW_CLEAR_DEPTH, clear_colors, 1.0f, 0, Rect2(), 0);
+	if (dl == RD::INVALID_ID) {
+		print_error("[GNE] gpu_material_draw_lights: draw_list_begin failed.");
+		return false;
+	}
+	rendering_device->draw_list_bind_render_pipeline(dl, mat_light_pipeline);
+	rendering_device->draw_list_bind_uniform_set(dl, mat_light_uniform_set, 0);
+	rendering_device->draw_list_bind_uniform_set(dl, mat_light_tex_set, 1);
+	rendering_device->draw_list_bind_vertex_array(dl, mesh_010_vertex_array);
+	rendering_device->draw_list_bind_index_array(dl, mesh_010_index_array);
+	rendering_device->draw_list_set_push_constant(dl, &push, sizeof(push));
+	rendering_device->draw_list_draw_indirect(dl, true, batch_args_buffer, 0, (uint32_t)last_batch_count, 20);
+	rendering_device->draw_list_end();
+
+	rendering_device->submit();
+	rendering_device->sync();
+
+	mat_dispatches++;
+	return true;
+}
+
+PackedInt32Array GneRenderServer::gpu_light_debug_cluster(int p_tx, int p_ty, int p_tz) {
+	PackedInt32Array ret;
+	if (!gpu_light_valid) {
+		return ret;
+	}
+	if (p_tx < 0 || p_tx >= GNE_CLUSTER_X || p_ty < 0 || p_ty >= GNE_CLUSTER_Y
+			|| p_tz < 0 || p_tz >= GNE_CLUSTER_Z) {
+		return ret;
+	}
+	int tid = (p_tz * GNE_CLUSTER_Y + p_ty) * GNE_CLUSTER_X + p_tx;
+	Vector<uint8_t> cb = rendering_device->buffer_get_data(cluster_count_buffer, (uint32_t)(tid * 4), 4);
+	if (cb.size() != 4) {
+		return ret;
+	}
+	uint32_t n = 0;
+	memcpy(&n, cb.ptr(), 4);
+	ret.push_back((int32_t)n);
+	uint32_t want = n < 4 ? n : 4;
+	if (want > 0) {
+		Vector<uint8_t> ib = rendering_device->buffer_get_data(cluster_index_buffer,
+				(uint32_t)(tid * GNE_CLUSTER_LIGHT_CAP * 4), want * 4);
+		if (ib.size() == (int)(want * 4)) {
+			const uint32_t *ids = (const uint32_t *)ib.ptr();
+			for (uint32_t i = 0; i < want; i++) {
+				ret.push_back((int32_t)ids[i]);
+			}
+		}
+	}
+	return ret;
 }
 
 int GneRenderServer::gpu_mesh_get_mesh_id_count() const {
