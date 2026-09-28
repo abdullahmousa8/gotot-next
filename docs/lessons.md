@@ -74,3 +74,27 @@ Always test with rotating cameras.
 
 **Related:** KI-007 (HZB AABB).
 Both in set_camera / culling pipeline.
+
+## Lesson 5: Concurrent GPU Runs (Environment)
+
+**Date:** 2026-09-28
+**Context:** Isolated project + GNE tested simultaneously.
+
+**Observed:**
+- Repeated `nvoglv64.dll` crashes.
+- Repeated `nvlddmkm 153` (kernel driver error).
+- Multiple GNE runs polluted by driver resets.
+
+**Root cause:**
+- Concurrent Vulkan/OpenGL usage on same GPU.
+- Driver does not isolate contexts cleanly.
+
+**Rule:**
+No concurrent runs. Clean test windows only.
+
+**Enforcement:**
+- GNE tests: dedicated time windows.
+- Isolated project: separate windows.
+- Any run with driver crash = rejected measurement.
+
+**Related:** KI-008 (potential).
