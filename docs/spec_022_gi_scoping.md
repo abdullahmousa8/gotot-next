@@ -652,3 +652,10 @@ probe cells; uniform light scale s=0.03, ratio-invariant by construction):
 Field cross-check same scene, single raw trace: near 0.6858 / far 0.0523 = 13.1x
 (the S1b 22.60/1.29 was read after 7 traces with bounce feedback; the rendered
 window ratio 18.29 is the gate measurement). Battery full sweep still pending.
+**Gate 5 complete (2026-09-29, full sweep):** gt_regress (007-015) PASS; gt_016a
+PASS (v16 literal); gt_017a PASS (v17 literal); gt_018a_rev PASS (v18-rev
+literal); gt_019a PASS (v19 literal); gt_020a PASS (v20 literal); gt_021a PASS
+(v21 literal); zero ERROR lines across all sweep logs. All five section-10
+gates are now green: flag-off byte-identity, ratio 18.29x, determinism, cost,
+leak-free battery. The section-10 unit (fragment integration + normalization)
+is COMPLETE.

@@ -909,4 +909,10 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - Cost evidence: draw-path p50 delta +53us / +230us across two runs (noisy).
 - Commits: 3c6b4c1 (push-block fix), b01d6e6 (front-atlas + teardown + scene).
 - Next: full battery sweep (gate 5), then stop at the decision point (S3 vs
-  deeper integration vs other) with the report.
+  deeper integration vs other) with the report.- Gate 5 closed the same night: full sweep green - gt_regress (007-015) PASS;
+  gt_016a/017a/018a_rev/019a/020a/021a PASS with all historical literals intact
+  (v16 / v17 / v18-rev / v19 / v20 / v21); zero ERROR lines. Section-10 unit
+  COMPLETE (all 5 gates green).
+- Decision point reached: S3 (RT backend) stays blocked by KI-015 (fork-level RT
+  pipeline creation failure, engine-level diagnosis); denoiser / temporal
+  integration were explicitly out of the section-10 unit scope.
