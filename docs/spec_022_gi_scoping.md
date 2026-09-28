@@ -807,3 +807,54 @@ criterion/gain/window changes, S3/RT, aesthetics.
 **Status:** the experiment delivered the mandated direct comparison. Whether to
 KEEP the FP32 storage, and whether/how to address the display-instrument limit,
 are decision items for the owner/architect - not enacted here.
+**11-R1 OFFICIAL CLOSURE (owner decision, 2026-09-29; state = commit 52ab47a).**
+- §11-R1: PASS (causal fix, not tuning - the experiment isolated the mechanism:
+  FP16 -> EMA increment < half FP16 quantum -> storage quantization lock -> field
+  stops at k=77; FP32 -> same algorithm/scene/gain/criterion -> no lock).
+- Adopted storage: RGBA32F accumulation for the GI field (R32G32B32A32_SFLOAT).
+- OFFICIAL RECORD WORDING (preserve exactly in all future references):
+  "§11 remains FAIL under the frozen criterion; §11-R1 PASS demonstrates that FP16
+  storage quantization was the cause of the accumulation lock, while the remaining
+  failure is attributable to the 8-bit observation path."
+- Closed facts: FP16 lock at k=77; lock removed with RGBA32F (clean 0.509 decay;
+  last field delta 1.4e-5 at f=160); accum p50 547us; memory +2 MB; determinism
+  PASS; S2 PASS (in-interval); section-10 regression 18.30x; full sweep PASS.
+- The 8-bit display limitation is a SEPARATE measurement problem.
+- §11 criterion, gain (s=0.015), measurement window (r=4), and the historical
+  §11 FAIL result are UNCHANGED and must not be rewritten.
+
+## 11-M1. Float Field Convergence Instrumentation (spec, pre-approval; frozen 2026-09-29)
+
+**Purpose (single):** measure the convergence of the GI FIELD ITSELF at float
+precision, away from the 8-bit image conversion. Measurement only - this unit does
+NOT change the section-11 criterion, does NOT convert FAIL to PASS, and does not
+rewrite any historical record.
+
+**Path (as directed):**
+GI accumulation
+  |- existing 8-bit display path (untouched)
+  - FP32 field readback -> per-frame delta, slope ratio, convergence endpoint,
+    determinism
+
+**Instrument (proposed, for approval):**
+- Source: the existing gpu_gi_read_avg() readback (float32 since R1) on the same
+  near probe (continuity with sections 10-11), PLUS a small fixed probe set (the
+  section-11 near/far probes + a few spread probes) for robustness. No engine
+  change expected; a batched readback helper is the fallback only if per-frame
+  readout cost proves impractical (to be scoped then).
+- New scene main_022_m1; the section-11 scene stays FROZEN (no edits to it).
+- Metrics: per-frame field values (float), delta series, slope ratios (every 10
+  frames, mirroring the section-11 cadence), convergence endpoint REPORTED as
+  characteristics (frames to delta < 1e-5, < 1e-6), determinism (in-process
+  double-run byte-equal).
+- Explicitly NOT a pass/fail gate in this unit: the output is the instrument and
+  the full-precision record. Any future use of it to evaluate criterion (b) is a
+  separate registered decision (e.g., section 11-M2), not part of M1.
+
+**Acceptance (for the future implementation, pending approval):** the float
+series resolves the 0.509 decay ratio across the full 160-frame window with no
+8-bit involvement; determinism byte-equal; zero ERROR/leak; existing scene files
+and engine code untouched except the new scene.
+
+**STOP POINT (as directed): spec written; NO implementation until explicit owner
+approval.**

@@ -141,5 +141,11 @@ RGBA16F double-buffered probe atlas, 16x8x16 field).
 - Diagnose with per-frame lattice dumps (exact multiples of 2^-k expose the lock
   and its onset frame immediately).
 
+**Verification update (R1 closure, 2026-09-29):** the counterfactual was run - the
+same algorithm, scene, gain and criterion on FP32 accumulation show NO lock (clean
+0.509 decay through 160 frames). Removing the FP16 storage removed the symptom: the
+quantization-lock mechanism is CONFIRMED (reproduction + counterfactual), and
+RGBA32F is the adopted accumulation storage for the GI field (commit 52ab47a).
+
 **Related:** GNE-022 section 11 (spec_022), section 11-R1 (accumulation precision
 experiment).

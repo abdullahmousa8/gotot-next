@@ -945,3 +945,16 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   sweep 7/7; zero ERROR/leak).
 - Decision items (not enacted): keep FP32 as the accumulation storage? address the
   display-instrument resolution limit for convergence measurement?
+## §44. §11-R1 official closure + §11-M1 spec (2026-09-29)
+
+- R1 CLOSED at 52ab47a per owner decision: RGBA32F adopted as the GI accumulation
+  storage; the experiment isolated the mechanism (causal fix, not tuning).
+- Official record wording (preserved): "§11 remains FAIL under the frozen
+  criterion; §11-R1 PASS demonstrates that FP16 storage quantization was the cause
+  of the accumulation lock, while the remaining failure is attributable to the
+  8-bit observation path."
+- §11 criterion/gain/window/historical result unchanged. Lesson 7 updated with the
+  counterfactual (GNE-verified diagnosis).
+- Section 11-M1 spec drafted (float field convergence instrumentation; measurement
+  only; no criterion changes) - STOPPED for owner approval before implementation;
+  no code changes made.
