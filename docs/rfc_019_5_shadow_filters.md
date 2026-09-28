@@ -36,3 +36,16 @@ with a bounded first slice.
 storage upgrades (R32 -> R32G32) only after slice-0 evidence with a recorded
 decision. Not in scope: cube/spot VSM in slice-0; volumetric; RT (KI-015); any
 temporal trick.
+## Slice-0 implementation notes (recon 2026-09-29)
+- Fill path: geometry -> 2D target (frag `gpu_shadow_depth_frag_glsl` writes v_ndc_z)
+  -> compute pack (`gpu_shadow_pack_glsl`, imageStore r32f into the array layer).
+- ESM variant: ENCODE at fill (out_dist = exp(c*ndc) when the fill mode says ESM;
+  per-type fill mode - dir CSM only in this slice; cube/spot keep raw depth so their
+  PCF compare is untouched) and DECODE at compare: s = saturate(exp(c*ref) /
+  filtered_e) with ref from the same clamp(ndc) - bias transform.
+- The CSM sampler must filter LINEAR for the ESM read; the existing PCF path uses
+  texelFetch (filter-independent), so a LINEAR filter state does not change PCF
+  results.
+- c chosen structurally (c=40 documented; artifacts reported, not silently tuned).
+- Flag `gne_shadow_esm` default OFF; scene `main_019_5` for the OFF/ON comparison;
+  CVS baseline untouched (flag off default).
