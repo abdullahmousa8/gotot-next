@@ -60,6 +60,30 @@ foreach ($g in @('gt_016a','gt_017a','gt_018a','gt_018a_rev','gt_019a','gt_020a'
   $ok = ($sig -ne '' -and $sig -eq $exp)
   Record $g $ok ('sig=' + $sig)
 }
+# Material v2 X1 gate (016.5). gt_regress runs main_007..main_015 only and no
+# literal gate covers 016.5, so the scene - and the missing-channel X1
+# contract it asserts - had no place in CVS: a failing SLICE1 verdict only
+# printed and still exited 0. The scene is now fail-closed (exit 41), and this
+# step requires the real exit code, the PASS marker, the absence of an explicit
+# SLICE1 FAIL, and a clean error scan. The ERROR: filter mirrors the global
+# error scan so the PowerShell NativeCommandError wrapper is not miscounted as
+# a scene error.
+$lf = Join-Path $logDir 'mat_v2_x1.log'
+if (Test-Path $lf) { Remove-Item $lf -Force }
+& $exe --path $proj --rendering-method forward_plus res://main_016_5.tscn > $lf 2>&1
+$x1rc = $LASTEXITCODE
+$x1pass = ((Select-String -LiteralPath $lf -Pattern 'GNE 016\.5: SLICE1 PASS' | Measure-Object).Count -ge 1)
+$x1fail = ((Select-String -LiteralPath $lf -Pattern 'GNE 016\.5: SLICE1 FAIL' | Measure-Object).Count -ge 1)
+$x1err = @()
+if (Test-Path $lf) {
+  $x1err = @(Select-String -LiteralPath $lf -Pattern 'ERROR:|invalid ID' | Where-Object { $_.Line -notmatch 'FullyQualifiedErrorId|NativeCommandError' })
+}
+$xd = ('rc=' + $x1rc + ' pass=' + $x1pass + ' fail=' + $x1fail + ' errs=' + $x1err.Count)
+$xm = Select-String -LiteralPath $lf -Pattern 'X1 all-unset body_px=(\d+)/(\d+) diff_px=(\d+) max_lsb=(\d+)' | Select-Object -Last 1
+if ($xm) {
+  $xd += (' body_px=' + $xm.Matches[0].Groups[1].Value + '/' + $xm.Matches[0].Groups[2].Value + ' diff_px=' + $xm.Matches[0].Groups[3].Value + ' max_lsb=' + $xm.Matches[0].Groups[4].Value)
+}
+Record 'mat_v2_x1' (($x1rc -eq 0) -and $x1pass -and (-not $x1fail) -and ($x1err.Count -eq 0)) $xd
 # GI checks (token-based)
 & $exe --path $proj --rendering-method forward_plus res://main_022_gate2.tscn > (Join-Path $logDir 'gi_gate2.log') 2>&1
 $g2 = Join-Path $logDir 'gi_gate2.log'

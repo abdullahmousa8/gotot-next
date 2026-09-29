@@ -304,13 +304,21 @@ func _measure() -> void:
 		if f == null:
 			_fail(4025, "sig file"); return
 		f.store_string(sig + "\n")
+	# The SLICE1 verdict is SHARED by all nine conditions below, so it is gated
+	# as a whole: any of them failing now exits non-zero (41), it no longer
+	# only prints. X1 was never granted authority over M2/M3/M4, and making
+	# X1 alone fatal would silently rank it above the other conditions, so the
+	# whole verdict became fail-closed together. Code 41 is distinct from the
+	# _fail() range (4000-4034) so the verdict is identifiable in CVS logs.
 	if m2_ok and m3_ok and m4_ok and det_ok and wsd_ok and r1_ok and det2_ok and x1_ok and x1_ctl_ok:
 		print("GNE 016.5: SLICE1 PASS")
+		server.gpu_scene_destroy()
+		get_tree().quit(0)
 	else:
 		print("GNE 016.5: SLICE1 FAIL m2=", m2_ok, " m3=", m3_ok, " m4=", m4_ok, " det=", det_ok,
 				" x1=", x1_ok, " x1ctl=", x1_ctl_ok)
-	server.gpu_scene_destroy()
-	get_tree().quit(0)
+		server.gpu_scene_destroy()
+		get_tree().quit(41)
 
 func _alternations(pixels: PackedByteArray, c: Vector2) -> int:
 	# Count luminance direction changes along the face scanline (|step| > 0.03).
