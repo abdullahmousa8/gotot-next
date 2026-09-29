@@ -24,6 +24,23 @@ if (-not $SkipBuild) {
   Record 'build' $ok ('rc=' + $LASTEXITCODE)
   if (-not $ok) { $script:lines | ForEach-Object { Write-Output $_ }; Write-Output 'GNE_VERIFY: FAIL'; exit 1 }
 }
+# module presence boot gate (GNE-024): catches a Godot build made without
+# custom_modules, where the gne_render module silently vanishes while the
+# build still succeeds. Runs here - after the build, before the long sweep -
+# and ALSO under -SkipBuild, so it always validates the binary CVS will use.
+# A failure stops CVS immediately rather than after the 10-scene sweep.
+$bootLog = Join-Path $logDir 'module_boot.log'
+if (Test-Path $bootLog) { Remove-Item $bootLog -Force }
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\gne_boot_gate.ps1') `
+  -Exe $exe -Proj $proj -LogPath $bootLog > (Join-Path $logDir 'module_boot_gate.log') 2>&1
+$bootRc = $LASTEXITCODE
+$bootVerdict = Select-String -LiteralPath (Join-Path $logDir 'module_boot_gate.log') `
+  -Pattern 'MODULE_BOOT: (PASS|FAIL) :: (.*)' | Select-Object -Last 1
+$bootDetail = ''
+if ($bootVerdict) { $bootDetail = $bootVerdict.Matches[0].Groups[2].Value.Trim() }
+$ok = ($bootRc -eq 0) -and $bootVerdict -and ($bootVerdict.Matches[0].Groups[1].Value -eq 'PASS')
+Record 'module_boot' $ok $bootDetail
+if (-not $ok) { $script:lines | ForEach-Object { Write-Output $_ }; Write-Output 'GNE_VERIFY: FAIL'; exit 1 }
 # regress sweep
 & (Join-Path $root 'tools\gt_regress.bat') > (Join-Path $logDir 'regress.log') 2>&1
 $ok = ((Select-String -LiteralPath (Join-Path $logDir 'regress.log') -Pattern 'GT_REGRESS: PASS' | Measure-Object).Count -ge 1)
