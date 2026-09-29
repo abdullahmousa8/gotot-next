@@ -51,6 +51,25 @@ Record 'gi_gate2' $ok ''
 & $exe --path $proj --rendering-method forward_plus res://main_022_shade.tscn > (Join-Path $logDir 'gi_shade.log') 2>&1
 $ok = ((Select-String -LiteralPath (Join-Path $logDir 'gi_shade.log') -Pattern 'SHADE: GATE2 PASS' | Measure-Object).Count -ge 1)
 Record 'gi_shade' $ok ''
+# M1 standing gate (023 HDR): bat markers + numeric validation of the FRESH
+# M1 line (h0/h1/gain recompute within 1e-9 absolute ~1e6x above double noise
+# at magnitude ~2 and far below the 0.01 signal floor; gain >= 0.01). No
+# literal-sig comparison: the 023 sig embeds wall-clock timings by design.
+$lf = Join-Path $logDir 'gt_023a.log'
+& (Join-Path $root 'tools\gt_023a.bat') > $lf 2>&1
+$m1ok = $false
+$m1detail = ''
+$m1pass = ((Select-String -LiteralPath $lf -Pattern 'GT_023A: PASS' | Measure-Object).Count -ge 1)
+$mm = Select-String -LiteralPath $lf -Pattern 'GNE 023: M1 hdr lit h0=([0-9.eE+-]+) h1=([0-9.eE+-]+) gain=([0-9.eE+-]+) sane=(\w+)' | Select-Object -Last 1
+if ($m1pass -and $mm) {
+  $h0 = [double]$mm.Matches[0].Groups[1].Value
+  $h1 = [double]$mm.Matches[0].Groups[2].Value
+  $gain = [double]$mm.Matches[0].Groups[3].Value
+  $sane = $mm.Matches[0].Groups[4].Value -eq 'True'
+  $m1ok = $sane -and ([Math]::Abs($h1 - $h0 - $gain) -le 1e-9) -and ($gain -ge 0.01)
+  $m1detail = ('h0=' + $h0 + ' h1=' + $h1 + ' gain=' + $gain)
+}
+Record 'gt_023a' $m1ok $m1detail
 # render regression: golden byte-compare (018 + 019)
 foreach ($gs in @(@('main_018','main_018.png'), @('main_019','main_019.png'))) {
   $scene = $gs[0]
