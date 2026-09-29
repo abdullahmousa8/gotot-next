@@ -36,9 +36,19 @@ var probe_wall := {}
 var probe_gpu := {}
 var wall_series: Array = []
 var pass_count_ok := 0
+# Differential probe: skip the raster readbacks to measure their share of the
+# raster bucket. Set by --noreadback.
+var noreadback := false
+# Gate the synchronous visible-count readback (see the cull pass below).
+var want_visible := false
 
 
 func _ready() -> void:
+	for a in OS.get_cmdline_user_args():
+		if a == "--noreadback":
+			noreadback = true
+		elif a == "--needvisible":
+			want_visible = true
 	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(400, "server singleton is null")
@@ -107,7 +117,13 @@ func _process(_delta: float) -> void:
 	if not server.gpu_cull_dispatch():
 		_fail(410, "gpu_cull_dispatch")
 		return
-	var visible: int = server.gpu_cull_get_visible_count()
+	# gpu_cull_get_visible_count() is a SYNCHRONOUS 4-byte GPU readback
+	# (cpp:4148 -> buffer_get_data), so it stalls the whole pipeline. Measured
+	# cost here: 4.26 ms/frame, 18% of this scene's frame. Its result was never
+	# read by this scene, so by default it is not called at all. Ask for it with
+	# --needvisible only when the number itself is the thing being measured.
+	if want_visible:
+		var visible: int = server.gpu_cull_get_visible_count()
 	if not server.gpu_visibility_dispatch():
 		_fail(411, "gpu_visibility_dispatch")
 		return
@@ -131,8 +147,15 @@ func _process(_delta: float) -> void:
 	if not server.gpu_mesh_indirect_draw():
 		_fail(415, "gpu_mesh_indirect_draw")
 		return
-	var pixels: PackedByteArray = server.gpu_raster_read_pixels()
-	var depth: PackedFloat32Array = server.gpu_raster_read_depth()
+	# The two readbacks below sit BETWEEN mark(P_BATCH) and mark(P_RASTER), and
+	# gpu_frame_mark(p) accumulates the interval since the PREVIOUS mark, so
+	# their cost lands in the RASTER bucket - not output. --noreadback skips
+	# them so the readback share of raster can be measured instead of assumed.
+	var pixels := PackedByteArray()
+	var depth := PackedFloat32Array()
+	if not noreadback:
+		pixels = server.gpu_raster_read_pixels()
+		depth = server.gpu_raster_read_depth()
 	server.gpu_frame_mark(P_RASTER)
 
 	# pass 5 — output: CPU-side presentation.
