@@ -1,6 +1,7 @@
 # Contract 016.5 — channel array bounds
 
-**Status:** behaviour MEASURED, design INTENT undetermined.
+**Status:** behaviour MEASURED. Bound `0..4` **ADOPTED as the official contract**
+(owner decision, 2026-09-29). Dead `tia < 8` remains DEFERRED technical debt.
 **Date:** 2026-09-29. **Method:** measurement (Y2 payload probe), not inference.
 
 ## The effective contract, as measured
@@ -67,10 +68,22 @@ permits 8 positions — it never admits five.
   guard is equally consistent with an author who changed the outer bound and left
   the inner one behind. It indicates a probability, not a decision.
 
-**Consequence:** the measurement fixes *what the code does*. It does not license
-either reading it as "designed N=5" or as "bug". Choosing between documenting the
-bound and widening it is an architectural decision recorded in
-`docs/open_items_register.md`, not a consequence of this file.
+## Adoption decision (owner, 2026-09-29)
+
+The measured `0..4` bound is **adopted as the official contract** for the system
+in its current stage. Rationale: those five positions are the measured,
+byte-guaranteed ones; making 5..7 live would require shader changes, a record
+re-layout and a performance bundle re-test, which is unearned risk absent an
+explicit requirement for eight channels. Fixing the bound also prevents silent
+access to the isolated positions and states the real processing limit for
+developers.
+
+**Scope of the decision:** this settles the *bound*, and nothing else. It does
+not authorise a shader edit, and it does not resolve the dead `tia < 8`, which
+stays registered as deferred technical debt for a future shader review. The
+alternatives recorded below (widen to 8) remain reachable only via a new
+requirement, and would then need their own measurement — the evidence here
+describes the current code, not a claim about what the code ought to be.
 
 ## Scope
 
