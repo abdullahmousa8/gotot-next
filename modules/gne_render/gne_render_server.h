@@ -107,6 +107,7 @@ bool gne_present_lowres = false;
 	RID raster_depth_texture;
 	RID raster_viewz_texture; // R32_SFLOAT view-space depth (GNE-012 pyramid source).
 	RID raster_normal_texture; // RGBA16F world-space normal (GNE-018-rev cone source).
+	RID raster_hdr_texture; // GNE-023/KI-017: pre-tonemap HDR radiance (RGBA32F)
 	bool mesh_depth_enabled = false;
 	bool raster_depth_enabled = false;
 
@@ -679,6 +680,7 @@ public:
 	PackedFloat32Array gpu_raster_read_depth();
 	float gpu_raster_read_viewz(int p_x, int p_y);
 	PackedFloat32Array gpu_raster_read_normal(int p_x, int p_y);
+	PackedFloat32Array gpu_raster_read_hdr(int p_x, int p_y); // GNE-023/KI-017
 	PackedFloat32Array gpu_raster_read_viewz_all(); // GNE-018-rev R1 tooling
 	PackedFloat32Array gpu_raster_read_normal_all(); // GNE-018-rev R1 tooling
 // GNE-020: presentation path - reduced-resolution present target + readback.

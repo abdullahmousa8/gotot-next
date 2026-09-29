@@ -416,11 +416,13 @@ layout(location = 0) out vec4 out_color;
 // GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
 layout(location = 2) out vec4 out_normal;
+layout(location = 3) out vec4 out_radiance; // GNE-023/KI-017: pre-tonemap HDR
 
 void main() {
 	out_color = vec4(0.95, 0.18, 0.9, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
 	out_normal = vec4(0.0);
+	out_radiance = vec4(0.0); // KI-017: non-shading path writes zero
 }
 )";
 
@@ -508,11 +510,13 @@ layout(location = 0) out vec4 out_color;
 // GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
 layout(location = 2) out vec4 out_normal;
+layout(location = 3) out vec4 out_radiance; // GNE-023/KI-017: pre-tonemap HDR
 
 void main() {
 	out_color = vec4(0.15, 0.85, 0.35, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
 	out_normal = vec4(0.0);
+	out_radiance = vec4(0.0); // KI-017: non-shading path writes zero
 }
 )";
 
@@ -853,11 +857,13 @@ layout(location = 0) out vec4 out_color;
 // GNE-012: view-space depth copy for the production pyramid (z_view).
 layout(location = 1) out float out_view_z;
 layout(location = 2) out vec4 out_normal;
+layout(location = 3) out vec4 out_radiance; // GNE-023/KI-017: pre-tonemap HDR
 
 void main() {
 	out_color = mesh_colors.colors[v_mesh_id];
 	out_view_z = -1.0 / gl_FragCoord.w;
 	out_normal = vec4(0.0);
+	out_radiance = vec4(0.0); // KI-017: non-shading path writes zero
 }
 )";
 
@@ -949,6 +955,7 @@ params;
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out float out_view_z;
 layout(location = 2) out vec4 out_normal;
+layout(location = 3) out vec4 out_radiance; // GNE-023/KI-017: pre-tonemap HDR
 
 void main() {
 	uint m = v_mesh_id * 4u;
@@ -984,6 +991,7 @@ void main() {
 		vec3 bem = (flags.z > 0.5) ? emi : vec3(0.0);
 		out_color = vec4(bem, 1.0);
 		out_view_z = -1.0 / gl_FragCoord.w;
+		out_radiance = vec4(bem, 1.0); // KI-017: unlit path
 		return;
 	}
 	vec3 L = params.light_dir_ambient.xyz;
@@ -997,6 +1005,7 @@ void main() {
 	vec3 specular = spec * sc * params.light_color.rgb * step(0.0, dot(N, L)); // KI-011: NdotL gate
 	out_color = vec4(AMB * alb + diff + specular + emi, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
+	out_radiance = vec4(AMB * alb + diff + specular + emi, 1.0); // KI-017: raw HDR (pre-clamp)
 }
 )";
 
@@ -1612,6 +1621,7 @@ params;
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out float out_view_z;
 layout(location = 2) out vec4 out_normal;
+	layout(location = 3) out vec4 out_radiance; // GNE-023/KI-017: pre-tonemap HDR
 
 // GNE-019.5 slice-0: ESM read for the dir CSM (encode c = 40; see the fill
 // fragment). Hardware-linear filtering gives the soft penumbra; artifacts are
@@ -1913,10 +1923,12 @@ void main() {
 	} else {
 		vec3 bem = (flags.z > 0.5) ? emi : vec3(0.0);
 		col = bem;
+		out_radiance = vec4(col, 1.0); // KI-017: unlit path
 	}
 	if (params.gi_params.x > 0.5) {
 		col += params.gi_params.y * gne_gi_sample_field(gi_atlas_s, params.gi_min.xyz, params.gi_max.xyz, params.gi_dims.xyz, v_world);
 	}
+	out_radiance = vec4(col, 1.0); // KI-017: raw HDR, final pre-clamp (incl. cluster+GI)
 	out_color = vec4(col, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
 }
@@ -2732,6 +2744,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_depth"), &GneRenderServer::gpu_raster_read_depth);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz", "x", "y"), &GneRenderServer::gpu_raster_read_viewz);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_normal", "x", "y"), &GneRenderServer::gpu_raster_read_normal);
+	ClassDB::bind_method(D_METHOD("gpu_raster_read_hdr", "x", "y"), &GneRenderServer::gpu_raster_read_hdr);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_viewz_all"), &GneRenderServer::gpu_raster_read_viewz_all);
 	ClassDB::bind_method(D_METHOD("gpu_raster_read_normal_all"), &GneRenderServer::gpu_raster_read_normal_all);
 	ClassDB::bind_method(D_METHOD("gpu_present_lowres_set", "enabled"), &GneRenderServer::gpu_present_lowres_set);
@@ -3396,6 +3409,10 @@ void GneRenderServer::_destroy_gpu_scene() {
 	if (raster_normal_texture.is_valid()) {
 		rendering_device->free_rid(raster_normal_texture);
 		raster_normal_texture = RID();
+	}
+	if (raster_hdr_texture.is_valid()) {
+		rendering_device->free_rid(raster_hdr_texture);
+		raster_hdr_texture = RID();
 	}
 	raster_framebuffer_format = -1;
 	raster_depth_attached = false;
@@ -5149,6 +5166,21 @@ bool GneRenderServer::_create_raster_pipeline() {
 		print_error("[GNE] raster normal texture_create failed.");
 		return false;
 	}
+	// GNE-023/KI-017: pre-tonemap HDR radiance target (RGBA32F) - raw radiance
+	// written by the fragment shaders before any 8-bit clamp; read by the KI-017
+	// instrument (gpu_raster_read_hdr).
+	RD::TextureFormat hf;
+	hf.texture_type = RD::TEXTURE_TYPE_2D;
+	hf.width = RASTER_TARGET_W;
+	hf.height = RASTER_TARGET_H;
+	hf.depth = 1;
+	hf.format = RD::DATA_FORMAT_R32G32B32A32_SFLOAT;
+	hf.usage_bits = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	raster_hdr_texture = rendering_device->texture_create(hf, RD::TextureView());
+	if (raster_hdr_texture.is_null()) {
+		print_error("[GNE] raster hdr texture_create failed.");
+		return false;
+	}
 
 	Vector<RD::AttachmentFormat> afs;
 	RD::AttachmentFormat af;
@@ -5171,6 +5203,11 @@ bool GneRenderServer::_create_raster_pipeline() {
 	nf_af.samples = RD::TEXTURE_SAMPLES_1;
 	nf_af.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 	afs.push_back(nf_af);
+	RD::AttachmentFormat hf_af;
+	hf_af.format = RD::DATA_FORMAT_R32G32B32A32_SFLOAT;
+	hf_af.samples = RD::TEXTURE_SAMPLES_1;
+	hf_af.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	afs.push_back(hf_af);
 	raster_framebuffer_format = rendering_device->framebuffer_format_create(afs);
 	if (raster_framebuffer_format < 0) {
 		print_error("[GNE] raster framebuffer_format_create failed.");
@@ -5181,6 +5218,7 @@ bool GneRenderServer::_create_raster_pipeline() {
 	attachments.push_back(raster_color_texture);
 	attachments.push_back(raster_viewz_texture);
 	attachments.push_back(raster_normal_texture);
+		attachments.push_back(raster_hdr_texture);
 	attachments.push_back(raster_depth_texture);
 	// Skip the format-check id so RD recomputes the format from the textures
 	// themselves (identical layout; the check only guards against stale ids).
@@ -5197,7 +5235,7 @@ bool GneRenderServer::_create_raster_pipeline() {
 	RD::PipelineRasterizationState rs;
 	RD::PipelineMultisampleState ms;
 	RD::PipelineDepthStencilState ds;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(4);
 	raster_pipeline = rendering_device->render_pipeline_create(
 			raster_shader, raster_framebuffer_format, RD::INVALID_ID, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (raster_pipeline.is_null()) {
@@ -5279,7 +5317,7 @@ bool GneRenderServer::_create_mesh_pipeline() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(4);
 	mesh_pipeline = rendering_device->render_pipeline_create(
 			mesh_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mesh_pipeline.is_null()) {
@@ -5707,7 +5745,7 @@ bool GneRenderServer::_init_mesh_table_gpu() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(4);
 	mesh_batch_pipeline = rendering_device->render_pipeline_create(
 			mesh_batch_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mesh_batch_pipeline.is_null()) {
@@ -5788,7 +5826,7 @@ bool GneRenderServer::_init_mesh_table_gpu() {
 		gds.enable_depth_test = true;
 		gds.enable_depth_write = true;
 		gds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-		RD::PipelineColorBlendState gbs = RD::PipelineColorBlendState::create_disabled(3);
+		RD::PipelineColorBlendState gbs = RD::PipelineColorBlendState::create_disabled(4);
 		group_batch_pipeline = rendering_device->render_pipeline_create(
 				group_batch_shader, raster_framebuffer_format, group_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, grs, gms, gds, gbs, 0, 0);
 		if (group_batch_pipeline.is_null()) {
@@ -6181,7 +6219,7 @@ bool GneRenderServer::gpu_material_create() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(4);
 	mat_batch_pipeline = rendering_device->render_pipeline_create(
 			mat_batch_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mat_batch_pipeline.is_null()) {
@@ -6999,7 +7037,7 @@ bool GneRenderServer::_light_ensure_geo() {
 	ds.enable_depth_test = true;
 	ds.enable_depth_write = true;
 	ds.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
-	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(3);
+	RD::PipelineColorBlendState bs = RD::PipelineColorBlendState::create_disabled(4);
 	mat_light_pipeline = rendering_device->render_pipeline_create(
 			mat_light_shader, raster_framebuffer_format, mesh_vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rs, ms, ds, bs, 0, 0);
 	if (mat_light_pipeline.is_null()) {
@@ -9303,6 +9341,27 @@ PackedFloat32Array GneRenderServer::gpu_raster_read_normal(int p_x, int p_y) {
 	return out;
 }
 
+// GNE-023/KI-017: raw HDR radiance readback (RGBA32F, pre-tonemap; 4 floats/px).
+PackedFloat32Array GneRenderServer::gpu_raster_read_hdr(int p_x, int p_y) {
+	PackedFloat32Array out;
+	if (!gpu_scene_valid || !gpu_raster_valid) {
+		return out;
+	}
+	if (p_x < 0 || p_x >= RASTER_TARGET_W || p_y < 0 || p_y >= RASTER_TARGET_H) {
+		return out;
+	}
+	Vector<uint8_t> data = rendering_device->texture_get_data(raster_hdr_texture, 0);
+	int64_t off = ((int64_t)p_y * (int64_t)RASTER_TARGET_W + (int64_t)p_x) * 16;
+	if ((int64_t)data.size() < off + 16) {
+		return out;
+	}
+	const float *p = (const float *)(data.ptr() + off);
+	out.append(p[0]);
+	out.append(p[1]);
+	out.append(p[2]);
+	out.append(p[3]);
+	return out;
+}
 // GNE-018-rev: full-frame normal read (R1 tooling; RGBA16F decoded to 4 floats/px).
 PackedFloat32Array GneRenderServer::gpu_raster_read_normal_all() {
 	PackedFloat32Array out;

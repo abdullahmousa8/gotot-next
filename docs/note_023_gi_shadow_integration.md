@@ -47,3 +47,31 @@ HDR (pre-tonemap) radiance readback instrument, part of the GNE CVS as general
 measurement infrastructure (any future GI integration gate hits the same limit).
 the integration level. Future scoping (when needed): full-field convergence
 measurement (the KI-016/M1 instrument), GI x dynamic shadows response.
+
+## KI-017 CLOSURE (2026-09-29) — HDR instrument built, M1' claim CONFIRMED
+
+**Instrument:** 5th framebuffer attachment (RGBA32F) + `out_radiance` writes in
+all 5 raster fragment shaders (zero in non-shading paths, real pre-clamp values
+in mat lit/bem + light final/bem) + `gpu_raster_read_hdr(x, y)` API + M1' gate
+on main_023. Purely additive: full CVS green, all 7 literal signatures
+byte-identical, goldens 018/019 byte-identical, zero error lines.
+
+**Before/after HDR (LIT_PROBE, inst1 face):**
+- Display (8-bit): 1.0 -> 1.0, delta 0.0 — blind (I2 void confirmed again).
+- HDR (unclipped): h0=1.6276 -> h1=2.3326, **gain +0.7050** — indirect light
+  measurably adds to an already-lit surface. The 023 untested claim is now
+  TESTED and CONFIRMED (M1': sanity + gain>=0.01, folded into INTEGRATION PASS).
+
+**Sanity vs double accumulation:** independent analytic recomputation of h0 from
+dir+cluster only (ambient 0.07 + dir 0.76 + spot0 0.54 + points ~0.25) gives
+≈1.62 vs measured 1.6276 (0.25% — inside shell-approximation slop). The large
+gain is explained (spot0 alone ≈0.52 at this pixel), not inflated. No GI leakage
+into the baseline (fresh session, GI disabled at h0 measurement, shader branches
+on gi_params.x).
+
+**Correction during implementation (owner-approved):** the inherited lit-path
+write sat pre-cluster/pre-GI (radiance = ambient+dir only — blind to the very
+quantity KI-017 exists to measure). Moved to end-of-main (final pre-clamp col,
+incl. cluster+GI); unlit bem-path write kept. Zero DET risk (new attachment
+only). Blend states of the 6 raster-framebuffer pipelines bumped 3->4 (disabled
+throughout; shadow pipeline untouched) to cover the 4th color attachment.

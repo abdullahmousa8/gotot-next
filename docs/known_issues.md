@@ -329,3 +329,17 @@ effect (medians 7795 vs 7890 us, 5 runs each); sync removal = crash (invalid in 
 fork). The per-call readback floor is engine-side; both experimental paths were removed
 after measurement. C6 remains closed-as-accepted; zero-copy (RHI-level) stays a future
 item.
+
+---
+
+## Monitoring note (2026-09-29): transient silent EXIT=-1 on first run of a fresh binary
+
+**Observed:** one silent process death (EXIT=-1, no `ERROR:` line, no FAIL line) mid-run of
+`main_018` on the first execution of a freshly linked binary carrying the KI-017
+5th-attachment change. Environment was quiet at the time (no neighbor GPU load, no
+nvlddmkm/TDR events in the logs). An immediate retry of the identical command passed
+fully (`v18|lc=20|cc=2841|ot=0|hr=0.94|d1`, EXIT=0), as did the full CVS afterwards.
+**Status:** watch item only, NOT a numbered KI — single occurrence, unreproduced, no root
+cause claimed. Pattern resembles the historical first-run flakes (Lesson 5 class:
+silent kills with a quiet event log), hence recorded rather than dismissed.
+Re-open as a KI only on second occurrence with logs attached.

@@ -155,6 +155,7 @@ func _measure() -> void:
 	var lpx := _proj_px(LIT_PROBE, vp)
 	var u0 := _window_mean(pixA, upx, 2)
 	var l0 := _window_mean(pixA, lpx, 2)
+	var h0 := _hdr_probe(lpx)
 	# GI: seed trace + 8 accumulation steps
 	server.gpu_gi_enabled_set(true)
 	if not server.gpu_gi_trace():
@@ -170,10 +171,19 @@ func _measure() -> void:
 	var pixB := server.gpu_raster_read_pixels()
 	var u1 := _window_mean(pixB, upx, 2)
 	var l1 := _window_mean(pixB, lpx, 2)
+	var h1 := _hdr_probe(lpx)
 	var du := u1 - u0
 	var dl := l1 - l0
 	print("GNE 023: umbra ", u0, " -> ", u1, " delta=", du)
 	print("GNE 023: lit   ", l0, " -> ", l1, " delta=", dl)
+	# M1' (KI-017): HDR radiance on the lit probe, unclipped. sane = the HDR
+	# read matches the 8-bit display value (unsaturated case) or sits above it
+	# (saturated case, which is exactly what the instrument is for); gain >= 0.01
+	# = indirect measurably adds to an already-lit surface (the 023 untested claim).
+	var m1_sane := (absf(h0 - l0) < 0.05) or (l0 >= 0.995 and h0 >= l0 - 0.05)
+	var m1_gain := h1 - h0
+	var m1_ok := m1_sane and (m1_gain >= 0.01)
+	print("GNE 023: M1 hdr lit h0=", h0, " h1=", h1, " gain=", m1_gain, " sane=", m1_sane)
 	# I3 determinism: repeat the GI state draw byte-equal
 	if not _redraw():
 		return
@@ -210,10 +220,10 @@ func _measure() -> void:
 	# and it carries the full evidence (I1). The lit-probe delta is printed as
 	# a saturation-evidence value only (dl == 0.0 == saturated).
 	var i2_ok := true
-	if i1_ok and i2_ok and det_ok:
+	if i1_ok and i2_ok and det_ok and m1_ok:
 		print("GNE 023: INTEGRATION PASS")
 	else:
-		print("GNE 023: INTEGRATION FAIL i1=", i1_ok, " i2=", i2_ok, " det=", det_ok)
+		print("GNE 023: INTEGRATION FAIL i1=", i1_ok, " i2=", i2_ok, " det=", det_ok, " m1=", m1_ok)
 	var sig := "v023|du=%.4f|dl=%.4f|det=%d|off=%d|on=%d|d1" % [du, dl, int(det_ok), _p50(t_off), _p50(t_on)]
 	print("GNE 023: sig=", sig)
 	if sig_file != "":
@@ -235,6 +245,13 @@ func _redraw() -> bool:
 	if not server.gpu_material_draw_lights():
 		_fail(5043, "draw"); return false
 	return true
+
+func _hdr_probe(p: Vector2) -> float:
+	var v := server.gpu_raster_read_hdr(int(p.x), int(p.y))
+	if v.size() != 4:
+		_fail(5024, "hdr read empty")
+		return -1.0
+	return (v[0] + v[1] + v[2]) / 3.0
 
 func _window_mean(pixels: PackedByteArray, c: Vector2, r: int) -> float:
 	var s := 0.0
