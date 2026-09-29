@@ -178,12 +178,45 @@ func _measure() -> void:
 	var fpx := _proj_px(fc, vp)
 	var base_nrm := server.gpu_raster_read_normal(int(fpx.x), int(fpx.y))
 
-	# --- CELL A: albedo channel -> the cluster-chroma proof ---
+	# --- CELL A: albedo channel, light at full intensity ---
+	# --- CELL B: SAME channel, SAME light, intensity forced to 0 via the new
+	# gpu_light_set_intensity (a narrow single-field write, so the light keeps
+	# its position, range and cluster membership). B is what the 016.cclus B/D
+	# cells needed and what no public API could express before: the cluster
+	# term is proportional to intensity, so at 0 it must vanish while the
+	# neutral AMB*alb term is untouched. chroma(B) == 0 therefore attributes
+	# the whole red excess in A to the cluster loop, with no appeal to a
+	# missing light or a rebuilt store.
 	if not server.gpu_material_set_maps(0, tid_grey, -1, -1, Vector2(0.0125, 0.0125)):
 		_fail(6022, "set_maps albedo"); return
 	if not _redraw():
 		return
 	var a := _win(server.gpu_raster_read_pixels(), base_px, fpx)
+	# SECOND BASELINE at zero intensity. Comparing cell B against the FIRST
+	# baseline would confound the channel effect with the light removal (that
+	# mix is what produced the bogus chroma_B=38 on the first attempt). With a
+	# baseline that shares B's intensity, B measures the channel alone.
+	if not server.gpu_light_set_intensity(0, 0.0):
+		_fail(6025, "set_intensity 0"); return
+	if not server.gpu_material_set_maps(0, -1, -1, -1, Vector2(0.0125, 0.0125)):
+		_fail(6022, "set_maps base0"); return
+	if not _redraw():
+		return
+	var base0_px := server.gpu_raster_read_pixels()
+	if not server.gpu_material_set_maps(0, tid_grey, -1, -1, Vector2(0.0125, 0.0125)):
+		_fail(6022, "set_maps albedo B"); return
+	if not _redraw():
+		return
+	var b := _win(server.gpu_raster_read_pixels(), base0_px, fpx)
+	# Absolute cluster term: the A-minus-B difference at the SAME channel state
+	# isolates the cluster emission exactly, with the neutral term cancelling.
+	var ct_r: float = a.mr - b.mr
+	var ct_g: float = a.mg - b.mg
+	var ct_b: float = a.mb - b.mb
+	print("GNE 016.cclus: A-B cluster term  dR=%+.3f dG=%+.3f dB=%+.3f" % [ct_r, ct_g, ct_b])
+	# restore emission for the controls below
+	if not server.gpu_light_set_intensity(0, LIGHT_INTENSITY):
+		_fail(6025, "set_intensity restore"); return
 
 	# --- CELL R: roughness channel -> positive control (spatial + pixel change)
 	if not server.gpu_material_set_maps(0, -1, tid_chk, -1, Vector2(0.0125, 0.0125)):
@@ -206,17 +239,28 @@ func _measure() -> void:
 	var dR: float = a.mr - a.base_mr
 	var dG: float = a.mg - a.base_mg
 	var dB: float = a.mb - a.base_mb
+	var bR: float = b.mr - b.base_mr
+	var bG: float = b.mg - b.base_mg
+	# ct_r / ct_g / ct_b were already computed at the A-B measurement above; do
+	# not redeclare them here.
 	var neutral_split: float = absf(dG - dB)
 	var chroma: float = absf(dR - dG)
+	# Silence control, now correctly formed: with NO cluster light the red
+	# excess must be gone, so the channel's own response must be neutral.
+	var chroma_b: float = absf(bR - bG)
 	var c_body: bool = (a.body == 81)
 	var c_split: bool = (neutral_split <= 2.0)
 	var c_chroma: bool = (chroma >= 2.55)
+	var c_silence: bool = (chroma_b <= 0.5)
+	# The cluster term itself must be red-only and above the same 1% floor.
+	var c_term: bool = (ct_r >= 2.55 and absf(ct_g) <= 0.5 and absf(ct_b) <= 0.5)
 	var c_rough: bool = (r.sd_r > 1.0 and r.max_lsb > 0)
 	var c_norm: bool = (n_delta > 0.1)
 	print("GNE 016.cclus: A dR=%.3f dG=%.3f dB=%.3f neutral_split=%.3f chroma=%.3f body=%d" % [dR, dG, dB, neutral_split, chroma, a.body])
+	print("GNE 016.cclus: A-B cluster term dR=%+.3f dG=%+.3f dB=%+.3f | chroma_B=%.3f" % [ct_r, ct_g, ct_b, chroma_b])
 	print("GNE 016.cclus: R sd_r=%.3f max_lsb=%d | N nrm_delta=%.6f max_lsb=%d" % [r.sd_r, r.max_lsb, n_delta, n.max_lsb])
-	print("GNE 016.cclus: cond body=%s neutral_split=%s chroma=%s rough_ctl=%s normal_ctl=%s" % [str(c_body), str(c_split), str(c_chroma), str(c_rough), str(c_norm)])
-	var sig := "v166cclus|body=%d|split=%.3f|chroma=%.3f|rsd=%.3f|rl=%d|nd=%.6f|%d%d%d%d%d" % [a.body, neutral_split, chroma, r.sd_r, r.max_lsb, n_delta, int(c_body), int(c_split), int(c_chroma), int(c_rough), int(c_norm)]
+	print("GNE 016.cclus: cond body=%s neutral_split=%s chroma=%s silence=%s term=%s rough_ctl=%s normal_ctl=%s" % [str(c_body), str(c_split), str(c_chroma), str(c_silence), str(c_term), str(c_rough), str(c_norm)])
+	var sig := "v166cclus|body=%d|split=%.3f|chroma=%.3f|chromaB=%.3f|ctR=%.3f|ctG=%.3f|rsd=%.3f|rl=%d|nd=%.6f|%d%d%d%d%d%d%d" % [a.body, neutral_split, chroma, chroma_b, ct_r, ct_g, r.sd_r, r.max_lsb, n_delta, int(c_body), int(c_split), int(c_chroma), int(c_silence), int(c_term), int(c_rough), int(c_norm)]
 	print("GNE 016.cclus: sig=", sig)
 	if sig_file != "":
 		var f := FileAccess.open(sig_file, FileAccess.WRITE)
@@ -224,12 +268,13 @@ func _measure() -> void:
 			_fail(6024, "sig file"); return
 		f.store_string(sig + "\n")
 	server.gpu_scene_destroy()
-	if c_body and c_split and c_chroma and c_rough and c_norm:
+	if c_body and c_split and c_chroma and c_silence and c_term and c_rough and c_norm:
 		print("GNE 016.cclus: GATE PASS")
 		get_tree().quit(0)
 	else:
 		print("GNE 016.cclus: GATE FAIL body=", c_body, " split=", c_split,
-				" chroma=", c_chroma, " rough=", c_rough, " normal=", c_norm)
+				" chroma=", c_chroma, " silence=", c_silence, " term=", c_term,
+				" rough=", c_rough, " normal=", c_norm)
 		get_tree().quit(61)
 
 # Per-window statistics against the baseline capture.
