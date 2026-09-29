@@ -343,6 +343,22 @@ $m20 = Select-String -LiteralPath $lf20 -Pattern 'wall_avg_us=(\d+) wall_peak_us
 if ($m20) { $perf = ('020:' + $m20.Matches[0].Groups[1].Value + '/' + $m20.Matches[0].Groups[2].Value) }
 $avgAll = @()
 foreach ($mm in (Select-String -LiteralPath $lf20 -Pattern 'wall_avg_us=(\d+)')) { $avgAll += [int]$mm.Matches[0].Groups[1].Value }
+# The threshold is only meaningful for the binary it was measured on. A rebuild
+# changes exe_sha256, and every historical row becomes incomparable - yet the
+# constant below would keep judging the new binary against the old one's
+# numbers, silently. The same reasoning as the provenance stamp above: a gate
+# that cannot detect that its own basis is void is not a gate. So the basis is
+# pinned to a file, and a mismatch BLOCKS instead of warning. Re-baseline by
+# re-measuring on quiet hardware and rewriting the file - never by widening.
+$p020base = @{}
+$pb = Join-Path $root 'tools\perf020_baseline.txt'
+if (Test-Path -LiteralPath $pb) {
+  foreach ($ln in [System.IO.File]::ReadAllLines($pb)) {
+    if ($ln -match '^\s*([a-z_0-9]+)\s*=\s*(.+?)\s*$') { $p020base[$Matches[1]] = $Matches[2] }
+  }
+}
+$basisExe = if ($p020base.ContainsKey('exe_sha256')) { $p020base['exe_sha256'].ToUpper() } else { '' }
+$basisOk = ($basisExe -ne '') -and ($exeNow -eq $basisExe)
 if ($avgAll.Count -gt 0) {
   $w020 = ($avgAll | Measure-Object -Maximum).Maximum
   # WARN is a severity label INSIDE failure, not a pass. The first cut tested
@@ -351,7 +367,11 @@ if ($avgAll.Count -gt 0) {
   # and passed the build silently. Ordering the elseif the other way is the
   # only reading consistent with the rationale above.
   $p020 = if ($w020 -gt 46000) { 'WARN' } elseif ($w020 -gt 40000) { 'FAIL' } else { 'PASS' }
-  Record 'perf020' ($p020 -eq 'PASS') ($w020.ToString() + 'us worst of ' + $avgAll.Count + ' [FAIL>40000 WARN>46000]')
+  if (-not $basisOk) {
+    Record 'perf020' $false ('STALE BASIS: threshold was measured on exe=' + $(if ($basisExe) { $basisExe.Substring(0, 12) } else { '<none recorded>' }) + ' but this binary is ' + $(if ($exeNow) { $exeNow.Substring(0, 12) } else { 'missing' }) + '. The reading ' + $w020 + 'us is NOT comparable - re-measure and rewrite tools/perf020_baseline.txt. Do not widen the threshold.')
+  } else {
+    Record 'perf020' ($p020 -eq 'PASS') ($w020.ToString() + 'us worst of ' + $avgAll.Count + ' [FAIL>40000 WARN>46000, basis exe=' + $exeNow.Substring(0, 12) + ']')
+  }
 } else {
   Record 'perf020' $false 'no wall_avg_us in gt_020a.log'
 }

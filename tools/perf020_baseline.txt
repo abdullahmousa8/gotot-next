@@ -1,0 +1,21 @@
+# perf020 threshold basis (GNE-020 contract 20_perf)
+#
+# The FAIL/WARN ceilings below are only meaningful for the exact binary they
+# were measured on. gne_verify.ps1 pins this file against exe_sha256 and BLOCKS
+# when they differ, because a rebuilt binary makes every historical row
+# incomparable while the constant would keep judging it silently.
+#
+# To re-baseline: measure wall_avg_us on quiet hardware with several clean
+# runs, confirm none of them clip or drift, then rewrite exe_sha256 AND the two
+# thresholds together. Never widen a threshold to make a run pass.
+#
+# Original basis (2026-09-30): 10 samples, 5 runs x 2 passes, quiet host.
+# min 26703, median 28846, mean 28873, max 30679 us - a 1.15x spread.
+# FAIL sits 1.30x above that max. The 31 pre-gate history samples were REJECTED
+# as a basis: they spread 6.9x and are left-skewed.
+#
+# The 31 historical samples are deliberately not the basis. See the contract.
+
+exe_sha256 = 49F4EFCEBC90DB6BB811BCCD173B1FC2B89D99E6258B9353126B9927622A036A
+fail_us = 40000
+warn_us = 46000
