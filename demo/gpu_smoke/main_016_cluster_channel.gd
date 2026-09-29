@@ -263,6 +263,10 @@ func _measure() -> void:
 	step_ids.append(["shine_128", 0.0, BASE_SPEC, 128.0])
 	# step 4: metal=1 makes sc = alb, so everything must scale and S -> 0
 	step_ids.append(["metal_100", 1.0, BASE_SPEC, BASE_SHINE])
+	# GNE-017.1 mid-point: the derived law S = 64*spec_col*(1-metal) predicts
+	# S = 64*0.25*0.5 = 8.000 at metal = 0.5. This is the ONLY row that tests
+	# the law between its measured endpoints, so it is the predictive check.
+	step_ids.append(["metal_050", 0.5, BASE_SPEC, BASE_SHINE])
 	for st in step_ids:
 		var res: Dictionary = _cluster_pair(float(st[1]), st[2], float(st[3]), fpx)
 		if res.is_empty():

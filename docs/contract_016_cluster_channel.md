@@ -131,19 +131,30 @@ where `K_s = 64` falls out of the measurement. Measured sweep:
 | `shine_004` | 0.25 | 4 | 0.0 | +38.0 | +27.0 | +16.000 |
 | `shine_128` | 0.25 | 128 | 0.0 | +37.6 | +26.9 | +16.235 |
 | `metal_100` | 0.25 | 32 | 1.0 | +38.0 | +19.0 | **+0.000** |
+| `metal_050` | 0.25 | 32 | 0.5 | +38.0 | +23.0 | **+8.000** |
 
 Green and blue are `+0.000` in every row: the cluster term is red-only.
 
 `S` is exactly linear in `spec_col` (64 per unit, four points), vanishes at
 `spec_col = 0`, and vanishes at `metal = 1` where `C_on = C_off/2` to the digit.
 
-**General form, DERIVED not fitted.** Substituting `sc = (1-m)*spec_col +
-m*alb` into `S = (2*sc_on - sc_off) * K_s` and using `2*alb_half - alb_full = 0`
-gives `S = 64 * spec_col * (1 - metal)`. This is algebra from `mix()`, not an
-empirical fit: the sweep measured only the two endpoints `metal = 0` and
-`metal = 1`, so the linear `(1-metal)` behaviour at intermediate metal is a
-prediction that has not been measured. A single `metal = 0.5` row would confirm
-or refute it; it is not yet measured.
+**General form, now measured on three points.** Substituting `sc = (1-m)*spec_col
++ m*alb` into `S = (2*sc_on - sc_off) * K_s` and using `2*alb_half - alb_full = 0`
+gives `S = 64 * spec_col * (1 - metal)`. This is algebra from `mix()`, and it is
+no longer an extrapolation between two endpoints: the sweep measures
+`metal = 0`, `0.5` and `1.0`.
+
+| `metal` | measured `S_R` | predicted `64*spec*(1-metal)` | deviation |
+|---|---|---|---|
+| 0.0 | +16.000 | 16.000 | 0.000 |
+| 0.5 | +8.000 | 8.000 | **0.000** |
+| 1.0 | +0.000 | 0.000 | 0.000 |
+
+The slope is -16 per unit of `metal`, i.e. `64 * 0.25` exactly. An internal
+consistency check also holds: `C_off` is +38.0 at all three metal values,
+because `spec_col` equals the base albedo (0.25), so `sc` is invariant in the
+channel-off case while `C_on` alone moves (27 -> 23 -> 19) as `alb` takes over
+from `spec_col` in `sc`.
 
 **What step 3 did and did not establish.** Varying `shininess` was intended to
 identify `S` as the `s2` term independently of the `sc` coefficient. It did not:
@@ -158,6 +169,7 @@ be `s2` specifically**. Any other factor inside `sc` would fit equally well.
 Covers the channel -> cluster-loop coupling for the three channel roles on one
 isolated surface, with the cluster term measured absolutely via a
 zero-intensity control, and the non-scaling share attributed to the `sc`
-coefficient. Does not cover: proof that the non-scaling share is the `s2`
-exponent term (the `shininess` control was geometry-insensitive), intermediate
-`metal` values, shadows, GI, or multi-light interference.
+coefficient with its `metal` dependence confirmed at three points. Does not
+cover: proof that the non-scaling share is the `s2` exponent term (the
+`shininess` control was geometry-insensitive), shadows, GI, or multi-light
+interference.
