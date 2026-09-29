@@ -236,6 +236,33 @@ $fcdetail = ('rc=' + $fcrd + ' pass=' + $fcpass + ' fail=' + $fcfail + ' errs=' 
 $fcm = Select-String -LiteralPath $lf -Pattern 'GNE 018\.frus: sig=(\S+)' | Select-Object -Last 1
 if ($fcm) { $fcdetail += ' sig=' + $fcm.Matches[0].Groups[1].Value }
 Record 'frustum_cull' (($fcrd -eq 0) -and $fcpass -and (-not $fcfail) -and ($fcerr.Count -eq 0)) $fcdetail
+# Cluster light capacity gate (main_019_cluster_overflow). Covers the
+# 16-slot cap: the cull appends under `if (slot < 16u)` while the count is an
+# uncapped atomicAdd, so this row is the regression guard for the fragment read
+# bound that was fixed to j < 16u (a 64 bound on a stride of 16 read past the
+# end of the buffer for the last cluster).
+#
+# --spacing is REQUIRED and is the point of the row. Without it every light
+# lands on one point, the flood surface measures 0.000 at N=16, and the run
+# would gate on a degenerate all-zero case. With spacing, light 0 stays on the
+# surface and C_ref is live (24.951), so the liveness precondition c_ref > 1.0
+# actually has teeth: a regression that zeroed the cluster path would drop
+# C_ref to 0 and fail here. The signature records the measured cap value so the
+# co-located collapse stays visible in logs even though it is not gated.
+$lf = Join-Path $logDir 'cluster_overflow.log'
+if (Test-Path $lf) { Remove-Item $lf -Force }
+& $exe --path $proj --rendering-method forward_plus res://main_019_cluster_overflow.tscn -- '--spacing' > $lf 2>&1
+$corc = $LASTEXITCODE
+$copass = ((Select-String -LiteralPath $lf -Pattern 'GNE 019\.ovf: GATE PASS' | Measure-Object).Count -ge 1)
+$cofail = ((Select-String -LiteralPath $lf -Pattern 'GNE 019\.ovf: GATE FAIL' | Measure-Object).Count -ge 1)
+$coerr = @()
+if (Test-Path $lf) {
+  $coerr = @(Select-String -LiteralPath $lf -Pattern 'ERROR:|invalid ID|SCRIPT ERROR' | Where-Object { $_.Line -notmatch 'FullyQualifiedErrorId|NativeCommandError' })
+}
+$codetail = ('rc=' + $corc + ' pass=' + $copass + ' fail=' + $cofail + ' errs=' + $coerr.Count)
+$com = Select-String -LiteralPath $lf -Pattern 'GNE 019\.ovf: sig=(\S+)' | Select-Object -Last 1
+if ($com) { $codetail += ' sig=' + $com.Matches[0].Groups[1].Value }
+Record 'cluster_overflow' (($corc -eq 0) -and $copass -and (-not $cofail) -and ($coerr.Count -eq 0)) $codetail
 # GI checks (token-based)
 & $exe --path $proj --rendering-method forward_plus res://main_022_gate2.tscn > (Join-Path $logDir 'gi_gate2.log') 2>&1
 $g2 = Join-Path $logDir 'gi_gate2.log'

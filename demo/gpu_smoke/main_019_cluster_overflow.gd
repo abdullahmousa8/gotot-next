@@ -299,7 +299,7 @@ func _measure() -> void:
 	var ok_ovf_hi: bool = ovf_flood["c"] <= float(N_OVERFLOW) * c_ref + C_TOL
 
 	var all_ok: bool = ok_live and ok_cap and ok_ovf_cnt and ok_clean and ok_body and ok_ovf_hi
-	print("GNE 019.ovf: cond live=%s ref=%.3f cap_cnt=%s cap_hi=%s cap_lo=%s cap_body=%s ovf_cnt=%s clean=%s ovf_hi=%s body=%s" % [c_ref, str(ok_live), str(ok_cap_cnt), str(ok_cap_hi), str(ok_cap_body), str(ok_ovf_cnt), str(ok_clean), str(ok_ovf_hi), str(ok_body)])
+	print("GNE 019.ovf: cond live=%s ref=%.3f cap_cnt=%s cap_hi=%s cap_body=%s ovf_cnt=%s clean=%s ovf_hi=%s body=%s" % [str(ok_live), c_ref, str(ok_cap_cnt), str(ok_cap_hi), str(ok_cap_body), str(ok_ovf_cnt), str(ok_clean), str(ok_ovf_hi), str(ok_body)])
 	var sig := "v019ovf|cref=%.3f|neigh=%.3f|cap=%.3f|capn=%.3f|ovf0=%d|o2=%.3f|o2n=%.3f|dn=%.3f|ovf=%d|%d%d%d%d%d%d%d%d" % [
 		c_ref, neigh_base, cap_flood["c"], cap_neigh["c"], int(st_cap["overflows"]),
 		ovf_flood["c"], ovf_neigh["c"], neigh_delta, int(st_ovf["overflows"]),
