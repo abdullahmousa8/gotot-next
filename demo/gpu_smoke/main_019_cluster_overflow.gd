@@ -54,6 +54,13 @@ const LIGHT_BASE := Vector3(-700, 0, -300)
 const LIGHT_RANGE := 1400.0
 const LIGHT_COLOR := Color(1, 0, 0)
 const LIGHT_INTENSITY := 0.35
+# Unsaturated re-measurement. The flood pixel clips at 255, and C = T - B then
+# collapses for reasons that have nothing to do with the render. Scaling EVERY
+# light by int_scale keeps both T and B inside range so C is a real difference.
+var int_scale := 1.0
+
+func _int() -> float:
+	return LIGHT_INTENSITY * int_scale
 const N_CAPACITY := 16
 const N_OVERFLOW := 20
 const EXPECT_OVF := 4  # N_OVERFLOW - N_CAPACITY
@@ -76,6 +83,18 @@ var sig_file := ""
 # index/shadow path at lid 15/16. If it clears, co-location was the cause.
 var spaced := false
 var light_n := 0
+# Micro-offset perturbation (GNE-019 non-invasive isolation). < 0 disables.
+# Lights 1..15 are placed at exactly d away from light 0, along fixed spread
+# directions. If the annihilation is a singularity or a zero-distance division,
+# any d > 0 should restore a live contribution; if it survives to perceptible
+# distances, the cause is structural in the cluster list.
+var micro := -1.0
+# N override (0 = use N_CAPACITY) and early exit after the S1 print, so a sweep
+# over N measures one configuration per process instead of the whole N=1/16/20
+# ladder. Diagnostic only: --nonly skips the overflow case and the gate verdict.
+var n_override := 0
+var nonly := false
+var n_cap := N_CAPACITY
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
@@ -83,6 +102,16 @@ func _ready() -> void:
 			sig_file = a.split("=")[1]
 		elif a == "--spacing":
 			spaced = true
+		elif a.begins_with("--micro="):
+			micro = float(a.split("=")[1])
+		elif a.begins_with("--n="):
+			n_override = int(a.split("=")[1])
+		elif a == "--nonly":
+			nonly = true
+		elif a.begins_with("--int="):
+			int_scale = float(a.split("=")[1])
+	if n_override > 0:
+		n_cap = n_override
 	_setup()
 
 func _fail(code: int, msg: String) -> void:
@@ -91,7 +120,16 @@ func _fail(code: int, msg: String) -> void:
 
 func _mk_light() -> Dictionary:
 	var pos := LIGHT_BASE
-	if spaced and light_n > 0:
+	if micro >= 0.0 and light_n > 0:
+		# Light 0 stays at LIGHT_BASE; 1..15 sit at distance `micro` FROM THAT
+		# SAME POINT, along fixed spread directions, so d=0 reproduces exact
+		# co-location and the only variable is d. (Measuring the offset from
+		# FLOOD_POS instead would put the pair 300 units apart in z at d=0 and
+		# would never reproduce the collapse - a broken control.)
+		var k := light_n - 1
+		var dir := Vector3(float(k % 4) - 1.5, 0.0, float(k / 4) - 1.5).normalized()
+		pos = LIGHT_BASE + dir * micro
+	elif spaced and light_n > 0:
 		# Light 0 stays on the flood surface so C_ref stays live. Only lights
 		# 1..15 are spread, on a 4x4 grid centred on the same point, so the
 		# question is whether co-location - not the count - causes the collapse.
@@ -103,7 +141,7 @@ func _mk_light() -> Dictionary:
 		pos = FLOOD_POS + Vector3(gx * 200.0, 0.0, gz * 150.0)
 	light_n += 1
 	return {"type": 0, "pos": pos, "range": LIGHT_RANGE,
-		"color": LIGHT_COLOR, "intensity": LIGHT_INTENSITY}
+		"color": LIGHT_COLOR, "intensity": _int()}
 
 func _setup() -> void:
 	server = GneRenderServer.get_server_singleton()
@@ -165,7 +203,7 @@ func _redraw() -> bool:
 func _cluster_c(mat: int) -> Dictionary:
 	if not server.gpu_material_set_maps(mat, tid_grey, -1, -1, CH_SCALE):
 		_fail(7115, "maps"); return {"c": 0.0, "body": 0}
-	if not server.gpu_light_set_intensity(0, LIGHT_INTENSITY):
+	if not server.gpu_light_set_intensity(0, _int()):
 		_fail(7116, "int on"); return {"c": 0.0, "body": 0}
 	if not _redraw():
 		return {"c": 0.0, "body": 0}
@@ -175,8 +213,9 @@ func _cluster_c(mat: int) -> Dictionary:
 	if not _redraw():
 		return {"c": 0.0, "body": 0}
 	var b := _means(server.gpu_raster_read_pixels(), mat)
-	if not server.gpu_light_set_intensity(0, LIGHT_INTENSITY):
+	if not server.gpu_light_set_intensity(0, _int()):
 		_fail(7116, "int restore"); return {"c": 0.0, "body": 0}
+	print("GNE 019.ovf: RAW n=%d T=%.1f B=%.1f" % [light_n, t[0], b[0]])
 	return {"c": t[0] - b[0], "body": b[3]}
 
 func _proj_px(p: Vector3) -> Vector2:
@@ -225,7 +264,10 @@ func _cluster_ids(mat: int) -> String:
 			var ids: Array = []
 			for i in range(1, c.size()):
 				ids.append(c[i])
-			parts.append("t%d:%s" % [tz, str(ids)])
+			# c[0] is the uncapped atomicAdd count (clcnt.cnt[tid]) - it was used
+			# only as a >0 filter and never printed, so the diagnostic could not
+			# see a runaway count. Printed as n= so a count above CAP is visible.
+			parts.append("t%d(n=%d):%s" % [tz, c[0], str(ids)])
 	if parts.is_empty():
 		return "tile %d/%d EMPTY" % [tx, ty]
 	return "tile %d/%d %s" % [tx, ty, str(parts)]
@@ -248,7 +290,7 @@ func _measure() -> void:
 	print("GNE 019.ovf: DIAG n1  flood_ids=%s" % _cluster_ids(0))
 
 	# --- N = 16: exactly at the cap ---
-	for i in range(1, N_CAPACITY):
+	for i in range(1, n_cap):
 		if server.gpu_light_create(_mk_light()) != i:
 			_fail(7117, "light id"); return
 	if not _redraw():
@@ -256,8 +298,11 @@ func _measure() -> void:
 	var st_cap: Dictionary = server.gpu_light_get_stats()
 	var cap_flood := _cluster_c(0)
 	var cap_neigh := _cluster_c(1)
-	print("GNE 019.ovf: S1 cap  N=%d C=%.3f/%d neigh=%.3f/%d ovf=%d ratio=%.3f" % [N_CAPACITY, cap_flood["c"], cap_flood["body"], cap_neigh["c"], cap_neigh["body"], int(st_cap["overflows"]), (cap_flood["c"] / c_ref) if c_ref > 0.0 else -1.0])
+	print("GNE 019.ovf: S1 cap  N=%d C=%.3f/%d neigh=%.3f/%d ovf=%d ratio=%.3f" % [n_cap, cap_flood["c"], cap_flood["body"], cap_neigh["c"], cap_neigh["body"], int(st_cap["overflows"]), (cap_flood["c"] / c_ref) if c_ref > 0.0 else -1.0])
 	print("GNE 019.ovf: DIAG cap flood_ids=%s" % _cluster_ids(0))
+	if nonly:
+		get_tree().quit(0)
+		return
 	# Capacity bounds, stated physically rather than fitted: a cluster may not
 	# gain MORE than N times a single light (that would mean a light counted
 	# twice, which is what the out-of-bounds read could have caused), and must
