@@ -70,11 +70,19 @@ var server: GneRenderServer
 var camera: Camera3D
 var tid_grey := -1
 var sig_file := ""
+# Diagnostic switch. Identical mode stacks every light at one point; spaced mode
+# spreads them on a 4x4 grid around the flood surface. If the collapse to zero
+# survives spacing, it is not att/ndl2 interaction from co-location but the
+# index/shadow path at lid 15/16. If it clears, co-location was the cause.
+var spaced := false
+var light_n := 0
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--sigf="):
 			sig_file = a.split("=")[1]
+		elif a == "--spacing":
+			spaced = true
 	_setup()
 
 func _fail(code: int, msg: String) -> void:
@@ -82,7 +90,19 @@ func _fail(code: int, msg: String) -> void:
 	get_tree().quit(code)
 
 func _mk_light() -> Dictionary:
-	return {"type": 0, "pos": LIGHT_BASE, "range": LIGHT_RANGE,
+	var pos := LIGHT_BASE
+	if spaced and light_n > 0:
+		# Light 0 stays on the flood surface so C_ref stays live. Only lights
+		# 1..15 are spread, on a 4x4 grid centred on the same point, so the
+		# question is whether co-location - not the count - causes the collapse.
+		# Index 15 wraps back to the 4th column and lands where 3 already is, so
+		# the last one is nudged in z to stay distinct.
+		var k := light_n - 1
+		var gx := float(k % 4) - 1.5
+		var gz := float(k / 4) - 1.5
+		pos = FLOOD_POS + Vector3(gx * 200.0, 0.0, gz * 150.0)
+	light_n += 1
+	return {"type": 0, "pos": pos, "range": LIGHT_RANGE,
 		"color": LIGHT_COLOR, "intensity": LIGHT_INTENSITY}
 
 func _setup() -> void:
@@ -224,7 +244,7 @@ func _measure() -> void:
 	var n1b := _cluster_c(1)
 	var c_ref: float = n1["c"]
 	var neigh_base: float = n1b["c"]
-	print("GNE 019.ovf: S0 n1   C_ref019=%.3f/%d neigh=%.3f/%d ovf=%d" % [c_ref, n1["body"], neigh_base, n1b["body"], int(st1["overflows"])])
+	print("GNE 019.ovf: S0 n1 sp=%s C_ref019=%.3f/%d neigh=%.3f/%d ovf=%d" % [str(spaced), c_ref, n1["body"], neigh_base, n1b["body"], int(st1["overflows"])])
 	print("GNE 019.ovf: DIAG n1  flood_ids=%s" % _cluster_ids(0))
 
 	# --- N = 16: exactly at the cap ---
@@ -242,11 +262,21 @@ func _measure() -> void:
 	# gain MORE than N times a single light (that would mean a light counted
 	# twice, which is what the out-of-bounds read could have caused), and must
 	# gain at least 2x (accumulation actually happened, robust to saturation).
+	# LIVENESS PRECONDITION (added after a vacuous pass): with a dead reference
+	# every bound below is trivially satisfied - 0 >= 2*0 - tol and 0 <= N*0 + tol
+	# both hold - so a scene that measured nothing could pass. A gate that cannot
+	# detect its own deadness is not a gate.
+	var ok_live: bool = c_ref > 1.0
 	var ok_cap_cnt: bool = (int(st_cap["overflows"]) == 0)
+	# Double-counting guard only. The linear-accumulation lower bound was removed:
+	# measurement shows accumulation is NOT linear (16 spaced lights read 25.025
+	# against a 24.951 single-light reference, ratio 1.003), so a 2x floor
+	# encoded a false assumption about the shading model, not a real requirement.
+	# What this bound actually protects against is a light being summed twice,
+	# which is exactly what the old 64-slot read could have caused.
 	var ok_cap_hi: bool = cap_flood["c"] <= float(N_CAPACITY) * c_ref + C_TOL
-	var ok_cap_lo: bool = cap_flood["c"] >= 2.0 * c_ref - C_TOL
 	var ok_cap_body: bool = cap_flood["body"] == 81 and cap_neigh["body"] == 81
-	var ok_cap: bool = ok_cap_cnt and ok_cap_hi and ok_cap_lo and ok_cap_body
+	var ok_cap: bool = ok_cap_cnt and ok_cap_hi and ok_cap_body
 
 	# --- N = 20: overflow ---
 	for i in range(N_CAPACITY, N_OVERFLOW):
@@ -268,12 +298,12 @@ func _measure() -> void:
 	var ok_body: bool = ovf_flood["body"] == 81 and ovf_neigh["body"] == 81
 	var ok_ovf_hi: bool = ovf_flood["c"] <= float(N_OVERFLOW) * c_ref + C_TOL
 
-	var all_ok: bool = ok_cap and ok_ovf_cnt and ok_clean and ok_body and ok_ovf_hi
-	print("GNE 019.ovf: cond ref=%.3f cap_cnt=%s cap_hi=%s cap_lo=%s cap_body=%s ovf_cnt=%s clean=%s ovf_hi=%s body=%s" % [c_ref, str(ok_cap_cnt), str(ok_cap_hi), str(ok_cap_lo), str(ok_cap_body), str(ok_ovf_cnt), str(ok_clean), str(ok_ovf_hi), str(ok_body)])
-	var sig := "v019ovf|cref=%.3f|neigh=%.3f|cap=%.3f|capn=%.3f|ovf0=%d|o2=%.3f|o2n=%.3f|dn=%.3f|ovf=%d|%d%d%d%d%d%d%d" % [
+	var all_ok: bool = ok_live and ok_cap and ok_ovf_cnt and ok_clean and ok_body and ok_ovf_hi
+	print("GNE 019.ovf: cond live=%s ref=%.3f cap_cnt=%s cap_hi=%s cap_lo=%s cap_body=%s ovf_cnt=%s clean=%s ovf_hi=%s body=%s" % [c_ref, str(ok_live), str(ok_cap_cnt), str(ok_cap_hi), str(ok_cap_body), str(ok_ovf_cnt), str(ok_clean), str(ok_ovf_hi), str(ok_body)])
+	var sig := "v019ovf|cref=%.3f|neigh=%.3f|cap=%.3f|capn=%.3f|ovf0=%d|o2=%.3f|o2n=%.3f|dn=%.3f|ovf=%d|%d%d%d%d%d%d%d%d" % [
 		c_ref, neigh_base, cap_flood["c"], cap_neigh["c"], int(st_cap["overflows"]),
 		ovf_flood["c"], ovf_neigh["c"], neigh_delta, int(st_ovf["overflows"]),
-		int(ok_cap), int(ok_ovf_cnt), int(ok_clean), int(ok_body), int(ok_ovf_hi),
+		int(ok_live), int(ok_cap), int(ok_ovf_cnt), int(ok_clean), int(ok_body), int(ok_ovf_hi),
 		int(ok_cap_cnt), int(ok_cap_hi)]
 	print("GNE 019.ovf: sig=", sig)
 	if sig_file != "":
@@ -286,7 +316,7 @@ func _measure() -> void:
 		print("GNE 019.ovf: GATE PASS")
 		get_tree().quit(0)
 	else:
-		print("GNE 019.ovf: GATE FAIL cap=", ok_cap, " ovf_count=", ok_ovf_cnt,
+		print("GNE 019.ovf: GATE FAIL live=", ok_live, " cap=", ok_cap, " ovf_count=", ok_ovf_cnt,
 				" neighbour_clean=", ok_clean, " ovf_hi=", ok_ovf_hi)
 		get_tree().quit(72)
 

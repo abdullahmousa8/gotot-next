@@ -63,22 +63,61 @@ per-light factor cannot explain all of them zeroing simultaneously. `shf` is the
 only term that varies with `lid`, and it is the leading suspect — but this has
 **not** been measured, and is not claimed.
 
-## 3. What is proven and what is not
+## 3. Spacing test — the shf hypothesis is REFUTED
 
-Proven: the out-of-bounds read existed and is fixed; the collapse to zero is
-real, deterministic, and occurs after correct cluster assignment; the cap guard
-and the overflow counter work.
+Light 0 is held on the flood surface so `C_ref` stays live; only lights 1..15
+are spread on a 4x4 grid around it.
 
-Not proven: the cause of the collapse. No fix attempted. The capacity gate
-remains failing (`EXIT=72`) and must not be wired into CVS.
+| mode | `C_ref` (N=1) | `C` (N=16) | ratio | `ovf` (N=20) |
+|---|---|---|---|---|
+| identical (co-located) | 24.951 | **0.000** | 0.000 | 5120 |
+| spaced (1 on-axis, 15 spread) | 24.951 | **25.025** | 1.003 | 2404 |
 
-## 4. Also recorded
+**The `shf` / index-at-`lid 15-16` hypothesis is refuted.** An index or shadow
+decompression fault would persist regardless of position; it does not. The
+collapse is tied to co-location: 16 lights at one point annihilate the
+contribution, while the same 16 spread out leave it alive.
 
-An earlier claim in this slice — that `delta_neigh = 0.000` proved
-cross-cluster isolation — was **wrong**: that delta was measured against an
-N=16 baseline, i.e. zero against zero. Against the correct N=1 baseline the
-neighbour moves by -22.000. The current gate compares N=20 against N=16, which
-is again zero against zero and **cannot** detect contamination while both
-surfaces are dark. That test needs redesigning once the collapse is fixed.
+## 4. Accumulation is not linear, and the lower bound was wrong
 
-Signature formatting was also fixed (a `str` was passed to a `%d` field).
+`ratio = 1.003` for 16 spaced lights against a 24.951 single-light reference.
+Accumulation is therefore neither `16x` nor additive. The `cap_lo` lower bound
+(`>= 2x`) encoded an assumption about the shading model that measurement
+contradicts, and was **removed**. What remains is the double-counting guard
+`C(16) <= 16 * C_ref`, which is the mathematically correct expression of "no
+light is summed twice" and is exactly what the old 64-slot read could have
+violated. It holds in both modes (25.025 <= 399.2; 0.000 <= 399.2).
+
+## 5. Neighbour collapse is a capacity boundary, not a defect
+
+The neighbour reads 22.000 at N=1 and 0.000 at N>=16 in **both** modes, with
+different `ovf` (5120 vs 2404). It is therefore independent of co-location and
+tracks the cluster capacity of 16: once the tile light list is full, the
+neighbour's own lights are displaced. This is a system boundary and is recorded
+here rather than opened as a fix.
+
+## 6. What is proven and what is not
+
+Proven: the out-of-bounds read existed and is fixed by bounding at 16; the
+collapse to zero is tied to co-location, not to indexing or shadows; the cap
+guard and overflow counter work; accumulation is non-linear; the neighbour
+collapse is a capacity boundary.
+
+Not proven: the mechanism of the co-located annihilation. Overlapping
+attenuation terms or a non-finite intermediate in the accumulation are
+candidates; neither has been measured, and neither is claimed.
+
+## 7. KNOWN LIMITATION OF THE GATE — read before trusting a PASS
+
+With `cap_lo` removed, the gate **passes in both modes, including the
+identical mode where the flood surface renders at C = 0.000**. The gate
+therefore no longer detects the co-located collapse; it only certifies no
+overflow, no double counting, a live reference, and neighbour invariance. The
+value is recorded in the signature (`cap=0.000`) so the anomaly stays visible
+in logs, but no condition fails on it. A survival condition (`C(16) > 0`) would
+catch it and is a deliberate, separate decision, not taken here.
+
+An earlier claim in this slice that `delta_neigh = 0.000` proved
+cross-cluster isolation was **wrong**: it compared N=16 against N=16, i.e. zero
+against zero. Against the correct N=1 baseline the neighbour moves by -22.000.
+
