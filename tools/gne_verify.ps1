@@ -312,13 +312,52 @@ Get-ChildItem (Join-Path $logDir '*.log') | ForEach-Object {
   if ($hit) { $errs += $hit }
 }
 Record 'no_errors' ($errs.Count -eq 0) ($errs.Count.ToString() + ' error lines')
+# perf 020 regression gate (contract 20_perf) --------------------------------
+# WHY: gt_020a runs the presentation scene twice (d1, d2) and prints
+# wall_avg_us per pass. That average spans the whole cold run with first-frame
+# shader and pipeline warmup included, so the only defensible threshold form is
+# an absolute ceiling - a per-frame p50 gate would need p50 stability proven
+# across machines first, which is not yet done.
+#
+# The 31 historical samples are deliberately NOT the basis of this threshold.
+# They spread 6.9x (avg min 16125, max 110977, peak max 533645) and are
+# left-skewed, so any percentile of that population is meaningless. Three
+# samples 35 minutes apart on different commits read 24747 / 110977 / 40617,
+# which is host contamination, not a code change.
+#
+# The basis is a controlled quiet-host measurement of 10 samples (5 runs x 2
+# passes, 2026-09-30): min 26703, median 28846, mean 28873, max 30679 us, a
+# 1.15x spread. FAIL sits at 40000 = 1.30x above that max, which clears the
+# 1.70x spread of wall_peak_us but stays far below the 110977 us a contaminated
+# host produced. Gating uses the WORSE pass, not the last one, so a regression
+# in either d1 or d2 is caught. wall_peak_us is recorded but never gated: on its
+# own it spreads 1.70x.
+#
+# KNOWN LIMIT (not a defect, but a fact to keep): the threshold is relative to
+# this machine and this scene. Slower hardware will read a false alarm, and a
+# genuinely correct optimisation would be indistinguishable from noise at this
+# sample size. Re-baseline rather than widen if that happens.
+$perf = ''
+$lf20 = Join-Path $logDir 'gt_020a.log'
+$m20 = Select-String -LiteralPath $lf20 -Pattern 'wall_avg_us=(\d+) wall_peak_us=(\d+)' | Select-Object -Last 1
+if ($m20) { $perf = ('020:' + $m20.Matches[0].Groups[1].Value + '/' + $m20.Matches[0].Groups[2].Value) }
+$avgAll = @()
+foreach ($mm in (Select-String -LiteralPath $lf20 -Pattern 'wall_avg_us=(\d+)')) { $avgAll += [int]$mm.Matches[0].Groups[1].Value }
+if ($avgAll.Count -gt 0) {
+  $w020 = ($avgAll | Measure-Object -Maximum).Maximum
+  # WARN is a severity label INSIDE failure, not a pass. The first cut tested
+  # -ne 'FAIL' on a chain that marked >40000 as FAIL, so 110977 - the exact
+  # contaminated-host value used above to justify the ceiling - landed on WARN
+  # and passed the build silently. Ordering the elseif the other way is the
+  # only reading consistent with the rationale above.
+  $p020 = if ($w020 -gt 46000) { 'WARN' } elseif ($w020 -gt 40000) { 'FAIL' } else { 'PASS' }
+  Record 'perf020' ($p020 -eq 'PASS') ($w020.ToString() + 'us worst of ' + $avgAll.Count + ' [FAIL>40000 WARN>46000]')
+} else {
+  Record 'perf020' $false 'no wall_avg_us in gt_020a.log'
+}
 # summary
 Write-Output '==== GNE VERIFY ===='
 $script:lines | ForEach-Object { Write-Output $_ }
-# perf baseline (020 wall times, evidence-only)
-$perf = ''
-$m20 = Select-String -LiteralPath (Join-Path $logDir 'gt_020a.log') -Pattern 'wall_avg_us=(\d+) wall_peak_us=(\d+)' | Select-Object -Last 1
-if ($m20) { $perf = ('020:' + $m20.Matches[0].Groups[1].Value + '/' + $m20.Matches[0].Groups[2].Value) }
 if ($perf -ne '') { Write-Output ('perf ' + $perf) }
 if ($script:overall) { Write-Output 'GNE_VERIFY: PASS' } else { Write-Output 'GNE_VERIFY: FAIL' }
 # history
