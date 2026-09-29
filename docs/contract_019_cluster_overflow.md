@@ -96,7 +96,42 @@ tracks the cluster capacity of 16: once the tile light list is full, the
 neighbour's own lights are displaced. This is a system boundary and is recorded
 here rather than opened as a fix.
 
-## 6. What is proven and what is not
+## 6. Micro-offset sweep — the threshold is sharp, and it is NOT a singularity
+
+Light 0 is held fixed and lights 1..15 are placed at distance `d` from **that same
+point**, so `d = 0` reproduces exact co-location and `d` is the only variable.
+
+| `d` | `C(16)` |
+|---|---|
+| 0, 1e-6, 1e-4, 1e-3, 1e-2, 0.1 | 0.000 |
+| 1, 2, 5, 10, 20, 50, 100, 150, 160, 170, 175, 180, 185, 190, 195, 199, 200, 220 | 0.000 |
+| **240** | **7.086** (partial) |
+| 250 | 16.000 |
+| 260 | 22.000 |
+| 280, 300, 320, 400 | 24.988, 24.630, 25.395, 25.457 |
+
+**The threshold is (220, 240] and it is sharp** — 0.000 to a full value within
+20 units, with a partial point at 240. That is a structural switch, not a
+continuous distance function.
+
+Refuted along the way:
+
+- **Singularity / zero-distance division.** Any `d > 0` would have cured it,
+  including `1e-6`. None did, across five orders of magnitude.
+- **A tile-geometry threshold.** The 120px raster tile and `GNE_CLUSTER_X = 16`
+  are not candidates: the bracket matches no such multiple, and `200` and `256`
+  are both still inside the dead zone.
+
+A previously reported bracket of (150, 200) was **wrong** and is corrected here.
+It was derived by comparing against the nominal `200` of the spacing grid, whose
+real separations reach 300 - the measurement was not against the geometry it
+was meant to bracket.
+
+**Not proven:** the cause. `shf = gne_shadow_light(lid, ...)` remains the only
+term that varies with `lid`, and the ~230 boundary matches no known grid
+constant, so it is **not** attributed to one.
+
+## 7. What is proven and what is not
 
 Proven: the out-of-bounds read existed and is fixed by bounding at 16; the
 collapse to zero is tied to co-location, not to indexing or shadows; the cap
