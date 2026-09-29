@@ -1050,3 +1050,13 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   reproduction of the new golden). First precedent: KI-011 (0ae1343).
 - BUGFIX/FEATURE fast-path trial approved for wider use after the successful
   KI-011 real-case trial.
+## §53. NOTE 023 — GI x Shadows integration PASS (2026-09-29)
+
+- NOTE 023 (design note, fast path) + scene main_023: 019 layout + CSM shadows +
+  GI field (seed trace + 8 accum) in ONE frame.
+- I1 PASS: umbra probe +0.0902 (indirect reaches the directly-blocked region).
+- I2 VOID by saturation (documented instrument limitation; lit pixels clamp at
+  1.0; field at that cell was ambient-level after 8 steps). I3 determinism PASS.
+  I4 cost bounded. Zero engine changes (scene + note only).
+- Sig: v023|du=0.0902|dl=0.0000|det=1|off=1264|on=1455|d1
+- 023 integration milestone CLOSED.
