@@ -132,6 +132,24 @@ where `K_s = 64` falls out of the measurement. Measured sweep:
 | `shine_128` | 0.25 | 128 | 0.0 | +37.6 | +26.9 | +16.235 |
 | `metal_100` | 0.25 | 32 | 1.0 | +38.0 | +19.0 | **+0.000** |
 | `metal_050` | 0.25 | 32 | 0.5 | +38.0 | +23.0 | **+8.000** |
+| `spec_1000` | 1.0 | 32 | 0.0 | **INADMISSIBLE** | **INADMISSIBLE** | — |
+
+### The measurable limit, measured rather than assumed
+
+`spec_1000` was added on 2026-09-30 to test the top of the law instead of
+extrapolating past it. Its raw reads are `T_off = 255.0` and `B_off = 255.0`:
+**both clipped**, so `C_off` collapses to `+0.0` and the derived `S = 58.000` is
+an artifact, not a deviation from the predicted 64.0.
+
+Every other row was checked against the admissibility rule (`T_off < 250` and
+`B_off < 250`): the highest is `T_off = 220.0` at `spec_0500`, so **all seven
+rows above are admissible** and none of the residuals (max 0.235) is clipping.
+
+Therefore the proven domain is **`spec_col` in {0, 0.125, 0.25, 0.5}**, and
+beyond it the **8-bit channel runs out of headroom before the law runs out of
+range**. This is a limit of the measurement, not evidence against the shading
+model - the distinction matters, because the structurally identical clipping in
+GNE-019 was at first mistaken for a defect and had to be retracted.
 
 Green and blue are `+0.000` in every row: the cluster term is red-only.
 

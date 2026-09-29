@@ -258,6 +258,14 @@ func _measure() -> void:
 	# step 2: S must scale linearly with spec_col
 	step_ids.append(["spec_0125", 0.0, Color(0.125, 0.125, 0.125), BASE_SHINE])
 	step_ids.append(["spec_0500", 0.0, Color(0.5, 0.5, 0.5), BASE_SHINE])
+	# step 2b (2026-09-30): the upper end of the law. The derived law
+	# S = 64*spec_col*(1-metal) is only proven over spec_col in {0, .125, .25, .5};
+	# spec_col = 0.5 already reads T_off = 220, the highest raw value in the
+	# sweep, so spec_col = 1.0 is the point where the 8-bit channel is expected
+	# to clip. This row therefore measures where the law stops being measurable,
+	# which is a limit of the METHOD, not of the shading model. Admissible only
+	# while T_off and B_off both stay under 250.
+	step_ids.append(["spec_1000", 0.0, Color(1.0, 1.0, 1.0), BASE_SHINE])
 	# step 3: identity control - S must MOVE with shininess (isolates s2)
 	step_ids.append(["shine_004", 0.0, BASE_SPEC, 4.0])
 	step_ids.append(["shine_128", 0.0, BASE_SPEC, 128.0])
