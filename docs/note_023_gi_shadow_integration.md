@@ -75,3 +75,39 @@ quantity KI-017 exists to measure). Moved to end-of-main (final pre-clamp col,
 incl. cluster+GI); unlit bem-path write kept. Zero DET risk (new attachment
 only). Blend states of the 6 raster-framebuffer pipelines bumped 3->4 (disabled
 throughout; shadow pipeline untouched) to cover the 4th color attachment.
+
+## M1' EVIDENCE CHAIN (audit 2026-09-29, Architect-directed)
+
+**Measurement chain (exact sites, gne_render_server.cpp @1ef6e9c):**
+1. GI add — line 1929: `col += gi_params.y * sample`, guarded by
+   `gi_params.x > 0.5` (OFF in pixA draws, ON in pixB draws).
+2. Radiance write — line 1931, AFTER the add: `out_radiance = vec4(col, 1.0)`.
+   The read value therefore includes GI when enabled, excludes it when
+   disabled — by line order, not by assumption.
+3. Attachment — lines 5177/5221: RGBA32F 4th color slot of the shared
+   raster framebuffer (other frags write zero/real pre-clamp values).
+4. Read — line 9345 `gpu_raster_read_hdr(x, y)`: full-texture get_data,
+   texel (x, y); M1' uses the same `lpx` texel as the 8-bit probe.
+
+**Raw values (controlled run, same pixel LIT_PROBE→lpx, same surface):**
+- GI OFF (pixA frame, no prior accum in session): h0 = 1.62763388951619.
+- GI ON (pixB frame, 8 accum steps): h1 = 2.33263762791952.
+- Gain +0.70500373840332; display 1.0 -> 1.0 (blind). INTEGRATION PASS.
+- Re-run reproduces h0/h1 bit-identically (only wall-clock timings move).
+- Unchanged between the two reads: blending (all disabled), shader path,
+  scene, lights, draws (I3 pixB==pixB2 byte-equal proves no drift); the ONLY
+  differences are gi_params.x + atlas content — the variable under test.
+
+**Version attribution:** tree clean @`1ef6e9c`; binary
+`godot.windows.editor.dev.x86_64.console.exe` timestamped 09:51 (built from
+this exact code — only docs changed afterwards). Audit run = this binary +
+this tree. No code change was required for this audit.
+
+**I1 vs M1 (explicit separation, do not conflate):** I1 proved indirect reaches
+the UMBRA through the 8-bit display chain (0.8852 -> 0.9755, +0.0902, valid
+because the umbra witness is unsaturated). M1 proves indirect reaches an
+already-LIT surface through HDR (1.6276 -> 2.3326, +0.7050), where the display
+chain reads 1.0 -> 1.0 and can prove nothing. Different witnesses, different
+chains, same conclusion: the two flagship systems coexist, and indirect adds on
+top of direct. Neither subsumes the other; I1 cannot cover lit surfaces and M1
+cannot replace the umbra display evidence.
