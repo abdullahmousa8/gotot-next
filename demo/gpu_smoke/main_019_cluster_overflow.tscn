@@ -1,0 +1,16 @@
+[gd_scene load_steps=2 format=3 uid="uid://cgne019ovf1"]
+
+[ext_resource type="Script" path="res://main_019_cluster_overflow.gd" id="1_ovf"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_ovf")
+
+[node name="Camera" type="Camera3D" parent="."]
+fov = 60.0
+near = 300.0
+far = 4000.0
+current = true
+
+[node name="Surface" type="MeshInstance3D" parent="."]
+
+[node name="Neighbour" type="MeshInstance3D" parent="."]
