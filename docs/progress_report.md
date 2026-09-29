@@ -1043,3 +1043,10 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   probe faces). Golden re-baseline recorded as the accepted behavioral change.
 - Recheck: both scenes reproduce the new goldens byte-identically.
 - KI-011 closed in known_issues + register.
+## §52. Golden-Update Protocol formalized (2026-09-29, Architect directive)
+
+- Three-condition rule written into docs/workflow_v2.md (root cause pre-documented;
+  exact defect-signature match in direction+magnitude+location; deterministic
+  reproduction of the new golden). First precedent: KI-011 (0ae1343).
+- BUGFIX/FEATURE fast-path trial approved for wider use after the successful
+  KI-011 real-case trial.
