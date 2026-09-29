@@ -2905,6 +2905,7 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_light_create", "params"), &GneRenderServer::gpu_light_create);
 	ClassDB::bind_method(D_METHOD("gpu_light_update", "id", "params"), &GneRenderServer::gpu_light_update);
 	ClassDB::bind_method(D_METHOD("gpu_light_destroy", "id"), &GneRenderServer::gpu_light_destroy);
+	ClassDB::bind_method(D_METHOD("gpu_light_set_intensity", "id", "intensity"), &GneRenderServer::gpu_light_set_intensity);
 	ClassDB::bind_method(D_METHOD("gpu_light_get_stats"), &GneRenderServer::gpu_light_get_stats);
 	ClassDB::bind_method(D_METHOD("gpu_light_cone_read", "cluster"), &GneRenderServer::gpu_light_cone_read);
 	ClassDB::bind_method(D_METHOD("gpu_light_cones_build"), &GneRenderServer::gpu_light_cones_build);
@@ -7283,6 +7284,30 @@ bool GneRenderServer::gpu_light_destroy(int p_id) {
 	}
 	memset(&light_cpu[p_id], 0, sizeof(GneLight));
 	rendering_device->buffer_update(light_buffer, (uint32_t)(p_id * 64), 64, &light_cpu[p_id]);
+	return true;
+}
+
+bool GneRenderServer::gpu_light_set_intensity(int p_light_id, float p_intensity) {
+	if (!gpu_light_valid) {
+		print_error("[GNE] gpu_light_set_intensity: no light store. Call gpu_light_create first.");
+		return false;
+	}
+	if (p_light_id < 0 || p_light_id >= light_count) {
+		print_error("[GNE] gpu_light_set_intensity: id out of allocated range.");
+		return false;
+	}
+	// Reject a non-finite value rather than letting it reach the shader: NaN
+	// intensity would poison every fragment the light touches, and inf would
+	// collapse the attenuation term. Callers wanting "no emission" pass 0.
+	if (!Math::is_finite(p_intensity)) {
+		print_error("[GNE] gpu_light_set_intensity: intensity must be finite.");
+		return false;
+	}
+	light_cpu[p_light_id].intensity = p_intensity;
+	// Only the intensity float (offset 28 within the 64-byte record) is pushed.
+	// No reallocation, no full-record rewrite, and pos/range/color are untouched.
+	const uint32_t offset = (uint32_t)(p_light_id * 64) + (uint32_t)offsetof(GneLight, intensity);
+	rendering_device->buffer_update(light_buffer, offset, (uint32_t)sizeof(float), &light_cpu[p_light_id].intensity);
 	return true;
 }
 

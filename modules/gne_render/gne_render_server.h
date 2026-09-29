@@ -827,6 +827,12 @@ PackedByteArray gpu_present_read_pixels();
 	int gpu_light_create(const Dictionary &p_params);
 	bool gpu_light_update(int p_id, const Dictionary &p_params);
 	bool gpu_light_destroy(int p_id);
+	// GNE-016.5: narrow single-field intensity write. Exists because the only
+	// way to get a zero-intensity light was gpu_light_destroy, which also
+	// zeroes pos/range and is therefore not a clean "same light, no emission"
+	// control for a clustered-lighting measurement. Writes only the intensity
+	// float, not a full 64-byte record re-push.
+	bool gpu_light_set_intensity(int p_light_id, float p_intensity);
 	Dictionary gpu_light_get_stats();
 	PackedFloat32Array gpu_light_cone_read(int p_cluster); // GNE-018-rev tooling
 	bool gpu_light_cones_build(); // GNE-018-rev unit 2b
