@@ -39,5 +39,11 @@ steps.
 - Sig: v023|du=0.0902|dl=0.0000|det=1|off=1264|on=1455|d1
 
 Status: NOTE 023 INTEGRATION PASS. The GI x Shadows coexistence is validated at
+
+UNTESTED CLAIM (recorded 2026-09-29, architect directive): "indirect light adds
+to already-lit surfaces" is NOT proven and NOT refuted - unmeasurable via the
+8-bit display chain (every dir-lit pixel saturates). Backlog: KI-017 / 023-M1 -
+HDR (pre-tonemap) radiance readback instrument, part of the GNE CVS as general
+measurement infrastructure (any future GI integration gate hits the same limit).
 the integration level. Future scoping (when needed): full-field convergence
 measurement (the KI-016/M1 instrument), GI x dynamic shadows response.
