@@ -114,6 +114,49 @@ point**, so `d = 0` reproduces exact co-location and `d` is the only variable.
 20 units, with a partial point at 240. That is a structural switch, not a
 continuous distance function.
 
+### 6a. The N x d grid — the condition is TWO variables, not one
+
+The sweep above ran at N = 16 only, which made the threshold look like a pure
+geometric property of proximity. It is not. Holding `d` and varying the count:
+
+| `d` \ `N` | 2 | 4 | 8 | 12 | 13 | 14 | 15 | 16 |
+|---|---|---|---|---|---|---|---|---|
+| 220 | 24.827 | 24.667 | 24.815 | 24.765 | 24.975 | 24.802 | **8.296** | **0.000** |
+| 230 | 24.691 | 25.272 | 25.025 | 24.901 | | | **0.000** | **0.000** |
+| 260 | 25.432 | 25.432 | 25.074 | 24.802 | | | | 22.000 |
+
+**At N <= 14 no distance kills the light at all** - even at d = 220. The
+collapse requires BOTH `N >= 15` AND `d <~ 230`. It is a two-variable
+condition, and describing it as a geometric proximity threshold was wrong.
+
+### 6b. The onset is at N = 15, which is cap - 1
+
+| `N` | 12 | 13 | 14 | **15** | **16** |
+|---|---|---|---|---|---|
+| `C` at d=220 | 24.765 | 24.975 | 24.802 | **8.296** | **0.000** |
+| `ovf` | 0 | 0 | 0 | **0** | **0** |
+
+N = 15 collapses to a third of full and N = 16 is dead. That is a step across
+two counts, **not a gradual ramp in N**: the onset is exactly one slot below
+`GNE_CLUSTER_LIGHT_CAP = 16`.
+
+**`ovf = 0` throughout.** The overflow counter never fires, so the overflow path
+is exonerated outright - the fault lies before it, at the 15/16 boundary
+itself. N = 15 (ids 0..14) vs N = 16 (ids 0..15) is the signature of a bound
+computed off by one, or a 15-vs-16 stride confusion in the slot address.
+
+This also explains why the defect stayed hidden: the scene only ever stepped
+`1 -> 16`, never sampling 15. **N = 15 is the smallest regression gate that
+exposes it.**
+
+### 6c. Correction: the degradation is graded, not a sharp switch
+
+At N = 16: `d=280 -> 24.988`, `260 -> 22.000`, `250 -> 16.000`, `240 -> 7.086`,
+`<=230 -> 0.000`. That is monotonic in `d` and reaches zero at a transition
+point. Calling it a "sharp structural switch" was an overstatement; the
+accurate description is a graded degradation under capacity pressure that
+falls to zero near exact co-location.
+
 Refuted along the way:
 
 - **Singularity / zero-distance division.** Any `d > 0` would have cured it,
@@ -121,15 +164,20 @@ Refuted along the way:
 - **A tile-geometry threshold.** The 120px raster tile and `GNE_CLUSTER_X = 16`
   are not candidates: the bracket matches no such multiple, and `200` and `256`
   are both still inside the dead zone.
+- **Pure geometric proximity.** At `N <= 14` no distance kills the light.
+- **Full-capacity saturation.** The onset is `N = 15`, not `N = 16`; the cluster
+  is one slot short of full when it already collapses.
 
 A previously reported bracket of (150, 200) was **wrong** and is corrected here.
 It was derived by comparing against the nominal `200` of the spacing grid, whose
 real separations reach 300 - the measurement was not against the geometry it
 was meant to bracket.
 
-**Not proven:** the cause. `shf = gne_shadow_light(lid, ...)` remains the only
-term that varies with `lid`, and the ~230 boundary matches no known grid
-constant, so it is **not** attributed to one.
+**Not proven:** the cause, but the search is no longer open-ended. The leading
+candidate is a bound computed off by one at the 15/16 slot boundary (or a 15-vs-
+16 stride confusion in the slot address), because the onset is exactly
+`GNE_CLUSTER_LIGHT_CAP - 1` and the overflow counter never fires. Confirming it
+means reading `ccnt` and `shf` at N = 15 in C++ - no longer a blind probe.
 
 ## 7. What is proven and what is not
 
