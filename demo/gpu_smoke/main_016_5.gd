@@ -130,6 +130,43 @@ func _measure() -> void:
 	var sd_flat := _window_stddev(pix_flat, fpx, 4)
 	print("GNE 016.5: flat m=", m_flat, " sd=", sd_flat, " face_px=", fpx)
 
+	# --- X1: missing-channel contract, controlled A/B on ONE body/material ---
+	# Reference  = pix_flat above: material 0 has NEVER had set_maps called, so
+	#   mat2 = (-1,-1,-1), scale = 0, and mat_tex is all -1.
+	# Test case  = set_maps(0, -1, -1, -1, scale) with scale fixed at s.
+	# Shader contract: the whole channel branch is guarded by
+	#   `m2a.x > -0.5 || m2a.y > -0.5 || m2a.z > -0.5` (cpp:1834) and each
+	#   channel by `m2a.X >= 0.0 && m2a.X <= 4.0` (cpp:1843/1851/1859).
+	#   With all three at -1 the branch is skipped in BOTH cases, so rec[4..5]
+	#   (scale) is never read and the result must be byte-identical.
+	# Threshold (pre-declared): 0 differing pixels / 0 LSB in the region - the
+	#   path is deterministic (M4b proves repeat draws are byte-equal), so any
+	#   difference at all is a contract violation, not tolerance.
+	# Precondition: the region must contain BODY pixels (mat frag writes
+	#   alpha=1; the background clears to (0,0,0,0)) - else the comparison
+	#   would be vacuous.
+	if not server.gpu_material_set_maps(0, -1, -1, -1, Vector2(0.0125, 0.0125)):
+		_fail(4040, "set_maps all-unset"); return
+	if not _redraw():
+		return
+	var pix_unset := server.gpu_raster_read_pixels()
+	var body_px := 0
+	var diff_px := 0
+	var max_lsb := 0
+	for dy in range(-4, 5):
+		for dx in range(-4, 5):
+			var o := ((int(fpx.y) + dy) * RASTER_W + (int(fpx.x) + dx)) * 4
+			if pix_unset[o + 3] > 0:
+				body_px += 1
+			for c in 4:
+				var d := absi(int(pix_unset[o + c]) - int(pix_flat[o + c]))
+				if d > 0:
+					diff_px += 1
+				max_lsb = maxi(max_lsb, d)
+	var x1_ok := (diff_px == 0) and (max_lsb == 0) and (body_px >= 40)
+	print("GNE 016.5: X1 all-unset body_px=", body_px, "/81 diff_px=", diff_px,
+			" max_lsb=", max_lsb, " pass=", x1_ok)
+
 	# load checker + bind + maps on inst0
 	var tid := server.gpu_texture_load("res://checkerboard.gtex")
 	print("GNE 016.5: checker id=", tid)
@@ -157,6 +194,19 @@ func _measure() -> void:
 	var m2_shift := absf(m_map - m_flat)
 	var m2_ok := m2_shift >= 0.05
 	print("GNE 016.5: M2 map m=", m_map, " sd=", sd_map, " shift=", m2_shift, " pass=", m2_ok)
+
+	# X1 positive control (independent): the SAME region must CHANGE when a
+	# valid albedo map is bound. Without this, X1 would pass vacuously even if
+	# the instrument could not detect maps at all.
+	var ctl_diff := 0
+	for dy in range(-4, 5):
+		for dx in range(-4, 5):
+			var o := ((int(fpx.y) + dy) * RASTER_W + (int(fpx.x) + dx)) * 4
+			for c in 3:
+				if absi(int(pix_map[o + c]) - int(pix_flat[o + c])) > 0:
+					ctl_diff += 1
+	var x1_ctl_ok := ctl_diff > 0
+	print("GNE 016.5: X1 control changed_channels=", ctl_diff, " pass=", x1_ctl_ok)
 
 	# M3: alternations at scale s and 2s
 	var n1 := _alternations(pix_map, fpx)
@@ -254,10 +304,11 @@ func _measure() -> void:
 		if f == null:
 			_fail(4025, "sig file"); return
 		f.store_string(sig + "\n")
-	if m2_ok and m3_ok and m4_ok and det_ok and wsd_ok and r1_ok and det2_ok:
+	if m2_ok and m3_ok and m4_ok and det_ok and wsd_ok and r1_ok and det2_ok and x1_ok and x1_ctl_ok:
 		print("GNE 016.5: SLICE1 PASS")
 	else:
-		print("GNE 016.5: SLICE1 FAIL m2=", m2_ok, " m3=", m3_ok, " m4=", m4_ok, " det=", det_ok)
+		print("GNE 016.5: SLICE1 FAIL m2=", m2_ok, " m3=", m3_ok, " m4=", m4_ok, " det=", det_ok,
+				" x1=", x1_ok, " x1ctl=", x1_ctl_ok)
 	server.gpu_scene_destroy()
 	get_tree().quit(0)
 
