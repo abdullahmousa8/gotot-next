@@ -62,7 +62,38 @@ These are facts to keep, not defects:
   needs `p50` stability proven across machines first. Not done. `p50_us` is
   already emitted by the scene for free when that work is taken up.
 
-## 5. Verifying the gate rejects
+## 5. A hard limit on this metric: the profile is CPU-side only
+
+`wall_avg_us` comes from `gpu_frame_stats()`, whose per-pass numbers are built by
+`gpu_frame_mark(p)` (cpp:11965) accumulating the interval since the **previous**
+mark. Two consequences, both measured on `main_015_5_phase4` with `--noreadback`
+and `--needvisible` probes:
+
+1. **A pass bucket is whatever the script put between two marks.** Not the pass.
+   The raster readbacks sit between `mark(P_BATCH)` and `mark(P_RASTER)`, so they
+   land in RASTER: 7471.0 -> 270.2 us/frame when skipped. The `output` window
+   holds `Image.create_from_data` + `image_tex.update`, an 8.3 MB per-frame
+   CPU->GPU upload, gated on the readback having produced pixels: 8645.9 -> 4.7
+   us/frame when skipped. `gpu_cull_get_visible_count()` was a synchronous 4-byte
+   `buffer_get_data` (cpp:4148) whose result the scene never read: cull
+   4277.4 -> 2005.9 us/frame, frame total 22688.9 -> 18105.5 us (commit 58ab58a).
+
+   **Instrumentation was ~83% of that scene's frame. Engine work was under
+   0.75 ms of 23 ms.** Any per-pass conclusion drawn from the raw buckets was
+   backwards.
+
+2. **CPU time cannot be separated from GPU wait.** `max_timestamp_query_elements`
+   is set nowhere in the repo, so `gpu_last_ns` is always 0. `gpu_cull_dispatch`
+   and `gpu_visibility_dispatch` contain no readback at all, so the residual
+   2005.9 us is not a discarded measurement call - it is most likely driver queue
+   back-pressure, i.e. GPU time landing in a CPU bucket. Unconfirmed, and
+   unconfirmable until GPU timestamps are enabled.
+
+**Therefore: no per-pass threshold is admissible from this harness, and
+`cluster_cull` at 0.03% of frame time must not be gated at all.** This is
+recorded in `open_items_register.md` as a known structural limit.
+
+## 6. Verifying the gate rejects
 
 The threshold is one-sided (cost rising), so it is verified by **injection**:
 run `gne_verify.ps1` with `gt_020a.log` carrying a synthetic `wall_avg_us`
