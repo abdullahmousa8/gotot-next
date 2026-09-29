@@ -25,7 +25,7 @@ call :scene main_008b
 call :scene main_009
 call :scene main_010
 call :scene main_011
-call :scene main_012 XFAIL
+call :scene main_012
 call :scene main_013
 call :scene main_014
 call :scene main_015

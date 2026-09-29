@@ -112,6 +112,133 @@ const WALL_X: Array[float] = [-540.0, -180.0, 180.0, 540.0]
 
 var _user_args012: Dictionary = {}
 
+# =========================================================================
+# GATE 124 â€” D1 and D2 (owner-approved replacement of the two conflicting
+# colour conditions). Both are self-contained: they read the ENGINE API
+# directly and never read any TEMP-DIAG-012memb variable or block, so the
+# gate can never come to depend on an uncommitted diagnostic.
+# =========================================================================
+var _gate_d1_reason := ""
+var _gate_d2_reason := ""
+
+# D1 - instance 90 is absent from the compact generation that ENTERED the
+# batch. Fail-closed binding: the generation read here is only accepted as
+# "the consumed one" when sum(last_draw_counts) == p2 in the same cycle.
+func _gate_d1_absence() -> bool:
+	_gate_d1_reason = ""
+	var gen := server.gpu_compact_read()
+	var n := mini(p2, gen.size())
+	var m90 := false
+	var m65 := false
+	var walls := 0
+	for k in range(n):
+		var v: int = gen[k]
+		if v == 90:
+			m90 = true
+		if v == 65:
+			m65 = true
+		if v >= INSTANCE_COUNT:
+			walls += 1
+	var csum := 0
+	for c in last_draw_counts:
+		csum += c
+	var bound := (csum == p2)
+	_gate_d1_reason = "gen=" + str(n) + "/" + str(p2) + " m90=" + str(m90) \
+		+ " m65=" + str(m65) + " walls=" + str(walls) \
+		+ " sum=" + str(csum) + " bound(sum==p2)=" + str(bound)
+	# The generation must be provably the consumed one, occlusion must have
+	# actually reduced the set, and 90 must be absent from it.
+	if not bound:
+		_gate_d1_reason += " REJECT:not_the_consumed_generation"
+		return false
+	if p2 >= p1:
+		_gate_d1_reason += " REJECT:occlusion_inactive"
+		return false
+	if m90:
+		_gate_d1_reason += " REJECT:90_present"
+		return false
+	_gate_d1_reason += " ACCEPT(65_survives=" + str(m65) + ",walls=" + str(walls) + ")"
+	return true
+
+# D2 - a wall is present in the PRODUCTION image with its IDENTITY taken
+# from the id pass. Colour and depth are corroborating checks, never the
+# sole basis. Fails closed on any missing prerequisite; the id pass is
+# disabled by default in the engine, so an absent probe is a FAIL, not a
+# skip.
+func _gate_d2_wall_present(pixels: PackedByteArray, depth: PackedFloat32Array,
+		vp: PackedFloat32Array) -> bool:
+	_gate_d2_reason = ""
+	if not server.gpu_idprobe_is_valid():
+		_gate_d2_reason = "REJECT:idpass_not_valid"
+		return false
+	var ids := server.gpu_idprobe_read_ids()
+	var idd := server.gpu_idprobe_read_depth()
+	var want := RASTER_W * RASTER_H
+	if ids.size() != want or idd.size() != want:
+		_gate_d2_reason = "REJECT:readback_size ids=" + str(ids.size()) + "/" + str(want) \
+			+ " depth=" + str(idd.size())
+		return false
+	# Frame-wide coverage agreement: no pixel drawn by production that the id
+	# pass did not draw, and vice versa (depth-based, not colour-based).
+	var prod_only := 0
+	var id_only := 0
+	for i in range(want):
+		var pc: bool = depth[i] < 0.999999
+		var ic: bool = idd[i] < 0.999999
+		if pc and not ic:
+			prod_only += 1
+		elif ic and not pc:
+			id_only += 1
+	if prod_only > 0 or id_only > 0:
+		_gate_d2_reason = "REJECT:coverage prod_only=" + str(prod_only) + " id_only=" + str(id_only)
+		return false
+	var wr := int(round(mesh_colors[WALL_MESH_ID].r * 255.0))
+	var wg := int(round(mesh_colors[WALL_MESH_ID].g * 255.0))
+	var wb := int(round(mesh_colors[WALL_MESH_ID].b * 255.0))
+	var parts := []
+	for wi in range(WALL_COUNT):
+		var wix: int = INSTANCE_COUNT + wi
+		# window centre derived geometrically, not hard-coded
+		var c := _idprobe_px(Vector3(WALL_X[wi], 0.0, WALL_Z), vp)
+		var cx := int(c.x)
+		var cy := int(c.y)
+		var ok := 0
+		for dy in range(-3, 4):
+			for dx in range(-3, 4):
+				var xx := cx + dx
+				var yy := cy + dy
+				if xx < 0 or xx >= RASTER_W or yy < 0 or yy >= RASTER_H:
+					continue
+				var ix := yy * RASTER_W + xx
+				if ids[ix] != wix:
+					continue
+				var o := ix * 4
+				if not (_close(int(pixels[o]), wr) and _close(int(pixels[o + 1]), wg) and _close(int(pixels[o + 2]), wb)):
+					continue
+				if absf(idd[ix] - depth[ix]) > 0.000001:
+					continue
+				ok += 1
+		parts.append("wall" + str(wix) + "@(" + str(cx) + "," + str(cy) + ")=" + str(ok) + "/49")
+		if ok < 49:
+			_gate_d2_reason = "REJECT:window_incomplete " + ", ".join(parts)
+			return false
+	_gate_d2_reason = "ACCEPT coverage_exact " + ", ".join(parts)
+	return true
+
+	return true
+
+# Projects a world point to raster pixel coords using the same mapping the
+# occbuf writer and the cull phase use: px = (ndc * 0.5 + 0.5) * viewport.
+# Used by the D2 gate to derive its window centre geometrically, so no pixel
+# coordinate is ever hard-coded.
+func _idprobe_px(p: Vector3, vp: PackedFloat32Array) -> Vector2:
+	var cx: float = vp[0] * p.x + vp[4] * p.y + vp[8] * p.z + vp[12]
+	var cy: float = vp[1] * p.x + vp[5] * p.y + vp[9] * p.z + vp[13]
+	var cw: float = vp[3] * p.x + vp[7] * p.y + vp[11] * p.z + vp[15]
+	if cw <= 0.0:
+		return Vector2(-1e9, -1e9)
+	return Vector2((cx / cw * 0.5 + 0.5) * float(RASTER_W), (cy / cw * 0.5 + 0.5) * float(RASTER_H))
+
 func _parse_user_args() -> void:
 	_user_args012.clear()
 	for a in OS.get_cmdline_user_args():
@@ -169,6 +296,13 @@ func _ready() -> void:
 		_fail(104, "gpu_mesh_create")
 		return
 
+	# Enable the TEST-ONLY instance-id pass (engine capability, disabled by
+	# default; see gne_render_server gpu_idprobe_*). The D2 gate depends on it
+	# by design. It writes to its OWN framebuffer and touches no production
+	# pipeline, format or shader.
+	if not server.gpu_idprobe_set_enabled(true):
+		print("GNE 012-DBG idprobe ENABLE FAILED (experiment continues without it)")
+
 	var tetra_verts := PackedVector3Array(TETRA_VERTS)
 	var tetra_idx := PackedInt32Array(TETRA_INDICES)
 	var octa_verts := PackedVector3Array(OCTA_VERTS)
@@ -219,13 +353,61 @@ func _ready() -> void:
 	# is > back-sphere inv (925, occludes them) but < wall/front sphere inv
 	# (walls+front survive). Boxes are much taller than the occluder octa so
 	# they also provide the wall-color evidence at occluded pixels.
+	# GNE-012 GAP EXPERIMENT (owner-approved, local only).
+	#
+	# ORIGINAL bounds, preserved verbatim for the record - DO NOT LOSE:
+	#   Box A: x [-650, -350]  Box B: x [-270, 700]   (both y [-400,400], z [-1200,-800])
+	#   Vector4(-650,-400,-1200)  Vector4(-350,400,-800)
+	#   Vector4(-270,-400,-1200)  Vector4(700,400,-800)
+	#
+	# MEASURED reason the slit fails (AUDIT-012-f065, frame 60):
+	#   instance 65 centre x = -330 (inside the 80-unit gap), radius 26,
+	#   r_px = 7.84 -> level 3 (256 texels over 1920 px => 1 texel = 7.5 px).
+	#   phase-2 samples the 2x2 texel block at (114,106) => x texels 114 and 115.
+	#   occbuf writes Box A over x texels [99,115) and Box B over [115,160),
+	#   so BOTH halves of 65's tested block are covered and 65 is culled
+	#   (sphere_inv 926 < box inv 1200). The projected gap is only ~12 px,
+	#   i.e. under two texels at this level.
+	#
+	# This experiment only moves the two INNER x edges (A.max and B.min) to
+	# widen the slit so 65's tested texels are clear. A.min and B.max are
+	# untouched, so instance 90 (x = -430) stays deep inside Box A.
+	# Bounds are overridable from the command line so a sweep needs no edits:
+	#   --axmax=<float> --bxmin=<float>
+	# The defaults are the MEASURED, owner-promoted Stage-2 values. They were
+	# validated over three identical command-line runs; the promotion to
+	# default was verified separately by two runs with NO command-line args.
+	# Texel evidence: 90 tests x-texels 110-111, 65 tests 114-115. Box A must
+	# stop at or before 111 and Box B must start at or after 116 for 65 to
+	# clear while 90 stays covered.
+	#
+	# The command-line overrides are RETAINED so the original slit and the
+	# intermediate experiment stay reproducible on demand:
+	#   --axmax=-350 --bxmin=-270   reproduces the ORIGINAL (pre-Stage-2) slit
+	#   --axmax=-420 --bxmin=-240   reproduces the rejected intermediate sweep
+	var _axmax := -450.0
+	var _bxmin := -210.0
+	if _user_args012.has("axmax"):
+		_axmax = float(_user_args012["axmax"])
+	if _user_args012.has("bxmin"):
+		_bxmin = float(_user_args012["bxmin"])
+	print("GNE 012-DBG occgap A.x=[-650,", _axmax, "] B.x=[", _bxmin, ",700]",
+		" orig_A.x=[-650,-350] orig_B.x=[-270,700]",
+		" slit_width=", _bxmin - _axmax)
 	var occ := PackedVector4Array([
-		Vector4(-650.0, -400.0, -1200.0, 0.0), Vector4(-350.0, 400.0, -800.0, 0.0),
-		Vector4(-270.0, -400.0, -1200.0, 0.0), Vector4(700.0, 400.0, -800.0, 0.0),
+		Vector4(-650.0, -400.0, -1200.0, 0.0), Vector4(_axmax, 400.0, -800.0, 0.0),
+		Vector4(_bxmin, -400.0, -1200.0, 0.0), Vector4(700.0, 400.0, -800.0, 0.0),
 	])
 	server.gpu_scene_set_occluders(occ)
 
 	server.gpu_scene_set_camera(camera.get_global_transform(), camera.get_camera_projection())
+
+	# GNE-012 completion path: RenderingServer.frame_post_draw (the SAME signal
+	# main_011 uses) drives the screenshot + quit. Without this the callback at
+	# the bottom of this file is never invoked, so a scene that PASSES its
+	# evidence can never reach "GNE 012: PASS" nor exit - it only ever reached
+	# this point before because _fail() quits directly.
+	RenderingServer.frame_post_draw.connect(_on_frame_post_draw)
 
 	while frame <= FRAME_LIMIT:
 		if not server.gpu_cull_dispatch():
@@ -236,26 +418,33 @@ func _ready() -> void:
 			_fail(111, "frustum visible=" + str(visible) + " expected " + str(TOTAL_INSTANCES))
 			return
 
-		var t1 := Time.get_ticks_usec()
-		if not server.gpu_mesh_batch_dispatch():
-			_fail(116, "gpu_mesh_batch_dispatch")
-			return
-		if not _check_batch_state():
-			return
-
-		# gpu_hzb_build keeps the temporal-coherence bookkeeping (hzb_valid in the
-		# shared UBO gates occlusion: frame 1 is frustum-only control). The pyramid
-		# itself is built from the registered occluder AABBs inside every
-		# gpu_visibility_prod_dispatch (occbuf -> flat storage buffer, the ONE
-		# reliable cross-submission GPU route) - it does not depend on the raster.
+		# GNE-012 consumption-path fix (audit-directed, owner-approved).
+		# The batch MUST consume the phase-2 survivor list, so the production
+		# two-phase dispatch is moved BEFORE gpu_mesh_batch_dispatch/draw.
+		#
+		# Dependencies (read from source, not assumed):
+		#  - gpu_visibility_prod_dispatch is SELF-CONTAINED: it clears
+		#    hzb_pyramid_data_buffer, runs hzb_occbuf_pipeline (projects the
+		#    registered occluder AABBs into that flat buffer, all 12 levels),
+		#    then phase1, then phase2 - which reads pyrbuf at binding 4 in the
+		#    SAME submission (gne_render_server.cpp:4725-4732, 4594).
+		#    It reads NO raster attachment and NO previous-frame depth.
+		#  - gpu_hzb_build only manages validity: it writes hzb_valid into the
+		#    shared view UBO, sets hzb_coherent, and sets hzb_rebuild_requested
+		#    (whose only consumer is a debug-probe buffer_clear in batch_draw).
+		#    It must run BEFORE prod_dispatch, which is why it is not moved.
+		#  - gpu_cull_dispatch still runs first and still produces the 132-entry
+		#    frustum list, which assertions 111/114 depend on; prod then
+		#    OVERWRITES compact[]/visible_count with the p2 survivors.
+		# Frame trace (loop starts at frame = 0; hzb_build is gated frame > 1):
+		#    f0/f1: hzb_valid = 0 (never written; cull_dispatch forces it) -> p2=p1
+		#    f2   : hzb_build takes the !hzb_pyramid_fresh branch, writes 0 -> p2=p1
+		#    f3+  : hzb_build writes 1 -> phase-2 occlusion active
+		# The control frame asserted by _finalize (phase_history[0].y == .x) is
+		# frame 0, and is preserved for two independent reasons.
 		if frame > 1 and not server.gpu_hzb_build():
 			_fail(112, "gpu_hzb_build")
 			return
-
-		if not server.gpu_mesh_batch_draw():
-			_fail(117, "gpu_mesh_batch_draw")
-			return
-		draw_us = Time.get_ticks_usec() - t1
 
 		var t0 := Time.get_ticks_usec()
 		if not server.gpu_visibility_prod_dispatch():
@@ -269,6 +458,18 @@ func _ready() -> void:
 		p2 = counts[1]
 		coherent = server.gpu_hzb_get_coherent()
 		phase_history.append(Vector2i(p1, p2))
+
+		var t1 := Time.get_ticks_usec()
+		if not server.gpu_mesh_batch_dispatch():
+			_fail(116, "gpu_mesh_batch_dispatch")
+			return
+		if not _check_batch_state():
+			return
+
+		if not server.gpu_mesh_batch_draw():
+			_fail(117, "gpu_mesh_batch_draw")
+			return
+		draw_us = Time.get_ticks_usec() - t1
 
 		if frame == 8:
 			print("[GNE DBG] f8 ENTER frame=", frame)
@@ -309,6 +510,35 @@ func _ready() -> void:
 
 		var pixels := server.gpu_raster_read_pixels()
 		var depth := server.gpu_raster_read_depth()
+
+		# AUDIT-012-frames (audit-only, revert after): the per-frame trace the
+		# owner asked for and that the 20-frame summary never showed - frames
+		# 0-3 plus the first frame where occlusion actually goes active. Read-
+		# only, no new API, no state change, no assertion is bypassed.
+		if frame <= 3 or frame == occlusion_seen_at:
+			var _csum2 := 0
+			for _cx2 in last_draw_counts:
+				_csum2 += _cx2
+			var _m65f := false
+			var _m90f := false
+			var _walls := 0
+			var _lst := server.gpu_compact_read()
+			var _ln := mini(p2, _lst.size())
+			for _id3 in range(_ln):
+				var _v3: int = _lst[_id3]
+				if _v3 == 65:
+					_m65f = true
+				if _v3 == 90:
+					_m90f = true
+				if _v3 >= INSTANCE_COUNT:
+					_walls += 1
+			print("GNE 012-DBG trace frame=", frame,
+				" p1=", p1, " p2=", p2, " co=", coherent,
+				" hzb_valid=", server.gpu_hzb_dbg_valid(),
+				" batch_count_sum=", _csum2, " vis_frustum=", visible,
+				" m65_in_batch_list=", _m65f, " m90_in_batch_list=", _m90f,
+				" walls_in_batch_list=", _walls,
+				" control=", (p2 == p1))
 
 		var img := Image.create_from_data(RASTER_W, RASTER_H, false, Image.FORMAT_RGBA8, pixels)
 		if image_tex == null:
@@ -413,25 +643,28 @@ func _finalize(pixels: PackedByteArray, depth: PackedFloat32Array) -> void:
 	# Back col 1 (x=-330) sits in the occluder x-gap -> it must SURVIVE the
 	# pyramid and render its own mesh color.
 	var back_visible := _color_at_projected(_instance_pos(MESH_COUNT + 1), mesh_colors[(MESH_COUNT + 1) % MESH_COUNT], pixels, vp)
-	# Instance 90 (back col 2 / row 3, x=-170, y=-50, z=-1100) is deep behind
-	# the wall at x=-180: its own color must be GONE from its projected area
-	# while the wall's color must be present there (the wall alone draws there).
-	var occ_color_ok := not _color_at_projected(_instance_pos(90), mesh_colors[90 % MESH_COUNT], pixels, vp)
-	var occ_wall_ok := _color_at_projected(_instance_pos(90), mesh_colors[WALL_MESH_ID], pixels, vp)
+	# GATE 124 REPLACEMENT (owner-approved): the two CONFLICTING colour
+	# conditions are replaced by D1 (membership) and D2 (id-attributed wall
+	# presence). mesh_colors[90 % 64] and mesh_colors[WALL_MESH_ID=5] are
+	# the SAME palette entry, so those two could never both hold.
+	# Nothing else in this function is touched.
+	var d1 := _gate_d1_absence()
+	var d2 := _gate_d2_wall_present(pixels, depth, vp)
 	if front_ok:
 		cc += 1
 	if wall_ok:
 		cc += 1
 	if back_visible:
 		cc += 1
-	if occ_color_ok:
+	if d1:
 		cc += 1
-	if occ_wall_ok:
+	if d2:
 		cc += 1
 	if cc != 5:
 		_fail(124, "pixel evidence " + str(cc) + "/5 front=" + str(front_ok) +
 				" wall=" + str(wall_ok) + " back_vis=" + str(back_visible) +
-				" occ_no_color=" + str(occ_color_ok) + " occ_wall=" + str(occ_wall_ok))
+				" D1_90_absent=" + str(d1) + " D2_wall_id=" + str(d2) +
+				" d1=" + str(_gate_d1_reason) + " d2=" + str(_gate_d2_reason))
 		return
 
 	# PASS (5): in-binary DET - rerun the full 012 GPU path and compare counts.
@@ -473,8 +706,11 @@ func _det_check(pixels: PackedByteArray) -> bool:
 		return false
 	return true
 
-func _color_counts(pixels: PackedByteArray) -> Array:
-	# [green, blue, orange, gold, wall] histogram (mesh palette order).
+
+func _color_counts_reference(pixels: PackedByteArray) -> Array:
+	# ORIGINAL five-pass implementation, retained ONLY as the defensive
+	# fallback when the live palette is not uniform (see _color_counts).
+	# It is not on the normal path and runs at most once per call there.
 	var cg := _count_color(pixels, mesh_colors[0])
 	var cb := _count_color(pixels, mesh_colors[1])
 	var co := _count_color(pixels, mesh_colors[2])
@@ -485,6 +721,72 @@ func _color_counts(pixels: PackedByteArray) -> Array:
 			ck = c
 	var cw := _count_color(pixels, mesh_colors[WALL_MESH_ID])
 	return [cg, cb, co, ck, cw]
+
+func _color_counts(pixels: PackedByteArray) -> Array:
+	# Single-pass equivalent of the original five-pass histogram.
+	#
+	# Equivalence argument (exact, not approximate):
+	#   The reference counts each colour INDEPENDENTLY - a pixel matching two
+	#   colours is counted in BOTH, never split. It returns
+	#   [c(0), c(1), c(2), max_{m in 3..63} c(m), c(5)].
+	#   gne_mesh_palette() has a single `default` branch, so entries 3..63 and
+	#   WALL_MESH_ID=5 are ONE RGB triple => all c(m) for m in 3..63 are equal
+	#   => max(...) == c(3), and c(5) == c(3).
+	#   The fast path is taken ONLY after re-deriving that uniformity from the
+	#   LIVE mesh_colors at runtime; if it does not hold, the reference is used,
+	#   so the result can never differ.
+	# Match rule unchanged: _close() is |v - t| <= 40, inlined verbatim.
+	# Counting rule unchanged: independent counters, no else-if.
+	var g0r := int(round(mesh_colors[0].r * 255.0))
+	var g0g := int(round(mesh_colors[0].g * 255.0))
+	var g0b := int(round(mesh_colors[0].b * 255.0))
+	var b0r := int(round(mesh_colors[1].r * 255.0))
+	var b0g := int(round(mesh_colors[1].g * 255.0))
+	var b0b := int(round(mesh_colors[1].b * 255.0))
+	var o0r := int(round(mesh_colors[2].r * 255.0))
+	var o0g := int(round(mesh_colors[2].g * 255.0))
+	var o0b := int(round(mesh_colors[2].b * 255.0))
+	var k0r := int(round(mesh_colors[3].r * 255.0))
+	var k0g := int(round(mesh_colors[3].g * 255.0))
+	var k0b := int(round(mesh_colors[3].b * 255.0))
+
+	# --- runtime proof of the uniformity the fast path relies on ---
+	var uniform := true
+	for m in range(4, MESH_COUNT):
+		if int(round(mesh_colors[m].r * 255.0)) != k0r \
+				or int(round(mesh_colors[m].g * 255.0)) != k0g \
+				or int(round(mesh_colors[m].b * 255.0)) != k0b:
+			uniform = false
+			break
+	if int(round(mesh_colors[WALL_MESH_ID].r * 255.0)) != k0r \
+			or int(round(mesh_colors[WALL_MESH_ID].g * 255.0)) != k0g \
+			or int(round(mesh_colors[WALL_MESH_ID].b * 255.0)) != k0b:
+		uniform = false
+	if not uniform:
+		# Defensive only: the shipped palette is uniform, so this never runs.
+		return _color_counts_reference(pixels)
+
+	var cg := 0
+	var cb := 0
+	var co := 0
+	var ck := 0
+	var n: int = RASTER_W * RASTER_H
+	for i in n:
+		var o: int = i * 4
+		var r := int(pixels[o])
+		var g := int(pixels[o + 1])
+		var b := int(pixels[o + 2])
+		if absi(r - g0r) <= 40 and absi(g - g0g) <= 40 and absi(b - g0b) <= 40:
+			cg += 1
+		if absi(r - b0r) <= 40 and absi(g - b0g) <= 40 and absi(b - b0b) <= 40:
+			cb += 1
+		if absi(r - o0r) <= 40 and absi(g - o0g) <= 40 and absi(b - o0b) <= 40:
+			co += 1
+		if absi(r - k0r) <= 40 and absi(g - k0g) <= 40 and absi(b - k0b) <= 40:
+			ck += 1
+	var res: Array = [cg, cb, co, ck, ck]
+	return res
+
 
 func _print_signature(cc: int) -> void:
 	var first: Vector2i = phase_history[0]

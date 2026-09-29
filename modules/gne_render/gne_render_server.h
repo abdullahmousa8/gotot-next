@@ -406,6 +406,36 @@ int gi_gz = 16;
 	RID group_batch_pipeline;
 	RID group_batch_uniform_set;
 
+	// TEMP-DIAG-012-idprobe (owner-approved LOCAL MEASUREMENT EXPERIMENT, not a
+	// fix, not a pass gate; disabled by default). An INDEPENDENT framebuffer +
+	// pipeline + shaders that re-issue the SAME production group draw (same
+	// group_args_buffer, same last_batch_count, same batch_instances) into an
+	// R32_UINT target and write the RESOLVED original scene id per pixel.
+	// It reads gl_InstanceIndex only to INDEX batch_instances, exactly as the
+	// production group vertex shader does; the id it exports is the value read
+	// OUT of that buffer, never gl_InstanceIndex itself.
+	// It touches NO production framebuffer, pipeline, format or shader.
+	// Lifecycle inventory (verified against _destroy_mesh_table_gpu):
+	//   freed in _destroy_mesh_table_gpu: framebuffer, format, depth texture,
+	//     id texture, pipeline, shader, uniform set  (7 free_rid calls)
+	//   NOT freed there: id_vertex_format (int64, not a RID)
+	bool gpu_idprobe_enabled = false;
+	bool gpu_idprobe_valid = false;
+	int64_t gpu_idprobe_framebuffer_format = -1;
+	int64_t gpu_idprobe_vertex_format = -1;
+	RID gpu_idprobe_framebuffer;
+	RID gpu_idprobe_id_texture;
+	RID gpu_idprobe_depth_texture;
+	RID gpu_idprobe_shader;
+	RID gpu_idprobe_pipeline;
+	RID gpu_idprobe_uniform_set;
+	RID gpu_idprobe_vertex_array;
+
+	bool _gpu_idprobe_create();
+	bool _gpu_idprobe_create2();
+	void _gpu_idprobe_destroy();
+	void _gpu_idprobe_draw();
+
 	// GNE-012: production HZB (SPEC 012, additive over 004/010/011).
 	// A 2048x2048 R32UI 2D-array pyramid (12 levels = log2(2048)+1, the SPEC
 	// minimum) is built EVERY frame from the PREVIOUS frame's actual D32_SFLOAT
@@ -746,6 +776,16 @@ PackedByteArray gpu_present_read_pixels();
 	PackedInt32Array gpu_mesh_get_batch_args(int p_batch_index);
 	// The flat color the batch fragment shader uses for the given mesh.
 	Color gpu_mesh_get_mesh_color(int p_mesh_id) const;
+
+	// TEMP-DIAG-012-idprobe: enable/disable the independent id framebuffer pass.
+	// Returns false if the resources could not be created.
+	bool gpu_idprobe_set_enabled(bool p_enabled);
+	bool gpu_idprobe_is_valid() const;
+	// Full-frame R32_UINT id readback: one uint32 per pixel, row-major,
+	// W*H entries. Returns an EMPTY array if the probe was never run.
+	PackedInt32Array gpu_idprobe_read_ids();
+	// Full-frame D32 readback of the id pass's own depth attachment (float).
+	PackedFloat32Array gpu_idprobe_read_depth();
 
 	// GNE-016: material API (TEST-ONLY, additive). Slot id == mesh table id.
 	// All setters validate ranges/ids: violation => print_error + reject

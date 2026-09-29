@@ -2208,6 +2208,113 @@ void main() {
 }
 )";
 
+// TEMP-DIAG-012-idprobe: DIAGNOSTIC-ONLY id pass. It replicates
+// gpu_mesh_group_batch_vert_glsl (the shader that actually runs for
+// STRATEGY_REORDERED, i.e. main_012) LINE FOR LINE up to gl_Position, and
+// additionally forwards the RESOLVED original scene id to the fragment stage:
+//     uint orig = batch_instances.instances[gl_InstanceIndex];
+// gl_InstanceIndex is used ONLY as an index into batch_instances (exactly as
+// the production path does, including the first_instance base baked into the
+// indirect command); the exported id is the value READ OUT of that buffer.
+// NOT exported: gl_InstanceIndex itself.
+// The production 8-binding set-0 layout is reproduced unchanged so the same
+// group_batch_uniform_set geometry is used (a dedicated set is still built,
+// but over the same 8 RIDs, so the draw cannot silently differ).
+const char *gpu_idprobe_vert_glsl = R"(
+#version 450
+
+struct GneMeshDescStd430 {
+	uint index_buffer_slot;
+	uint vertex_buffer_slot;
+	uint index_count;
+	uint vertex_count;
+	uint first_index;
+	int vertex_offset;
+	uint reserved0;
+	uint reserved1;
+};
+
+layout(std430, set = 0, binding = 0) buffer BatchInstancesBuffer {
+	uint instances[];
+}
+batch_instances;
+
+layout(std430, set = 0, binding = 1) buffer TransformBuffer {
+	vec4 position_scale[];
+}
+transforms;
+
+layout(std140, set = 0, binding = 2) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport;
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+layout(std430, set = 0, binding = 3) buffer MeshIdBuffer {
+	uint mesh_id[];
+}
+meshids;
+
+layout(std430, set = 0, binding = 5) buffer MeshTableBlock {
+	GneMeshDescStd430 table[64];
+}
+mesh_table;
+
+layout(std430, set = 0, binding = 6) buffer VertexDataBuffer {
+	float data[];
+}
+vertex_data;
+
+layout(std430, set = 0, binding = 7) buffer IndexDataBuffer {
+	uint data[];
+}
+index_data;
+
+layout(location = 0) flat out uint v_orig;
+
+void main() {
+	uint orig = batch_instances.instances[gl_InstanceIndex];
+	uint m = meshids.mesh_id[orig];
+	GneMeshDescStd430 d = mesh_table.table[m];
+	if (gl_VertexIndex >= d.index_count) {
+		gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
+		v_orig = orig;
+		return;
+	}
+	uint li = index_data.data[d.first_index + gl_VertexIndex];
+	int vi = d.vertex_offset + int(li);
+	vec3 p = vec3(vertex_data.data[vi * 3 + 0], vertex_data.data[vi * 3 + 1], vertex_data.data[vi * 3 + 2]);
+	vec4 ts = transforms.position_scale[orig];
+	vec3 world = ts.xyz + p * ts.w;
+	gl_Position = viewdata.vp * vec4(world, 1.0);
+	v_orig = orig;
+}
+)";
+
+// TEMP-DIAG-012-idprobe: writes the resolved original scene id into R32_UINT.
+// early_fragment_tests is kept so the depth test is applied BEFORE the write,
+// matching the production fragment shader (which also declares it) - otherwise
+// occluded fragments would still overwrite the id and the coverage comparison
+// would be meaningless.
+const char *gpu_idprobe_frag_glsl = R"(
+#version 450
+
+layout(early_fragment_tests) in;
+
+layout(location = 0) flat in uint v_orig;
+layout(location = 0) out uint out_id;
+
+void main() {
+	out_id = v_orig;
+}
+)";
+
 // GNE-012: build HZB base layer by sampling the PREVIOUS frame's D32_SFLOAT
 // depth. Given A = projection.columns[2][2], B = projection.columns[3][2] the
 // Godot 4 perspective maps clip.z = A*z_cam + B, clip.w = -z_cam, so
@@ -2770,6 +2877,11 @@ void GneRenderServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_draw_counts"), &GneRenderServer::gpu_mesh_get_draw_counts);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_args", "batch_index"), &GneRenderServer::gpu_mesh_get_batch_args);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_mesh_color", "mesh_id"), &GneRenderServer::gpu_mesh_get_mesh_color);
+	// TEMP-DIAG-012-idprobe (temporary, disabled by default)
+	ClassDB::bind_method(D_METHOD("gpu_idprobe_set_enabled", "enabled"), &GneRenderServer::gpu_idprobe_set_enabled);
+	ClassDB::bind_method(D_METHOD("gpu_idprobe_is_valid"), &GneRenderServer::gpu_idprobe_is_valid);
+	ClassDB::bind_method(D_METHOD("gpu_idprobe_read_ids"), &GneRenderServer::gpu_idprobe_read_ids);
+	ClassDB::bind_method(D_METHOD("gpu_idprobe_read_depth"), &GneRenderServer::gpu_idprobe_read_depth);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_set_batch_strategy", "strategy"), &GneRenderServer::gpu_mesh_set_batch_strategy);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_strategy"), &GneRenderServer::gpu_mesh_get_batch_strategy);
 	ClassDB::bind_method(D_METHOD("gpu_mesh_get_batch_group_count"), &GneRenderServer::gpu_mesh_get_batch_group_count);
@@ -2985,7 +3097,7 @@ void GneRenderServer::_destroy_mesh_batch() {
 			rendering_device->free_rid(mesh_vertex_storage_buffer);
 			mesh_vertex_storage_buffer = RID();
 		}
-	}
+		}
 	mesh_table_count = 0;
 	mesh_next_vertex_offset = 0;
 	mesh_next_index_offset = 0;
@@ -3004,6 +3116,19 @@ void GneRenderServer::_destroy_mesh() {
 	// mat_light_shader, which dies below (same auto-invalidate rule).
 	_destroy_shadow();
 	if (rendering_device != nullptr) {
+		// TEMP-DIAG-012-idprobe (GNE-012): teardown of the independent id pass.
+		//
+		// ORDERING IS LOAD-BEARING, and this follows the same rule already
+		// documented below for GNE-018/GNE-022. gpu_idprobe_uniform_set binds 8
+		// buffers that _destroy_mesh() owns (batch_instances_buffer, mesh_*,
+		// view_ubo...). RenderingDevice auto-frees a uniform set as soon as any
+		// buffer it depends on is freed (_free_dependencies -> free_rid on every
+		// direct dependent). Tearing the id pass down AFTER those buffers left
+		// gpu_idprobe_uniform_set already freed, so our own free_rid then hit
+		// "Attempted to free invalid ID" - a double free, not a leak. This call
+		// must therefore stay FIRST, while the set is still valid.
+		_gpu_idprobe_destroy();
+		gpu_idprobe_enabled = false;
 		// GNE-022 S1: free probe-field objects BEFORE their dependency buffers
 		// (light_buffer/transform_buffer) - the RD auto-invalidates sets whose
 		// dependencies are freed first (found by the S1a teardown probe).
@@ -6049,6 +6174,290 @@ bool GneRenderServer::gpu_mesh_batch_dispatch() {
 	return true;
 }
 
+// TEMP-DIAG-012-idprobe: create the INDEPENDENT id-pass resources. Nothing
+// here is shared with raster_framebuffer / mesh_batch_pipeline /
+// group_batch_pipeline: separate textures, separate format, separate pipeline,
+// separate shaders, separate uniform set, separate (empty) vertex format and
+// vertex array. The 8 storage buffers it binds are the SAME RIDs the production
+// group pass uses, read-only, so the draw issues identical work.
+bool GneRenderServer::_gpu_idprobe_create() {
+	if (gpu_idprobe_valid) {
+		return true;
+	}
+	if (!gpu_mesh_batch_valid || !gpu_raster_valid) {
+		print_error("[GNE] idprobe: mesh batch or raster not ready.");
+		return false;
+	}
+
+	// --- R32_UINT id target ---
+	RD::TextureFormat idf;
+	idf.format = RD::DATA_FORMAT_R32_UINT;
+	idf.width = RASTER_TARGET_W;
+	idf.height = RASTER_TARGET_H;
+	idf.depth = 1;
+	idf.texture_type = RD::TEXTURE_TYPE_2D;
+	// CAN_COPY_FROM_BIT is required for texture_get_data (vmaMapMemory on the
+	// texture allocation) - same usage set as raster_color_texture.
+	idf.usage_bits = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	gpu_idprobe_id_texture = rendering_device->texture_create(idf, RD::TextureView());
+	if (gpu_idprobe_id_texture.is_null()) {
+		print_error("[GNE] idprobe: id texture_create failed.");
+		return false;
+	}
+
+	// --- its own D32_SFLOAT depth, same format/clear as production ---
+	RD::TextureFormat ddf;
+	ddf.format = RD::DATA_FORMAT_D32_SFLOAT;
+	ddf.width = RASTER_TARGET_W;
+	ddf.height = RASTER_TARGET_H;
+	ddf.depth = 1;
+	ddf.texture_type = RD::TEXTURE_TYPE_2D;
+	ddf.usage_bits = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	gpu_idprobe_depth_texture = rendering_device->texture_create(ddf, RD::TextureView());
+	if (gpu_idprobe_depth_texture.is_null()) {
+		print_error("[GNE] idprobe: depth texture_create failed.");
+		return false;
+	}
+
+	// --- 2-attachment format: R32_UINT colour + D32 depth ---
+	Vector<RD::AttachmentFormat> iafs;
+	RD::AttachmentFormat iaf;
+	iaf.format = RD::DATA_FORMAT_R32_UINT;
+	iaf.samples = RD::TEXTURE_SAMPLES_1;
+	iaf.usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	iafs.push_back(iaf);
+	RD::AttachmentFormat idfa;
+	idfa.format = RD::DATA_FORMAT_D32_SFLOAT;
+	idfa.samples = RD::TEXTURE_SAMPLES_1;
+	idfa.usage_flags = RD::TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RD::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	iafs.push_back(idfa);
+	gpu_idprobe_framebuffer_format = rendering_device->framebuffer_format_create(iafs);
+	if (gpu_idprobe_framebuffer_format < 0) {
+		print_error("[GNE] idprobe: framebuffer_format_create failed.");
+		return false;
+	}
+
+	Vector<RID> iattach;
+	iattach.push_back(gpu_idprobe_id_texture);
+	iattach.push_back(gpu_idprobe_depth_texture);
+	gpu_idprobe_framebuffer = rendering_device->framebuffer_create(iattach, gpu_idprobe_framebuffer_format);
+	if (gpu_idprobe_framebuffer.is_null()) {
+		print_error("[GNE] idprobe: framebuffer_create failed.");
+		return false;
+	}
+	return true;
+}
+
+// TEMP-DIAG-012-idprobe: second half of creation (shaders, vertex array,
+// pipeline, uniform set). Split only to keep each edit small.
+bool GneRenderServer::_gpu_idprobe_create2() {
+	String error;
+	Vector<uint8_t> ivs = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_VERTEX, String(gpu_idprobe_vert_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+	if (ivs.is_empty()) {
+		print_error(String("[GNE] idprobe: vertex shader compile failed: ") + error);
+		return false;
+	}
+	Vector<uint8_t> ifs = rendering_device->shader_compile_spirv_from_source(
+			RD::SHADER_STAGE_FRAGMENT, String(gpu_idprobe_frag_glsl), RD::SHADER_LANGUAGE_GLSL, &error);
+	if (ifs.is_empty()) {
+		print_error(String("[GNE] idprobe: fragment shader compile failed: ") + error);
+		return false;
+	}
+	Vector<RD::ShaderStageSPIRVData> istages;
+	RD::ShaderStageSPIRVData ivs_d;
+	ivs_d.shader_stage = RD::SHADER_STAGE_VERTEX;
+	ivs_d.spirv = ivs;
+	istages.push_back(ivs_d);
+	RD::ShaderStageSPIRVData ifs_d;
+	ifs_d.shader_stage = RD::SHADER_STAGE_FRAGMENT;
+	ifs_d.spirv = ifs;
+	istages.push_back(ifs_d);
+	gpu_idprobe_shader = rendering_device->shader_create_from_spirv(istages, "gne_idprobe");
+	if (gpu_idprobe_shader.is_null()) {
+		print_error("[GNE] idprobe: shader_create_from_spirv failed.");
+		return false;
+	}
+
+	// empty vertex format + array, mirroring group_vertex_format (the production
+	// REORDERED path is procedural: no vertex attributes at all)
+	gpu_idprobe_vertex_format = rendering_device->vertex_format_create(Vector<RD::VertexAttribute>());
+	if (gpu_idprobe_vertex_format < 0) {
+		print_error("[GNE] idprobe: vertex_format_create failed.");
+		return false;
+	}
+	gpu_idprobe_vertex_array = rendering_device->vertex_array_create(1, gpu_idprobe_vertex_format, Vector<RID>(), Vector<uint64_t>());
+	if (gpu_idprobe_vertex_array.is_null()) {
+		print_error("[GNE] idprobe: vertex_array_create failed.");
+		return false;
+	}
+
+	// depth test/write and compare operator copied verbatim from the production
+	// group pipeline
+	RD::PipelineRasterizationState irs;
+	RD::PipelineMultisampleState ims;
+	RD::PipelineDepthStencilState ids;
+	ids.enable_depth_test = true;
+	ids.enable_depth_write = true;
+	ids.depth_compare_operator = RD::COMPARE_OP_LESS_OR_EQUAL;
+	RD::PipelineColorBlendState ibs = RD::PipelineColorBlendState::create_disabled(1);
+	gpu_idprobe_pipeline = rendering_device->render_pipeline_create(
+			gpu_idprobe_shader, gpu_idprobe_framebuffer_format, gpu_idprobe_vertex_format,
+			RD::RENDER_PRIMITIVE_TRIANGLES, irs, ims, ids, ibs, 0, 0);
+	if (gpu_idprobe_pipeline.is_null()) {
+		print_error("[GNE] idprobe: render_pipeline_create failed.");
+		return false;
+	}
+
+	// the SAME 8 RIDs the production group set uses, in the same order
+	Vector<RD::Uniform> iu;
+	const RID ibu[8] = {
+		batch_instances_buffer, transform_buffer, view_ubo, mesh_id_buffer,
+		mesh_color_buffer, mesh_table_buffer, mesh_vertex_storage_buffer, mesh_index_storage_buffer
+	};
+	for (uint32_t b = 0; b < 8; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		if (b == 2) {
+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		}
+		u.append_id(ibu[b]);
+		iu.push_back(u);
+	}
+	gpu_idprobe_uniform_set = rendering_device->uniform_set_create(iu, gpu_idprobe_shader, 0);
+	if (gpu_idprobe_uniform_set.is_null()) {
+		print_error("[GNE] idprobe: uniform_set_create failed.");
+		return false;
+	}
+	gpu_idprobe_valid = true;
+	print_line("[GNE] idprobe: independent framebuffer ready (R32_UINT + D32, 1920x1080).");
+	return true;
+}
+
+// TEMP-DIAG-012-idprobe: lifecycle teardown. Inventory verified against the
+// resources actually created in _gpu_idprobe_create / _create2:
+//   7 RIDs freed (framebuffer, uniform_set, pipeline, shader, vertex_array,
+//                 depth_texture, id_texture)
+//   gpu_idprobe_vertex_format and gpu_idprobe_framebuffer_format are int64
+//   format handles, NOT RIDs - they have no free_rid and are only reset.
+void GneRenderServer::_gpu_idprobe_destroy() {
+	if (gpu_idprobe_framebuffer.is_valid()) {
+		rendering_device->free_rid(gpu_idprobe_framebuffer);
+		gpu_idprobe_framebuffer = RID();
+	}
+	if (gpu_idprobe_uniform_set.is_valid()) {
+		rendering_device->free_rid(gpu_idprobe_uniform_set);
+		gpu_idprobe_uniform_set = RID();
+	}
+	if (gpu_idprobe_pipeline.is_valid()) {
+		rendering_device->free_rid(gpu_idprobe_pipeline);
+		gpu_idprobe_pipeline = RID();
+	}
+	if (gpu_idprobe_shader.is_valid()) {
+		rendering_device->free_rid(gpu_idprobe_shader);
+		gpu_idprobe_shader = RID();
+	}
+	if (gpu_idprobe_vertex_array.is_valid()) {
+		rendering_device->free_rid(gpu_idprobe_vertex_array);
+		gpu_idprobe_vertex_array = RID();
+	}
+	if (gpu_idprobe_depth_texture.is_valid()) {
+		rendering_device->free_rid(gpu_idprobe_depth_texture);
+		gpu_idprobe_depth_texture = RID();
+	}
+	if (gpu_idprobe_id_texture.is_valid()) {
+		rendering_device->free_rid(gpu_idprobe_id_texture);
+		gpu_idprobe_id_texture = RID();
+	}
+	gpu_idprobe_vertex_format = -1;
+	gpu_idprobe_framebuffer_format = -1;
+	gpu_idprobe_valid = false;
+}
+
+bool GneRenderServer::gpu_idprobe_set_enabled(bool p_enabled) {
+	gpu_idprobe_enabled = p_enabled;
+	if (!p_enabled) {
+		return true;
+	}
+	if (!_gpu_idprobe_create()) {
+		return false;
+	}
+	return _gpu_idprobe_create2();
+}
+
+bool GneRenderServer::gpu_idprobe_is_valid() const {
+	return gpu_idprobe_valid;
+}
+
+PackedInt32Array GneRenderServer::gpu_idprobe_read_ids() {
+	PackedInt32Array ret;
+	if (!gpu_idprobe_valid || gpu_idprobe_id_texture.is_null()) {
+		return ret;
+	}
+	Vector<uint8_t> data = rendering_device->texture_get_data(gpu_idprobe_id_texture, 0);
+	int count = data.size() / 4;
+	if (count <= 0) {
+		print_error("[GNE] idprobe: id readback empty.");
+		return ret;
+	}
+	ret.resize(count);
+	const uint32_t *p = (const uint32_t *)data.ptr();
+	for (int i = 0; i < count; i++) {
+		ret.set(i, (int32_t)p[i]);
+	}
+	return ret;
+}
+
+PackedFloat32Array GneRenderServer::gpu_idprobe_read_depth() {
+	PackedFloat32Array ret;
+	if (!gpu_idprobe_valid || gpu_idprobe_depth_texture.is_null()) {
+		return ret;
+	}
+	Vector<uint8_t> data = rendering_device->texture_get_data(gpu_idprobe_depth_texture, 0);
+	int count = data.size() / 4;
+	if (count <= 0) {
+		print_error("[GNE] idprobe: depth readback empty.");
+		return ret;
+	}
+	ret.resize(count);
+	memcpy(ret.ptrw(), data.ptr(), (size_t)data.size());
+	return ret;
+}
+
+// TEMP-DIAG-012-idprobe: re-issue the SAME production group draw into the
+// independent id framebuffer. Called INSIDE gpu_mesh_batch_draw immediately
+// after the production draw list has ended, BEFORE the submit/sync and before
+// any compute that could touch group_args_buffer. No dispatch, no assemble, no
+// list regeneration: same group_args_buffer, same last_batch_count, same
+// batch_instances, same 8 bound RIDs, same empty vertex array geometry.
+void GneRenderServer::_gpu_idprobe_draw() {
+	if (!gpu_idprobe_enabled || !gpu_idprobe_valid) {
+		return;
+	}
+	if (last_batch_count <= 0 || !last_used_group_draw) {
+		// Only the REORDERED/grouped branch is reproduced. The per-mesh branch
+		// (batch_args_buffer, indexed, 20B) is NOT re-issued: main_012 does not
+		// take it, and reproducing it would be a different draw, not this one.
+		return;
+	}
+	// Clear to 0xFFFFFFFF (a sentinel no instance id can equal) so untouched
+	// pixels are distinguishable from any real id.
+	Vector<Color> iclears;
+	iclears.push_back(Color(1.0, 1.0, 1.0, 1.0));
+	RD::DrawListID idl = rendering_device->draw_list_begin(gpu_idprobe_framebuffer,
+			RD::DRAW_CLEAR_COLOR_0 | RD::DRAW_CLEAR_DEPTH, iclears, 1.0f, 0, Rect2(), 0);
+	if (idl == RD::INVALID_ID) {
+		print_error("[GNE] idprobe: draw_list_begin failed.");
+		return;
+	}
+	rendering_device->draw_list_bind_render_pipeline(idl, gpu_idprobe_pipeline);
+	rendering_device->draw_list_bind_uniform_set(idl, gpu_idprobe_uniform_set, 0);
+	rendering_device->draw_list_bind_vertex_array(idl, gpu_idprobe_vertex_array);
+	rendering_device->draw_list_draw_indirect(idl, false, group_args_buffer, 0, (uint32_t)last_batch_count, 16);
+	rendering_device->draw_list_end();
+}
+
 bool GneRenderServer::gpu_mesh_batch_draw() {
 	if (!gpu_scene_valid || !gpu_mesh_valid || !gpu_mesh_batch_valid) {
 		print_error("[GNE] gpu_mesh_batch_draw: no batch mesh. Call gpu_mesh_create first.");
@@ -6094,6 +6503,12 @@ bool GneRenderServer::gpu_mesh_batch_draw() {
 		}
 	}
 	rendering_device->draw_list_end();
+
+	// TEMP-DIAG-012-idprobe: re-issue the same group draw into the independent
+	// id framebuffer, in the same submission, before submit/sync. No compute
+	// runs between this and the production draw, so group_args_buffer and
+	// batch_instances are bit-identical for both.
+	_gpu_idprobe_draw();
 
 	// GNE-012: the production pyramid is built in gpu_visibility_prod_dispatch
 	// (own synced submission) by projecting the registered occluder AABBs with
