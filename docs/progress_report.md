@@ -1060,3 +1060,14 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   I4 cost bounded. Zero engine changes (scene + note only).
 - Sig: v023|du=0.0902|dl=0.0000|det=1|off=1264|on=1455|d1
 - 023 integration milestone CLOSED.
+## §54. 023 closure adopted + HDR radiance readback backlogged as KI-017/023-M1 (2026-09-29)
+
+- 023 closure adopted (I1 alone = sufficient + strong evidence; the precise
+  saturation diagnosis approved as the correct no-softening discipline).
+- UNTESTED CLAIM recorded honestly: "indirect light adds to already-lit
+  surfaces" - not proven, not refuted, unmeasurable via the 8-bit display chain.
+- Backlog: KI-017 / 023-M1 - HDR (pre-tonemap) radiance readback instrumentation,
+  Priority Medium, as GENERAL CVS infrastructure (any future GI integration gate
+  hits the same limit). Cause recorded precisely: raw HDR radiance readback must
+  happen BEFORE tone-mapping/8-bit clamp, not from the final screen image.
+- Fast-path trial count: two real cases (KI-011, NOTE 023) - both successful.
