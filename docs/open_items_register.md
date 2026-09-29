@@ -9,7 +9,7 @@ Update this file whenever a status changes.
 
 | ID | Item | State today | What closes it | Home record |
 |---|---|---|---|---|
-| KI-011 | Specular term is not NdotL-gated (pre-existing) | OPEN - deliberately kept outside 018-rev | owner decision: gate specular by NdotL (fix) OR accept + document | known_issues.md (KI-011) |
+| KI-011 | Specular term is not NdotL-gated (pre-existing) | CLOSED 2026-09-29 (fix executed; literals unchanged; goldens re-baselined: 5px/1 LSB darker per scene) | - | known_issues.md (KI-011) |
 | KI-012 | Demo window size externally mutable (pre-existing) | OPEN | owner decision: fix demo window sizing OR accept + document | known_issues.md (KI-012) |
 | KI-001 | GPU timestamps unavailable on this Vulkan fork | OPEN - engine dependency; wall-clock workaround in effect; NA accepted in 015.6 | closes only if the engine/fork gains working timestamp resolution | known_issues.md (KI-001) + progress section 34 |
 | KI-015 | Hardware ray tracing unusable: `vkCreateRayTracingPipelinesKHR` fails (-3) (fork-level; root cause open) | OPEN - any future RT feature blocked; compute-only paths unaffected | engine-level diagnosis (outside current boundaries) | known_issues.md (KI-015) + spec_022 section 7 |

@@ -139,7 +139,7 @@
 ## KI-011: Specular Not Gated By NdotL (Pre-Existing)
 
 **Date:** 2026-09-28
-**Status:** Open - pre-existing gap; deliberately NOT part of 018-rev (Architect directive)
+**Status:** CLOSED 2026-09-29 (owner decision: Option A fix executed - specular gated by NdotL in all three sites: mat dir-light, light dir-light, light cluster loop). Before/after: literals unchanged (v16/v18/v19 identical); goldens re-baselined deliberately (main_018: 5 px, max 1 LSB, all darker; main_019: 5 px, max 1 LSB, all darker - the exact backfacing-specular signature).
 **Severity:** Low-Medium (grazing/backlit specular energy; no DET/buffer impact)
 **Owner:** GNE Architecture
 

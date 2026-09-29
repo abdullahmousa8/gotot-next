@@ -994,7 +994,7 @@ void main() {
 	float shiny_eff = max(shiny * (1.2 - rough), 1.0);
 	float spec = pow(max(dot(N, H), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
 	vec3 sc = mix(spec_col, alb, metal);
-	vec3 specular = spec * sc * params.light_color.rgb;
+	vec3 specular = spec * sc * params.light_color.rgb * step(0.0, dot(N, L)); // KI-011: NdotL gate
 	out_color = vec4(AMB * alb + diff + specular + emi, 1.0);
 	out_view_z = -1.0 / gl_FragCoord.w;
 }
@@ -1868,7 +1868,7 @@ void main() {
 	float shiny_eff = max(shiny * (1.2 - rough), 1.0);
 	float spec = pow(max(dot(N, H), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
 	vec3 sc = mix(spec_col, alb, metal);
-	vec3 specular = spec * sc * params.light_color.rgb;
+	vec3 specular = spec * sc * params.light_color.rgb * step(0.0, dot(N, L)); // KI-011: NdotL gate
 	float dir_sh = gne_shadow_dir(v_world, N, L);
 	diff *= dir_sh;
 	specular *= dir_sh;
@@ -1906,7 +1906,7 @@ void main() {
 			vec3 ldiff = alb * ndl2 * A1.rgb * (A1.a * att * cone_f);
 			vec3 H2 = normalize(Ld + V);
 			float s2 = pow(max(dot(N, H2), 0.0), shiny_eff) * (1.0 - 0.5 * rough);
-			vec3 lspec = s2 * sc * A1.rgb * (A1.a * att * cone_f);
+			vec3 lspec = s2 * sc * A1.rgb * (A1.a * att * cone_f) * step(0.0, dot(N, Ld)); // KI-011: NdotL gate
 			float shf = gne_shadow_light(lid, v_world, N, Ld, z_view);
 			col += (ldiff + lspec) * shf;
 		}

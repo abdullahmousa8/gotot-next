@@ -1033,3 +1033,13 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   first roughness probe (0.384) was legacy contamination, corrected.
 - CVS Complete Clean Run 14/14 PASS (literals + goldens byte-exact).
 - 016.5 slice-2 COMPLETE.
+## §51. KI-011 CLOSED — specular NdotL gate (BUGFIX fast path, 2026-09-29)
+
+- Fix: specular multiplied by step(0.0, dot(N,L)) at all three sites (mat dir-light,
+  light dir-light, light cluster loop). Minimal, no formulas restructured.
+- Evidence: all 12 CVS signature gates PASS with literals UNCHANGED (v16/v18/v19
+  byte-exact); goldens changed by exactly the KI-011 signature - main_018: 5 px,
+  max 1 LSB, all darker; main_019: 5 px, max 1 LSB, all darker (bboxes at the
+  probe faces). Golden re-baseline recorded as the accepted behavioral change.
+- Recheck: both scenes reproduce the new goldens byte-identically.
+- KI-011 closed in known_issues + register.
