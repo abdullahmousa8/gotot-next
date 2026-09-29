@@ -187,6 +187,32 @@ if ($xm) {
   $xd += (' body_px=' + $xm.Matches[0].Groups[1].Value + '/' + $xm.Matches[0].Groups[2].Value + ' diff_px=' + $xm.Matches[0].Groups[3].Value + ' max_lsb=' + $xm.Matches[0].Groups[4].Value)
 }
 Record 'mat_v2_x1' (($x1rc -eq 0) -and $x1pass -and (-not $x1fail) -and ($x1err.Count -eq 0)) $xd
+# Material v2 channel -> clustered-light loop gate (main_016_cluster_channel).
+# This is the only CVS row that can catch the material channels ceasing to feed
+# the cluster loop, because the 018/019/023 gates measure culling counts, shadow
+# counts and GI gain - none of them vary a material channel. The scene isolates
+# the cluster term chromatically: the global directional term is nulled by
+# pointing the light along +Z (perpendicular to the face normal) and the single
+# cluster light is pure red, so a red-only excess over the neutral grey response
+# can only come from the cluster loop consuming alb.
+# Requires BOTH exit code 0 AND the GATE PASS marker, and rejects GATE FAIL or
+# any ERROR: line, so the row is fail-closed rather than print-only.
+$lf = Join-Path $logDir 'mat_channel_cluster.log'
+if (Test-Path $lf) { Remove-Item $lf -Force }
+& $exe --path $proj --rendering-method forward_plus res://main_016_cluster_channel.tscn > $lf 2>&1
+$ccrc = $LASTEXITCODE
+$ccpass = ((Select-String -LiteralPath $lf -Pattern 'GNE 016\.cclus: GATE PASS' | Measure-Object).Count -ge 1)
+$ccfail = ((Select-String -LiteralPath $lf -Pattern 'GNE 016\.cclus: GATE FAIL' | Measure-Object).Count -ge 1)
+$ccerr = @()
+if (Test-Path $lf) {
+  $ccerr = @(Select-String -LiteralPath $lf -Pattern 'ERROR:|invalid ID|SCRIPT ERROR' | Where-Object { $_.Line -notmatch 'FullyQualifiedErrorId|NativeCommandError' })
+}
+$ccsig = ''
+$ccm = Select-String -LiteralPath $lf -Pattern 'GNE 016\.cclus: sig=(\S+)' | Select-Object -Last 1
+if ($ccm) { $ccsig = $ccm.Matches[0].Groups[1].Value }
+$ccdetail = ('rc=' + $ccrc + ' pass=' + $ccpass + ' fail=' + $ccfail + ' errs=' + $ccerr.Count)
+if ($ccsig -ne '') { $ccdetail += ' sig=' + $ccsig }
+Record 'mat_channel_cluster' (($ccrc -eq 0) -and $ccpass -and (-not $ccfail) -and ($ccerr.Count -eq 0)) $ccdetail
 # GI checks (token-based)
 & $exe --path $proj --rendering-method forward_plus res://main_022_gate2.tscn > (Join-Path $logDir 'gi_gate2.log') 2>&1
 $g2 = Join-Path $logDir 'gi_gate2.log'
