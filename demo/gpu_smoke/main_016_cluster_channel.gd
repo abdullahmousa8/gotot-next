@@ -75,6 +75,14 @@ const LIGHT_INTENSITY := 0.35
 # Base albedo is mid-grey, not white. AMB is hardcoded 0.1, so a white base
 # plus the specular term saturates the frame before the cluster term is visible.
 const BASE_ALBEDO := Color(0.25, 0.25, 0.25)
+# Baseline specular/roughness parameters, restored after the SPEC sweep. Also the
+# reference point the SPEC steps are compared against.
+const BASE_SPEC := Color(0.25, 0.25, 0.25)
+const BASE_SHINE := 32.0
+const ROUGHNESS := 0.5
+const CH_SCALE := Vector2(0.0125, 0.0125)
+# grey albedo payload id, needed by the SPEC sweep as well as the gate cells
+var tid_grey := -1
 
 var server: GneRenderServer
 var camera: Camera3D
@@ -158,7 +166,7 @@ func _measure() -> void:
 	# CHECKER for roughness/normal (a flat texture would leave them inert).
 	# ids are 0 and 1, and gpu_texture_bind publishes them into tex_array at
 	# those positions, which is exactly what the m2 path indexes.
-	var tid_grey := server.gpu_texture_load("res://assets/neutral_grey.gtex")
+	tid_grey = server.gpu_texture_load("res://assets/neutral_grey.gtex")
 	var tid_chk := server.gpu_texture_load("res://checkerboard.gtex")
 	if tid_grey < 0 or tid_chk < 0:
 		_fail(6020, "payload load"); return
@@ -235,6 +243,46 @@ func _measure() -> void:
 	var n_px := server.gpu_raster_read_pixels()
 	var n := _win(n_px, base_px, fpx)
 
+	# --- GNE-017 follow-up: is the non-scaling cluster share SPECULAR? ---
+	# At metal=0, sc = spec_col, so the cluster term splits as
+	#   C_off = S + D        (no channel:  alb full)
+	#   C_on  = S + D/2      (grey channel halves alb, so only diffuse scales)
+	#   S     = 2*C_on - C_off
+	# S is therefore the part of the cluster term that does NOT track alb. The
+	# question is whether S is the specular term. Four steps, each independent.
+	# gpu_material_set_specular and gpu_material_set_params already exist, so
+	# no engine change is required.
+	var step_ids: Array = []
+	# step 1 (decisive): black spec_col must annihilate S if S is specular
+	step_ids.append(["spec_black", 0.0, Color(0, 0, 0), BASE_SHINE])
+	# step 2: S must scale linearly with spec_col
+	step_ids.append(["spec_0125", 0.0, Color(0.125, 0.125, 0.125), BASE_SHINE])
+	step_ids.append(["spec_0500", 0.0, Color(0.5, 0.5, 0.5), BASE_SHINE])
+	# step 3: identity control - S must MOVE with shininess (isolates s2)
+	step_ids.append(["shine_004", 0.0, BASE_SPEC, 4.0])
+	step_ids.append(["shine_128", 0.0, BASE_SPEC, 128.0])
+	# step 4: metal=1 makes sc = alb, so everything must scale and S -> 0
+	step_ids.append(["metal_100", 1.0, BASE_SPEC, BASE_SHINE])
+	for st in step_ids:
+		var res: Dictionary = _cluster_pair(float(st[1]), st[2], float(st[3]), fpx)
+		if res.is_empty():
+			return
+		var c_off: Array = res["C_off"]
+		var c_on: Array = res["C_on"]
+		var t_off: Array = res["T_off"]
+		var b_off: Array = res["B_off"]
+		var s_r: float = 2.0 * float(c_on[0]) - float(c_off[0])
+		var s_g: float = 2.0 * float(c_on[1]) - float(c_off[1])
+		var s_b: float = 2.0 * float(c_on[2]) - float(c_off[2])
+		print("GNE 016.cclus: SPEC %s T_off=(%.1f,%.1f,%.1f) B_off=(%.1f,%.1f,%.1f) C_off=(%+.1f,%+.1f,%+.1f) C_on=(%+.1f,%+.1f,%+.1f) S=(%+.3f,%+.3f,%+.3f)" % [st[0], t_off[0], t_off[1], t_off[2], b_off[0], b_off[1], b_off[2], c_off[0], c_off[1], c_off[2], c_on[0], c_on[1], c_on[2], s_r, s_g, s_b])
+	# restore the gate configuration
+	if not server.gpu_material_set_params(0, ROUGHNESS, 0.0):
+		_fail(6026, "restore params"); return
+	if not server.gpu_material_set_specular(0, BASE_SPEC, BASE_SHINE):
+		_fail(6026, "restore specular"); return
+	if not server.gpu_light_set_intensity(0, LIGHT_INTENSITY):
+		_fail(6025, "restore intensity"); return
+
 	# --- EVALUATE. Thresholds pre-declared by owner 2026-09-29. ---
 	var dR: float = a.mr - a.base_mr
 	var dG: float = a.mg - a.base_mg
@@ -276,6 +324,65 @@ func _measure() -> void:
 				" chroma=", c_chroma, " silence=", c_silence, " term=", c_term,
 				" rough=", c_rough, " normal=", c_norm)
 		get_tree().quit(61)
+
+# Per-window per-channel means over surface pixels only.
+func _means(px: PackedByteArray, fpx: Vector2) -> Array:
+	var sum := [0.0, 0.0, 0.0]
+	var n := 0
+	for dy in range(-4, 5):
+		for dx in range(-4, 5):
+			var o: int = ((int(fpx.y) + dy) * RASTER_W + (int(fpx.x) + dx)) * 4
+			if px[o + 3] > 0:
+				n += 1
+				sum[0] += px[o]
+				sum[1] += px[o + 1]
+				sum[2] += px[o + 2]
+	if n == 0:
+		return [0.0, 0.0, 0.0]
+	return [sum[0] / float(n), sum[1] / float(n), sum[2] / float(n)]
+
+# Measures the ABSOLUTE cluster term for one material configuration.
+# C_off / C_on differ only in the light intensity (LIGHT_INTENSITY vs 0), so
+# the neutral AMB*alb term cancels exactly and what remains is the cluster
+# emission. T_* is the lit frame, B_* the same frame with the light silenced.
+func _cluster_pair(p_metal: float, p_spec: Color, p_shine: float, p_fpx: Vector2) -> Dictionary:
+	if not server.gpu_material_set_params(0, ROUGHNESS, p_metal):
+		_fail(6026, "spec params"); return {}
+	if not server.gpu_material_set_specular(0, p_spec, p_shine):
+		_fail(6026, "spec color/shine"); return {}
+	var t_off: Array = []
+	var b_off: Array = []
+	var t_on: Array = []
+	var b_on: Array = []
+	# --- channel OFF ---
+	if not server.gpu_material_set_maps(0, -1, -1, -1, CH_SCALE):
+		_fail(6022, "spec maps off"); return {}
+	if not server.gpu_light_set_intensity(0, LIGHT_INTENSITY):
+		_fail(6025, "spec int on"); return {}
+	if not _redraw():
+		return {}
+	t_off = _means(server.gpu_raster_read_pixels(), p_fpx)
+	if not server.gpu_light_set_intensity(0, 0.0):
+		_fail(6025, "spec int off"); return {}
+	if not _redraw():
+		return {}
+	b_off = _means(server.gpu_raster_read_pixels(), p_fpx)
+	# --- channel ON (neutral grey) ---
+	if not server.gpu_material_set_maps(0, tid_grey, -1, -1, CH_SCALE):
+		_fail(6022, "spec maps on"); return {}
+	if not server.gpu_light_set_intensity(0, LIGHT_INTENSITY):
+		_fail(6025, "spec int on2"); return {}
+	if not _redraw():
+		return {}
+	t_on = _means(server.gpu_raster_read_pixels(), p_fpx)
+	if not server.gpu_light_set_intensity(0, 0.0):
+		_fail(6025, "spec int off2"); return {}
+	if not _redraw():
+		return {}
+	b_on = _means(server.gpu_raster_read_pixels(), p_fpx)
+	var c_off := [t_off[0] - b_off[0], t_off[1] - b_off[1], t_off[2] - b_off[2]]
+	var c_on := [t_on[0] - b_on[0], t_on[1] - b_on[1], t_on[2] - b_on[2]]
+	return {"T_off": t_off, "B_off": b_off, "T_on": t_on, "B_on": b_on, "C_off": c_off, "C_on": c_on}
 
 # Per-window statistics against the baseline capture.
 func _win(px: PackedByteArray, base_px: PackedByteArray, fpx: Vector2) -> Dictionary:

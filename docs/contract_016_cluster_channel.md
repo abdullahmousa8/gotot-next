@@ -110,9 +110,54 @@ is deliberately single-light; `main_016_5` is crowded and cannot isolate). The
 roughness control asserts that the channel changes pixels and creates spatial
 variance - not that the cluster loop consumes `rough`.
 
+## GNE-017.1 — the non-scaling share is the specular term, through `sc`
+
+At `metal = 0` the cluster term splits into a part that tracks `alb` (diffuse)
+and a part that does not:
+
+```
+C_off = D(alb_full) + sc * K_s
+C_on  = D(alb_half) + sc * K_s          (grey channel halves alb)
+S     = 2*C_on - C_off = 64 * spec_col
+```
+where `K_s = 64` falls out of the measurement. Measured sweep:
+
+| step | `spec_col` | `shininess` | `metal` | `C_off` R | `C_on` R | `S_R` |
+|---|---|---|---|---|---|---|
+| `spec_black` | 0.0 | 32 | 0.0 | +22.0 | +11.0 | **+0.000** |
+| `spec_0125` | 0.125 | 32 | 0.0 | +30.0 | +19.0 | +8.000 |
+| (baseline) | 0.25 | 32 | 0.0 | +38.0 | +27.0 | +16.000 |
+| `spec_0500` | 0.5 | 32 | 0.0 | +54.0 | +43.0 | +32.012 |
+| `shine_004` | 0.25 | 4 | 0.0 | +38.0 | +27.0 | +16.000 |
+| `shine_128` | 0.25 | 128 | 0.0 | +37.6 | +26.9 | +16.235 |
+| `metal_100` | 0.25 | 32 | 1.0 | +38.0 | +19.0 | **+0.000** |
+
+Green and blue are `+0.000` in every row: the cluster term is red-only.
+
+`S` is exactly linear in `spec_col` (64 per unit, four points), vanishes at
+`spec_col = 0`, and vanishes at `metal = 1` where `C_on = C_off/2` to the digit.
+
+**General form, DERIVED not fitted.** Substituting `sc = (1-m)*spec_col +
+m*alb` into `S = (2*sc_on - sc_off) * K_s` and using `2*alb_half - alb_full = 0`
+gives `S = 64 * spec_col * (1 - metal)`. This is algebra from `mix()`, not an
+empirical fit: the sweep measured only the two endpoints `metal = 0` and
+`metal = 1`, so the linear `(1-metal)` behaviour at intermediate metal is a
+prediction that has not been measured. A single `metal = 0.5` row would confirm
+or refute it; it is not yet measured.
+
+**What step 3 did and did not establish.** Varying `shininess` was intended to
+identify `S` as the `s2` term independently of the `sc` coefficient. It did not:
+`S` moved from 16.000 to 16.235, i.e. not at all. The cause is geometric - the
+surface is lit near head-on, so `dot(N, H2) ~ 1` and `pow(1.0, shiny_eff) ~ 1`
+for every exponent. The control was therefore **not sensitive**, which leaves
+`S` proven to scale with `spec_col` and vanish with `metal` but **not proven to
+be `s2` specifically**. Any other factor inside `sc` would fit equally well.
+
 ## Scope
 
 Covers the channel -> cluster-loop coupling for the three channel roles on one
 isolated surface, with the cluster term measured absolutely via a
-zero-intensity control. Does not cover the specular channel dependency, shadows,
-GI, or multi-light interference.
+zero-intensity control, and the non-scaling share attributed to the `sc`
+coefficient. Does not cover: proof that the non-scaling share is the `s2`
+exponent term (the `shininess` control was geometry-insensitive), intermediate
+`metal` values, shadows, GI, or multi-light interference.
