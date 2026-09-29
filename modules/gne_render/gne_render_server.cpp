@@ -1897,7 +1897,13 @@ void main() {
 
 		uint coff = cid * 16u;
 		uint ccnt = clcnt.cnt[cid];
-		for (uint j = 0u; j < ccnt && j < 64u; j++) {
+		// GNE-019: the cull appends under `if (slot < 16u)`, so a cluster holds
+		// at most 16 valid ids at stride 16 - but the count itself is an
+		// uncapped atomicAdd, so it can exceed 16. Bounding the read at 64 (the
+		// old guard) made j = 16..ccnt-1 address the NEXT cluster's slots, and
+		// for the last cluster it read past the end of cluster_index_buffer
+		// (coff 55280 + 63 > 55295). The bound must equal the stride: 16.
+		for (uint j = 0u; j < ccnt && j < 16u; j++) {
 			uint lid = clidx.idx[coff + j];
 			vec4 A0 = lightbuf.lights[lid * 4u + 0u];
 			vec4 A1 = lightbuf.lights[lid * 4u + 1u];
