@@ -213,6 +213,29 @@ if ($ccm) { $ccsig = $ccm.Matches[0].Groups[1].Value }
 $ccdetail = ('rc=' + $ccrc + ' pass=' + $ccpass + ' fail=' + $ccfail + ' errs=' + $ccerr.Count)
 if ($ccsig -ne '') { $ccdetail += ' sig=' + $ccsig }
 Record 'mat_channel_cluster' (($ccrc -eq 0) -and $ccpass -and (-not $ccfail) -and ($ccerr.Count -eq 0)) $ccdetail
+# Frustum culling gate (main_018_frustum_cull). The only CVS row that can
+# catch a cluster light surviving outside the view frustum, or the dual-
+# condition protocol silently degrading: membership (gpu_light_debug_cluster
+# must show the id absent from all 24 depth slices) AND contribution (C_R must
+# fall to 0). A pixel-only check could not tell culling from distance decay -
+# that distinction was refuted in practice when a pixel test passed a rear
+# cull whose light was still present in the cluster.
+# Requires exit 0 AND the GATE PASS marker; rejects GATE FAIL, ERROR:,
+# invalid ID and SCRIPT ERROR. The scene exits 71 when any condition fails.
+$lf = Join-Path $logDir 'frustum_cull.log'
+if (Test-Path $lf) { Remove-Item $lf -Force }
+& $exe --path $proj --rendering-method forward_plus res://main_018_frustum_cull.tscn > $lf 2>&1
+$fcrd = $LASTEXITCODE
+$fcpass = ((Select-String -LiteralPath $lf -Pattern 'GNE 018\.frus: GATE PASS' | Measure-Object).Count -ge 1)
+$fcfail = ((Select-String -LiteralPath $lf -Pattern 'GNE 018\.frus: GATE FAIL' | Measure-Object).Count -ge 1)
+$fcerr = @()
+if (Test-Path $lf) {
+  $fcerr = @(Select-String -LiteralPath $lf -Pattern 'ERROR:|invalid ID|SCRIPT ERROR' | Where-Object { $_.Line -notmatch 'FullyQualifiedErrorId|NativeCommandError' })
+}
+$fcdetail = ('rc=' + $fcrd + ' pass=' + $fcpass + ' fail=' + $fcfail + ' errs=' + $fcerr.Count)
+$fcm = Select-String -LiteralPath $lf -Pattern 'GNE 018\.frus: sig=(\S+)' | Select-Object -Last 1
+if ($fcm) { $fcdetail += ' sig=' + $fcm.Matches[0].Groups[1].Value }
+Record 'frustum_cull' (($fcrd -eq 0) -and $fcpass -and (-not $fcfail) -and ($fcerr.Count -eq 0)) $fcdetail
 # GI checks (token-based)
 & $exe --path $proj --rendering-method forward_plus res://main_022_gate2.tscn > (Join-Path $logDir 'gi_gate2.log') 2>&1
 $g2 = Join-Path $logDir 'gi_gate2.log'
