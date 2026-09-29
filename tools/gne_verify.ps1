@@ -17,13 +17,116 @@ function Record($name, $ok, $detail) {
   $script:lines += ('{0,-14} {1}  {2}' -f $name, $(if ($ok) { 'PASS' } else { 'FAIL' }), $detail)
   if (-not $ok) { $script:overall = $false }
 }
+# --- binary provenance stamp (GNE-025) -------------------------------------
+# WHY: the engine binary carries no build identity. godot-master has no commits
+# (0 refs), so methods.py:181-206 leaves git_hash="" and the generated
+# core/version_hash.gen.cpp holds GODOT_VERSION_HASH="" / TIMESTAMP 0. Nothing
+# inside the exe can therefore be read back to attribute it to a tree. A stamp
+# written next to the exe after every build is NOT enough on its own: when
+# scons ends "up to date" no new binary is produced, yet a fresh stamp would
+# still be written and would falsely certify a stale binary.
+#
+# The gate closes exactly that hole: the stamp is REFRESHED ONLY IF the exe
+# content actually changed across the scons invocation (SHA-256 before/after).
+# If scons relinked nothing, the previous stamp is kept and validated as-is, so
+# a tree change with no relink is detected instead of being certified.
+#
+# Inputs are hashed, not timestamps: scons uses Decider("MD5-timestamp")
+# (SConstruct:584) and a stale "up to date" is precisely the case under test.
+$stampFile = Join-Path $master 'bin\gne_provenance.txt'
+$modDir = Join-Path $root 'modules\gne_render'
+function Get-ExeSha {
+  if (-not (Test-Path $exe)) { return '' }
+  return (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+}
+function Get-TreeHead { return (& git -C $root rev-parse HEAD 2>$null | Select-Object -First 1) }
+# Dirty state is scoped to the compiled module: tools/ and demo/ changes do not
+# alter the binary, so treating them as dirty would fail CVS on its own output
+# (verify_history.tsv is appended by this very script).
+function Get-ModuleState {
+  $dirty = @(git -C $root status --porcelain -- modules/gne_render 2>$null)
+  $acc = New-Object System.Text.StringBuilder
+  Get-ChildItem -LiteralPath $modDir -Recurse -File |
+    Where-Object { $_.Extension -in @('.cpp', '.h', '.hpp', '.c', '.py') } |
+    Sort-Object FullName | ForEach-Object {
+      $rel = $_.FullName.Substring($modDir.Length + 1).Replace('\', '/')
+      # Hash NORMALIZED text, not raw bytes. core.autocrlf=true rewrites LF->CRLF
+      # on checkout, so byte hashing reports a content change for a file git
+      # considers clean - which would make this gate fire on its own repo ops.
+      $raw = [System.IO.File]::ReadAllText($_.FullName)
+      $norm = $raw.Replace("`r`n", "`n").Replace("`r", "`n")
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes($norm)
+      $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+      [void]$acc.Append($rel + '=' + [System.BitConverter]::ToString($sha).Replace('-', '') + "`n")
+    }
+  return @{ Digest = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($acc.ToString()))) -Algorithm SHA256).Hash
+            Dirty  = $dirty.Count }
+}
+function Read-Stamp {
+  if (-not (Test-Path $stampFile)) { return $null }
+  $kv = @{}
+  foreach ($ln in [System.IO.File]::ReadAllLines($stampFile)) {
+    # Keys contain digits (exe_sha256), so the class must admit them; a
+    # narrower pattern would silently drop keys and make the gate vacuous.
+    if ($ln -match '^([a-z0-9_]+)=(.*)$') { $kv[$Matches[1]] = $Matches[2] }
+  }
+  if ($kv.Count -eq 0) { return $null }
+  return $kv
+}
+$exeBefore = Get-ExeSha
+$relinked = $false
 if (-not $SkipBuild) {
   Set-Location $master
   scons platform=windows target=editor dev_build=yes custom_modules="$root\modules" -j6 > (Join-Path $logDir 'build.log') 2>&1
   $ok = ($LASTEXITCODE -eq 0)
   Record 'build' $ok ('rc=' + $LASTEXITCODE)
   if (-not $ok) { $script:lines | ForEach-Object { Write-Output $_ }; Write-Output 'GNE_VERIFY: FAIL'; exit 1 }
+  $exeAfter = Get-ExeSha
+  # A real relink is detected by content change, never by mtime or exit code.
+  $relinked = ($exeAfter -ne '' -and $exeAfter -ne $exeBefore)
+  if ($relinked) {
+    $st = Get-ModuleState
+    $stamp = @(
+      'exe_sha256=' + $exeAfter
+      'tree_head=' + (Get-TreeHead)
+      'module_digest=' + $st.Digest
+      'module_dirty=' + $st.Dirty
+      'flags=platform=windows,target=editor,dev_build=yes,custom_modules=modules/gne_render'
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($stampFile, $stamp + "`n")
+    Write-Output ('GNE_STAMP: RELINK exe=' + $exeAfter.Substring(0, 12) + ' tree=' + (Get-TreeHead).Substring(0, 7) + ' module=' + $st.Digest.Substring(0, 12))
+  } else {
+    Write-Output ('GNE_STAMP: NO_RELINK exe=' + $(if ($exeAfter) { $exeAfter.Substring(0, 12) } else { 'missing' }) + ' (stamp not refreshed)')
+  }
 }
+# Provenance gate: the stamp must exist, describe THIS binary, and describe the
+# CURRENT tree and module content. Any mismatch exits non-zero before the sweep.
+$stamp = Read-Stamp
+$exeNow = Get-ExeSha
+$stNow = Get-ModuleState
+$headNow = Get-TreeHead
+$why = @()
+if (-not $stamp) {
+  $why += 'no provenance stamp (binary never relinked by this tool)'
+} else {
+  # --- HARD GATE: these describe the BINARY and its build inputs. A mismatch
+  # means the exe on disk is not the one the stamp describes. ---
+  if ($stamp.exe_sha256 -ne $exeNow) { $why += ('exe changed since stamp: ' + $stamp.exe_sha256.Substring(0, 12) + ' -> ' + $(if ($exeNow) { $exeNow.Substring(0, 12) } else { 'missing' })) }
+  if ($stamp.module_digest -ne $stNow.Digest) { $why += ('module source changed since stamp: ' + $stamp.module_digest.Substring(0, 12) + ' -> ' + $stNow.Digest.Substring(0, 12)) }
+  if ([int]$stamp.module_dirty -ne 0) { $why += ('module worktree dirty at stamp time: ' + $stamp.module_dirty) }
+}
+if ($stNow.Dirty -ne 0) { $why += ('module worktree dirty now: ' + $stNow.Dirty) }
+# --- INFORMATIONAL: tree_head records WHICH revision was built. HEAD moves on
+# every commit, including commits that touch only tools/ or docs/ and cannot
+# change the compiled binary, so a difference here is NOT binary drift. It is
+# reported, never enforced. Only module_digest + exe_sha256 + module_dirty bind
+# the binary to its build inputs. ---
+$headMoved = ($stamp -and ($stamp.tree_head -ne $headNow))
+$provOk = ($why.Count -eq 0)
+$provDetail = if ($provOk) { ('exe=' + $exeNow.Substring(0, 12) + ' module=' + $stNow.Digest.Substring(0, 12) + ' dirty=0 head=' + $headNow.Substring(0, 7) + $(if ($headMoved) { ' (built at ' + $stamp.tree_head.Substring(0, 7) + ', informational)' } else { '' })) }
+              else { ($why -join '; ') }
+Record 'provenance' $provOk $provDetail
+if (-not $provOk) { $script:lines | ForEach-Object { Write-Output $_ }; Write-Output 'GNE_VERIFY: FAIL'; exit 1 }
 # module presence boot gate (GNE-024): catches a Godot build made without
 # custom_modules, where the gne_render module silently vanishes while the
 # build still succeeds. Runs here - after the build, before the long sweep -
