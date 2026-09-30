@@ -3365,6 +3365,22 @@ void GneRenderServer::_destroy_mesh() {
 			rendering_device->free_rid(light_cull_shader);
 			light_cull_shader = RID();
 		}
+		// GNE-021: the bounds pass owns three RIDs of its own. They were leaking,
+		// which is what gt_023a's "RID cleanup lines present" check caught. A new
+		// pass that allocates a shader, a pipeline and a uniform set must free all
+		// three, or the next one will leak the same way.
+		if (light_bounds_uniform_set.is_valid()) {
+			rendering_device->free_rid(light_bounds_uniform_set);
+			light_bounds_uniform_set = RID();
+		}
+		if (light_bounds_pipeline.is_valid()) {
+			rendering_device->free_rid(light_bounds_pipeline);
+			light_bounds_pipeline = RID();
+		}
+		if (light_bounds_shader.is_valid()) {
+			rendering_device->free_rid(light_bounds_shader);
+			light_bounds_shader = RID();
+		}
 		if (light_cone_uniform_set.is_valid()) {
 			rendering_device->free_rid(light_cone_uniform_set);
 			light_cone_uniform_set = RID();
