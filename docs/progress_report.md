@@ -1397,3 +1397,14 @@ runs exited 0. The stamp was written by the tool itself in that run:
   `v022b|du=0.0000|dh_u=32.9104|dh_l=55.1367|neg=0.0000|rep=0.0000|det=1|d1` - and both golden renders
   are SHA-256 byte-identical to `tools/golden/main_018.png` and `main_019.png`. The module change is
   print/counter-only, which is exactly what this shows.
+
+- **SWEEP GREEN on the final tree (2026-09-30 23:27, owner shell), 23/23 rows.**
+  `GNE_STAMP: NO_RELINK exe=F3D350CBDC1C` -> `build PASS` ->
+  `provenance PASS exe=F3D350CBDC1C module=0B622B2DFBE3 dirty=0 head=d4818bc` -> `module_boot PASS` ->
+  `gt_regress PASS` -> all seven literal gates plus `gt_022b` PASS with their baselines -> the five
+  topical gates PASS -> `gi_gate2` / `gi_shade` PASS -> `gt_023a PASS h0=1.62763388951619
+  h1=2.33263762791952 gain=0.70500373840332` -> both golden renders PASS -> `no_errors PASS 0 error lines`
+  -> `perf020 PASS 16812us worst of 2 [FAIL>25465 WARN>29284, basis exe=F3D350CBDC1C]`.
+  History row: `2026-09-30 23:27  d4818bc  PASS  ... gt_022b:PASS ... perf020:PASS  020:16812/41921`.
+  The KI-001 instrumentation change is therefore verified end-to-end: no signature moved, the GPU
+  columns stay NA (never zero), and the re-baselined gate is green on the artifact it was measured on.
