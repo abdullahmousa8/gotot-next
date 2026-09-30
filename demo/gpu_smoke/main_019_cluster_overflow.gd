@@ -300,6 +300,10 @@ func _measure() -> void:
 	var cap_neigh := _cluster_c(1)
 	print("GNE 019.ovf: S1 cap  N=%d C=%.3f/%d neigh=%.3f/%d ovf=%d ratio=%.3f" % [n_cap, cap_flood["c"], cap_flood["body"], cap_neigh["c"], cap_neigh["body"], int(st_cap["overflows"]), (cap_flood["c"] / c_ref) if c_ref > 0.0 else -1.0])
 	print("GNE 019.ovf: DIAG cap flood_ids=%s" % _cluster_ids(0))
+	# GNE-021: the AABB tests the cull actually performed. A count read back from
+	# the engine, so a cull change is judged by a measured number, not a claim.
+	var stc: Dictionary = server.gpu_light_get_stats()
+	print("GNE 019.ovf: CULL_TESTS n=%d performed=%d assignments=%d clusters_touched=%d overflows=%d" % [n_cap, int(stc["tests_performed"]), int(stc["assignments"]), int(stc["clusters_touched"]), int(stc["overflows"])])
 	if nonly:
 		get_tree().quit(0)
 		return
