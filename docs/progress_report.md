@@ -1387,3 +1387,13 @@ verify: `F3D350CB`, 6 samples `19292 18039 17730 17949 18562 17116`, min 17116, 
 runs exited 0. The stamp was written by the tool itself in that run:
 `GNE_STAMP: RELINK exe=F3D350CB tree=425d212 module=0B622B2D` then `provenance PASS`, with
 `module_dirty=0`. `contract_20_perf.md` section 2 is synced to the live file.
+
+- **No signature drift, verified COMPLETELY on `F3D350CB`** (not spot-checked): all seven literal gates
+  plus `gt_022b` reproduce their `tools/verify_baseline.txt` literal byte-for-byte with DET OK and
+  rc 0/0 - `v16|mc=8|L-0.41|-0.82|-0.41|amb=0.10|hp=2072056|hr=0.95|d1`, `v17|tc=1|fmt=uastc|slot=5|hr=0.51|d1`,
+  `v18|lc=20|cc=2841|ot=0|hr=0.94|d1`, `v18-rev|lc=20|cc=3091|dc=13|ot=9|dp=2558|d1`,
+  `v19|lc=20|sm=5|cs=4|rd=1|hr=1.00|d1`, `v20|tw=1920|th=1080|rb=8294400|rf=60|d1`,
+  `v21|lc=256|of=36097|sl=38620|on=38434|d1`,
+  `v022b|du=0.0000|dh_u=32.9104|dh_l=55.1367|neg=0.0000|rep=0.0000|det=1|d1` - and both golden renders
+  are SHA-256 byte-identical to `tools/golden/main_018.png` and `main_019.png`. The module change is
+  print/counter-only, which is exactly what this shows.
