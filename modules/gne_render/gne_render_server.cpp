@@ -7657,15 +7657,26 @@ bool GneRenderServer::_light_ensure_geo() {
 	}
 	light_bounds_pipeline = rendering_device->compute_pipeline_create(light_bounds_shader);
 	Vector<RD::Uniform> bu;
-	const RID bbufs[3] = { light_cull_buffer, light_bounds_buffer, view_ubo };
+	// Binding numbers must match the shader's DECLARED bindings, not the array
+	// order. The bounds shader declares CullLightStream at 0, LightBoundsOut at 1
+	// and ViewBlock at 5; supplying view_ubo at index 2 fails with "Binding (5)
+	// was not provided". The 16.2_5 rule in the cull is the same: the index and
+	// the binding number agree there only by coincidence, so they are written out
+	// explicitly here rather than implied.
+	const struct {
+		uint32_t binding;
+		RID rid;
+		bool uniform_buffer;
+	} bbufs[3] = {
+		{ 0, light_cull_buffer, false },
+		{ 1, light_bounds_buffer, false },
+		{ 5, view_ubo, true }
+	};
 	for (uint32_t b = 0; b < 3; b++) {
 		RD::Uniform u;
-		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-		u.binding = b;
-		if (b == 2) {
-			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
-		}
-		u.append_id(bbufs[b]);
+		u.uniform_type = bbufs[b].uniform_buffer ? RD::UNIFORM_TYPE_UNIFORM_BUFFER : RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = bbufs[b].binding;
+		u.append_id(bbufs[b].rid);
 		bu.push_back(u);
 	}
 	light_bounds_uniform_set = rendering_device->uniform_set_create(bu, light_bounds_shader, 0);
