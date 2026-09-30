@@ -1599,3 +1599,25 @@ whether section 11 may then be formally closed. Section 11's official wording st
   converges at the field rate, delta mean 0.0007). (b-field) is the primary
   reference for all GI convergence gates from here on; any future
   displayed-image gate must state its instrument floor explicitly.
+
+## 67. GNE-012-HZB - clean HZB culling gate, Tier 2 path A (scene-only, 2026-10-01)
+
+- New scene main_012_hzb (+ .tscn) + wrapper tools/gt_012hzb.bat, wired as CVS
+  row 25 (baseline literal pinned). No C++ touched; provenance intact.
+- Geometry: main_010-proven 6 instances + one nearer wall (012-rev recipe; the
+  closure scene stays frozen). Production path only: p1/p2 from one
+  gpu_visibility_prod_dispatch per step.
+- Measured (2 fresh processes, byte-identical): off=[6,6], wall p1=6 p2=0
+  (culled 6/6, per-mille 1000), in-process repeat det, temporal-OFF agrees
+  [6,0] (reported only), control [6,6]. Build+dispatch wall ~30ms
+  (evidence-only per KI-001). Sig: v12hzb|p1=6|p2=0|cullpm=1000|det=1|d1.
+- Two wrapper defects caught by running (not assumed): (1) for/f token parse
+  breaks on the sig (the M2 paren-class bug revisited) - replaced with
+  set/p + more +1 comparison; (2) cmd strips quotes on set/p assignment and
+  the exposed pipes execute as commands - the scene now prints an additional
+  quote-free alias line (sighzb:, ; separators) for the wrapper, while the
+  canonical quoted line stays for the verify.ps1 literal parse.
+- Status: gate green in every check EXCEPT the shell-sensitive ERROR scan -
+  this measuring shell injects 3 artifact lines (user:// log-open x2 +
+  certificate store) that the owner shell does not produce. Formal PASS
+  verdict + full belt re-run pending in the owner shell.

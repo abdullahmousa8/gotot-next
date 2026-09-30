@@ -9,3 +9,4 @@ gt_020a=v20|tw=1920|th=1080|rb=8294400|rf=60|d1
 gt_021a=v21|lc=256|of=36097|sl=38620|on=38434|d1
 gt_022b=v022b|du=0.0000|dh_u=32.9104|dh_l=55.1367|neg=0.0000|rep=0.0000|det=1|d1
 gt_022m2=v022m2|frames=160|r10min=0.507853|r10max=0.511340|r10gm=0.509385|below=14/14|e5=127|det=1|d1
+gt_012hzb=v12hzb|p1=6|p2=0|cullpm=1000|det=1|d1
