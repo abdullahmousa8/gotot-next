@@ -1317,3 +1317,57 @@ untracked WIP), and the three `docs/012_*.patch` artifacts are committed as diag
 only - `docs/note_012_memb_diag.md` section 11 already classifies all three as "do not merge", and
 `012_d1d2_gate.patch` explicitly as not representing the final state. Nothing from those patches is
 in the tree; they are the saved fingerprints the note cites.
+
+## §62. KI-001 re-measured and CORRECTED - the pool was never disabled; publication is the whole limit (2026-09-30)
+
+Trigger: the requested "enable per-pass GPU timestamps" work. Outcome: the premise was wrong in a
+useful way, and the limit is now machine-readable instead of asserted.
+
+**Correction 1 - the query pool is ON by default.** `debug/settings/profiler/max_timestamp_query_elements`
+is `GLOBAL_DEF_RST(PropertyInfo(Variant::INT, ... "256,65535,1"), 256)`
+(`core/config/project_settings.cpp:1811`): default **256**, not 0, and 0 is outside the declared
+range. `RenderingDevice::initialize()` reads it once (`rendering_device.cpp:8625`) and sizes the
+per-frame pools from it (8727). Measured: a scene that sets nothing now prints
+`[GNE] Local RenderingDevice created. max_timestamp_query_elements= 256`. The framing KI-001 has
+carried since 015.5 - "the pool is 0 unless the project enables it" - is **not true for this tree**;
+7 captures per frame fit in 256 many times over.
+
+**Correction 2 - the one real limit is publication.** `timestamp_result_count` is published in
+exactly one place, `RenderingDevice::_begin_frame()` (`rendering_device.cpp:8342`), reachable only
+through the engine frame flow / `_flush_and_stall_for_all_frames()` (8561-8571). GNE creates a
+**local** RenderingDevice, nothing drives `_begin_frame()` on it, so the pool is filled by
+`capture_timestamp()` and never resolved.
+
+| measured (main_015_5_phase4, 300 frames, binary `65D8904D`) | value |
+|---|---|
+| `gpu_capture_count` (1 frame marker + 6 pass marks per frame) | **2100** |
+| `gpu_result_count` (results the device ever published) | **0** |
+| `gpu_last_ns` at frames 1 / 50 / 100 / 300 | 0 / 0 / 0 / 0 |
+| GPU columns | `gpu UNAVAILABLE ... gpu_avg_ns=NA` |
+| `sig=v15.5-p4 warm=100 meas=200 passes=200` | unchanged, PASS - no signature moved |
+
+**What the module does now (additive only):** `ensure_gpu_device()` prints the EFFECTIVE pool size
+at device creation so every run states it, and guards only against a sub-minimum value (it does not
+raise 256 - there is no reason to); `gpu_frame_stats()` gained `gpu_capture_count` and
+`gpu_result_count`, the machine-readable form of this limit, which will light up on its own if an
+engine ever publishes; `phase4` no longer sets the setting (the module owns it) and prints the pair.
+
+**Defect fixed in the same pass:** `pass_share_pct` divided the pass sum by **itself**
+(`gne_ft_cpu_total / gne_ft_cpu_total`), so it printed 100 for every run and could not fail -
+a measurement field that could not disagree with anything. It now divides by the frame total the
+module accumulates: measured **92** (4,666,260 / 5,049,589), which is what the field always claimed
+to be.
+
+**What would actually enable per-pass GPU time (NOT done - needs an owner decision):** (a) expose
+or trigger `RenderingDevice::_begin_frame()` for local devices, (b) resolve the pool inside
+`submit()`/`sync()` for local devices, or (c) drive GNE's device through the engine frame flow.
+All three are edits inside `godot-master`, which the standing rule forbids (KI-001/002/003 +
+`spec_012`/`spec_020`: no engine edits) and which would also make the build non-reproducible from an
+upstream tag. Until one of them is authorized: per-pass numbers stay CPU-side, **no per-pass
+threshold is admissible**, and GPU columns stay NA rather than zero.
+
+**perf020 re-baselined for the new binary** (`65D8904D`, the module change relinked the exe):
+6 samples (worst of the two passes each) `18568 18129 18259 21962 23714 23199`, min 18129, max 23714,
+spread 1.308x, first-three average 18319 vs last-three 22958 (host drift inside the window,
+recorded). `fail_us = 31302` (1.32x max), `warn_us = 35997` (fail x 1.15); all runs exited 0.
+`contract_20_perf.md` section 2 is synced to the live file.

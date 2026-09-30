@@ -53,16 +53,17 @@ func _ready() -> void:
 	if server == null:
 		_fail(400, "server singleton is null")
 		return
-	# PHASE 5: the GPU timestamp query pool is enabled here (see §29 in
-	# progress_report.md for the full finding). Measured result: the pool now
-	# accepts captures (count 0 -> 1 after capture_timestamp), but the resolved
-	# GPU values never reach a reader: the engine resolves the query pool in
-	# _begin_frame() of the ENGINE's frame, and drivers/vulkan has no
-	# utilities.cpp, so the per-frame result count stays 0 for Vulkan. The
-	# columns are therefore reported as NA, never as zero cost. The wall-clock
-	# measurement below is the load-bearing one.
-	ProjectSettings.set_setting("debug/settings/profiler/max_timestamp_query_elements", 512)
-	print("GNE 015.5 p5: timestamp_query_elements=", int(ProjectSettings.get_setting("debug/settings/profiler/max_timestamp_query_elements")), " (GPU results unavailable on Vulkan - see progress_report §29)")
+	# KI-001 (corrected 2026-09-30): "max_timestamp_query_elements" defaults to 256
+	# in this tree (GLOBAL_DEF_RST range 256..65535), so the query pool was never
+	# disabled - it has always accepted captures. The MODULE now prints the
+	# effective value at device creation, so every run states it without any scene
+	# cooperating; this scene deliberately no longer sets it. What is measured
+	# here: the pool accepts every capture (gpu_capture_count = frames x 7) while a
+	# LOCAL RenderingDevice never reaches RenderingDevice::_begin_frame() - the
+	# only place that publishes timestamp_result_count (rendering_device.cpp:8342)
+	# - so gpu_result_count stays 0 and no GPU value reaches a reader. Columns stay
+	# NA, never zero cost; the wall-clock measurement is the load-bearing one.
+	print("GNE 015.5 p5: timestamp_query_elements=", int(ProjectSettings.get_setting("debug/settings/profiler/max_timestamp_query_elements")), " (effective value, printed by the module too; GPU results still unavailable - KI-001)")
 	if not server.ensure_gpu_device():
 		_fail(401, "local RenderingDevice not available")
 		return
@@ -206,6 +207,12 @@ func _report(st: Dictionary) -> void:
 		print("GNE 015.5 p4: gpu_avg_ns=", st["gpu_avg_ns"], " gpu_avg_us=", st["gpu_avg_us"], " gpu_first_ns=", st["gpu_first_ns"])
 	else:
 		print("GNE 015.5 p4: gpu UNAVAILABLE (query pool disabled) - gpu_avg_ns=NA gpu_first_ns=NA")
+	# KI-001 evidence pair, printed so the limit is reproducible instead of
+	# asserted: captures > 0 with results == 0 means the pool exists and accepted
+	# every capture, but the device never published a single result. The pool is
+	# now enabled by the MODULE (ensure_gpu_device), not by this scene.
+	print("GNE 015.5 p4: gpu_capture_count=", st["gpu_capture_count"], " gpu_result_count=", st["gpu_result_count"],
+		" (results 0 = local device never reaches RenderingDevice::_begin_frame; engine-side limit, KI-001)")
 	for f in PROBE_FRAMES:
 		if probe_wall.has(f):
 			print("GNE 015.5 p4: probe frame=", f, " wall_us=", probe_wall[f], " gpu_ns=", probe_gpu[f])

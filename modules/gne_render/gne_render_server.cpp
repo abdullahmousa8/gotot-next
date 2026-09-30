@@ -2,6 +2,7 @@
 
 #include "core/os/memory.h"
 #include "core/io/file_access.h"
+#include "core/config/project_settings.h"
 #include "core/string/print_string.h"
 #include "core/os/os.h"
 #include "servers/rendering/rendering_server.h"
@@ -3192,6 +3193,22 @@ bool GneRenderServer::ensure_gpu_device() {
 		return true;
 	}
 
+	// GNE KI-001 (corrected 2026-09-30): "debug/settings/profiler/max_timestamp_query_elements"
+	// is a RUNTIME-ONLY setting (GLOBAL_DEF_RST, core/config/project_settings.cpp:1811)
+	// whose DEFAULT IS 256, not 0 - the range is 256..65535, so the query pool has
+	// always existed and always accepted captures. RenderingDevice::initialize()
+	// reads it exactly once (rendering_device.cpp:8625) and sizes the per-frame
+	// pools from it (8727), so the value must be in place before the device is
+	// created; this module therefore only guards against a sub-minimum value and
+	// prints the EFFECTIVE value, so every run states it. Raising it further is
+	// pointless for us: 6 marks + 1 frame marker per frame fit in 256 many times
+	// over. The real limit is the PUBLICATION path, reported machine-readably by
+	// gpu_frame_stats(): gpu_capture_count > 0 with gpu_result_count == 0.
+	ProjectSettings *ps = ProjectSettings::get_singleton();
+	if (ps != nullptr && (int)ps->get_setting("debug/settings/profiler/max_timestamp_query_elements") < 256) {
+		ps->set_setting("debug/settings/profiler/max_timestamp_query_elements", 256);
+	}
+
 	rendering_device = RenderingServer::get_singleton()->create_local_rendering_device();
 
 	if (rendering_device == nullptr) {
@@ -3199,7 +3216,8 @@ bool GneRenderServer::ensure_gpu_device() {
 		return false;
 	}
 
-	print_line("[GNE] Local RenderingDevice created.");
+	print_line("[GNE] Local RenderingDevice created. max_timestamp_query_elements=",
+			(int)ProjectSettings::get_singleton()->get_setting("debug/settings/profiler/max_timestamp_query_elements"));
 
 	return true;
 }
@@ -12227,6 +12245,8 @@ void GneRenderServer::gpu_frame_reset() {
 		gne_ft_cpu[i] = 0;
 	}
 	gne_ft_warmup_wall_max = 0;
+	gne_ft_capture_count = 0;
+	gne_ft_result_count_last = 0;
 }
 
 int GneRenderServer::gpu_frame_begin() {
@@ -12252,6 +12272,7 @@ int GneRenderServer::gpu_frame_begin() {
 
 	// Frame Begin marker (name must be unique per marker; RD stores names).
 	rendering_device->capture_timestamp("gne_fb");
+	gne_ft_capture_count++;
 
 	// GPU time for the PREVIOUS completed frame (ns). TIMESTAMP SUPPORT IS
 	// OPTIONAL: the query pool size comes from
@@ -12261,6 +12282,7 @@ int GneRenderServer::gpu_frame_begin() {
 	// the wall interval below is measured from our own clock and the timestamp
 	// values are treated as an optional refinement.
 	const uint32_t n = rendering_device->get_captured_timestamps_count();
+	gne_ft_result_count_last = n;
 	if (n > 0) {
 		const uint64_t g = rendering_device->get_captured_timestamp_gpu_time(0);
 		gne_ft_gpu_last = (int64_t)g;
@@ -12305,6 +12327,7 @@ void GneRenderServer::gpu_frame_mark(int p_pass) {
 	gne_ft_cpu[p_pass] += (now_us - gne_ft_last_mark_us);
 	gne_ft_last_mark_us = now_us;
 	rendering_device->capture_timestamp("gne_p" + itos(p_pass));
+	gne_ft_capture_count++;
 }
 
 void GneRenderServer::gpu_frame_end() {
@@ -12370,8 +12393,18 @@ Dictionary GneRenderServer::gpu_frame_stats() const {
 	d["pass_names"] = pass_names;
 	d["pass_sum_us"] = sum;
 	d["pass_count"] = GNE_FT_PASSES;
-	// CPU-side share of the measured interval: where the wall time goes.
-	d["pass_share_pct"] = gne_ft_cpu_total > 0 ? (double)gne_ft_cpu_total * 100.0 / (double)gne_ft_cpu_total : 0.0;
+	// CPU-side share of the measured interval: where the wall time goes. This
+	// used to divide the pass sum by ITSELF (gne_ft_cpu_total / gne_ft_cpu_total),
+	// so it printed 100 for every run and said nothing - a measurement field that
+	// could not fail. The divisor is the frame total this same module accumulates.
+	d["pass_share_pct"] = gne_ft_cpu_total > 0 ? (double)sum * 100.0 / (double)gne_ft_cpu_total : 0.0;
+	// KI-001 evidence, machine-readable: captures we issued vs results the engine
+	// published. captures > 0 with results == 0 means the query pool exists and
+	// accepted the captures, but a LOCAL RenderingDevice never reaches
+	// RenderingDevice::_begin_frame() (rendering_device.cpp:8342 publishes there),
+	// so nothing is ever resolved for us to read. Never read that pair as "free".
+	d["gpu_capture_count"] = (int64_t)gne_ft_capture_count;
+	d["gpu_result_count"] = (int64_t)gne_ft_result_count_last;
 	d["note"] = "gpu ns->us; per-pass are CPU-side us deltas; see contract_015_5_tests C6";
 	return d;
 }

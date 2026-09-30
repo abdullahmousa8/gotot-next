@@ -1069,6 +1069,15 @@ bool _gi_dispatch(float p_mode);
 	uint64_t gne_ft_prev_frame_begin_us = 0;
 	uint64_t gne_ft_prev_wall_us = 0;
 	uint64_t gne_ft_last_mark_us = 0;
+	// KI-001 evidence counters: how many capture_timestamp() calls this module
+	// issued, and how many results the RenderingDevice had actually published the
+	// last time gpu_frame_begin() looked. "captures > 0, results == 0" is the
+	// machine-readable form of the engine limit (a local device never reaches
+	// RenderingDevice::_begin_frame, so its query pool is never resolved); if a
+	// future engine publishes them, results becomes non-zero and the GPU columns
+	// light up on their own.
+	uint64_t gne_ft_capture_count = 0;
+	uint32_t gne_ft_result_count_last = 0;
 	void gpu_frame_reset();
 	// Declares the warm-up prefix; per-pass accumulators are cleared when the
 	// boundary is crossed so averages describe the measured window only.

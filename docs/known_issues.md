@@ -44,6 +44,38 @@
 - **كل التواقيق غير متأثرة**: `013` / `014` / `015` / `v15.5-p4` كما هي.
 ---
 
+## KI-001 update (2026-09-30): the pool was never the limit - publication is
+
+**Measured on binary `65D8904D`, 300 frames (`main_015_5_phase4`):** `gpu_capture_count=2100`
+(every capture accepted - 1 frame marker + 6 pass marks per frame) and `gpu_result_count=0`
+(not one result ever published to a reader); `gpu_last_ns=0` at frames 1/50/100/300; the scene
+reports GPU `UNAVAILABLE` with `NA`, never zero cost.
+
+**Two corrections to the record above:**
+
+1. `max_timestamp_query_elements` is `GLOBAL_DEF_RST(..., "256,65535,1"), 256`
+   (`core/config/project_settings.cpp:1811`) - its DEFAULT IS 256, so the query pool has always
+   existed and always accepted captures. "The pool is 0 unless the project enables it" is not true
+   for this tree. It is still runtime-only and read once in `RenderingDevice::initialize()`
+   (`rendering_device.cpp:8625`), so a module must set it before creating a device if it wants a
+   different size; GNE now merely prints the effective value and guards a sub-minimum.
+2. The single blocker is publication: `timestamp_result_count` is published only in
+   `RenderingDevice::_begin_frame()` (`rendering_device.cpp:8342`), which a **local** device never
+   reaches. The earlier note that `drivers/vulkan` "has no `utilities.cpp`" pointed at the wrong
+   file: the gles3 driver has its own copy of that logic, and the Vulkan path publishes through the
+   core `rendering_device.cpp`.
+
+**Evidence surface:** `gpu_frame_stats()` now returns `gpu_capture_count` and `gpu_result_count`,
+and `ensure_gpu_device()` prints the effective pool size at device creation, so this limit is
+checked by any run instead of being asserted here.
+
+**Closure condition (unchanged in kind, now precise):** one engine-side change - (a) expose/trigger
+`_begin_frame()` for local devices, (b) resolve the pool in `submit()`/`sync()` for local devices,
+or (c) drive the local device through the engine frame flow. All are edits inside `godot-master`
+and require an explicit owner decision; until then GPU columns stay `NA`.
+
+---
+
 ## KI-002: Async Readback Shares The Sync Staging Buffer
 
 **التاريخ:** 2026-09-27 · **الحالة:** لا أسرع من المتزامن — قيد في المحرك

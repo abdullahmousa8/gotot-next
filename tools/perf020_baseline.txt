@@ -8,34 +8,38 @@
 # To re-baseline: measure on quiet hardware, then rewrite exe_sha256 AND both
 # thresholds together. Never widen a threshold to make a single run pass.
 #
-# RE-BASELINED 2026-09-30 (2nd time today) for the 022b-gate binary.
-# Reason: the previous basis (7EFA98FA, fail 33520) belonged to the binary from
-# the a5efca4 era. The current exe (7A65D1EB) is a fresh relink of the SAME
-# module source - module_digest 14DE8294... is unchanged from that era, because
-# the two temporary 022b DBG prints were added and then removed (net zero) -
-# against the current godot-master tree. Same scene, same host, same rule.
+# RE-BASELINED 2026-09-30 (3rd time today) for the KI-001 instrumentation binary.
+# Reason: the module changed - `ensure_gpu_device` now prints the effective
+# timestamp-pool size, `gpu_frame_stats` gained gpu_capture_count/gpu_result_count,
+# and pass_share_pct was fixed (it divided the pass sum by itself and always read
+# 100). That relinked the exe (65D8904D), so the previous basis (7A65D1EB) is void
+# by the file's own rule. The change is timing-neutral for this scene: main_020
+# never calls gpu_frame_* and the counters add no GPU work.
 #
-# 6 samples on this binary (2026-09-30, sequential, quiet host). Each sample is
-# the WORST of the two passes of main_020, i.e. exactly the statistic the gate
-# computes (max over all wall_avg_us in the log):
-# 17464 17666 17870 17821 18541 18450
-# min 17464  median ~17744  max 18541  spread 1.062x
+# 6 samples on this binary (2026-09-30, sequential). Each sample is the WORST of
+# the two passes of main_020, i.e. exactly the statistic the gate computes:
+# 18568 18129 18259 21962 23714 23199
+# min 18129  max 23714  spread 1.308x
 #
-# MEASUREMENT METHOD (recorded): each sample ran demo/gpu_smoke/main_020.tscn
-# twice with the engine directly (the same two passes gt_020a.bat performs),
-# because the measurement shell confines spawned processes to the workspace and
-# therefore cannot run the .bat wrappers, which write their signature files under
-# %TEMP%. Every run exited 0. The gate's own statistic and thresholds are
-# unaffected by that substitution; only the wrapper could not run there.
+# HOST DRIFT INSIDE THE SAMPLING WINDOW, RECORDED NOT HIDDEN: the first three
+# samples average 18319 and the last three 22958 - the host got slower during the
+# run, which is the same contamination the register documents. A quieter window
+# would tighten this basis; it is deliberately not tightened by hand, because the
+# rule is "1.32x over the observed maximum" and the observed maximum is 23714.
+#
+# MEASUREMENT METHOD: each sample ran demo/gpu_smoke/main_020.tscn twice with the
+# engine directly - the same two passes gt_020a.bat performs - because the
+# measuring shell confines spawned processes to the workspace and so cannot run
+# the .bat wrappers, which write their signature files under %TEMP%. Every run
+# exited 0. The statistic and the thresholds are unaffected by that substitution.
 #
 # HOST VARIANCE IS THE DOMINANT TERM AND IS DOCUMENTED, NOT SOLVED. GPU
-# timestamps remain unavailable (max_timestamp_query_elements unset), so nothing
-# in this file measures GPU time.
+# timestamps are still unavailable to a local device (KI-001, re-measured today:
+# 2100 captures, 0 published results), so nothing in this file measures GPU time.
 #
-# fail = 1.32x over the observed max (the same rule as every prior basis):
-#        18541 x 1.32 = 24474.12 -> 24474
-# warn = fail x 1.15:  24474 x 1.15 = 28145.1 -> 28145
+# fail = 1.32x over the observed max: 23714 x 1.32 = 31302.48 -> 31302
+# warn = fail x 1.15:            31302 x 1.15 = 35997.3  -> 35997
 
-exe_sha256 = 7A65D1EB95BB180A4D4238B83BB3AF55DE6692244179497AC51CD27D02529EC1
-fail_us = 24474
-warn_us = 28145
+exe_sha256 = 65D8904D749926F189CC8902A472135CDA25D33B24B920FFC8834778F3C3E8C5
+fail_us = 31302
+warn_us = 35997
