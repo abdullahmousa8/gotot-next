@@ -1147,3 +1147,19 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   gain; the 8-bit instrument is saturation-void on lit faces - per KI-017).
 - Files: main_022b.gd/.tscn (uncommitted WIP now finalized), gate text updated.
 - Next: add render goldens for 022b to CVS (optional), commit, close.
+## §60. 022b closed as a standing gate - GT_022B registered (2026-09-30)
+
+- tools/gt_022b.bat created (modeled on gt_023a.bat): marker checks only
+  (rc / S22B PASS / no FAIL / no ERROR: / no RID leak) + echoes the two HDR
+  evidence lines so a CVS row can parse them from a fresh log.
+- Numeric I1 (dh_u >= 0.5) stays in GDScript - the bat has no float math,
+  same split as 023-M1.
+- Root cause of the missing signature (silent, no error): main_022b.gd is
+  CRLF on disk; every LF-only anchor patch silently no-op'd, so the
+  OS.get_cmdline_user_args() parser never landed. Verified by byte-level
+  inspection (286 CRLF / 2 LF) then re-inserted with CRLF anchors.
+- Clean run: rc=0, sig=v022b|du=0.0000|dh_u=32.9104|dh_l=55.1367|det=1|d1,
+  GT_022B: PASS. Byte-identical to the three prior runs -> determinism holds
+  across full re-initialization, not just within one process.
+- Debug scaffolding removed from main_022b.gd (the _flog file-trace helper and
+  its two call sites). No functional code removed.

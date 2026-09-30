@@ -25,6 +25,11 @@ func _mk_spot(pos: Vector3, target: Vector3, inner: float, outer: float, color: 
 	return {"type": 1, "pos": pos, "range": 1600.0, "color": color, "intensity": intensity, "dir": d, "cone_inner": inner, "cone_outer": outer}
 
 func _ready() -> void:
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--sigf="):
+			sig_file = a.split("=")[1]
+		elif a.begins_with("--shot="):
+			shot_file = a.split("=")[1]
 	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(400, "no server")
@@ -71,7 +76,6 @@ func _ready() -> void:
 	while idx < INSTANCE_COUNT:
 		server.gpu_scene_set_instance_transform(idx, Vector3(0, -9000, 0), 1.0); server.gpu_scene_set_instance_mesh(idx, 0); idx += 1
 	# ---- lights: same 256 as GNE-021 ----
-	_flog("lights loop start")
 	var want := 0
 	for side2 in [1.0, -1.0]:
 		for k in range(20):
@@ -106,7 +110,6 @@ func _ready() -> void:
 		if server.gpu_light_create(_mk_point(Vector3(-1500.0 + r4 * 280.0, 200.0, -2600.0), 420.0, Color(0.9, 0.75, 0.95), 1.8)) != want:
 			_fail(414, "point id " + str(want)); return
 		want += 1
-	_flog("street+row+tower+back spots/points done, want=" + str(want))
 	var scatter := 0
 	var zz := 860.0
 	while scatter < 76:
@@ -181,16 +184,6 @@ func _ready() -> void:
 		ok = false
 	# teardown + quit handled by _probe_layer
 	_probe_layer()
-
-
-func _flog(msg: String) -> void:
-	var f := FileAccess.open("C:/Users/opc/AppData/Local/Temp/opencode/s22b_flog.txt", FileAccess.READ_WRITE)
-	if f == null:
-		f = FileAccess.open("C:/Users/opc/AppData/Local/Temp/opencode/s22b_flog.txt", FileAccess.WRITE)
-	if f != null:
-		f.seek_end()
-		f.store_line(str(Time.get_ticks_msec()) + "ms " + msg)
-		f.close()
 
 
 func _probe_layer() -> void:
