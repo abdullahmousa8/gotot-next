@@ -1481,10 +1481,14 @@ void main() {
 	}
 	// NDC -> tile indices, rounding OUTWARD so the rect is never inside the true
 	// footprint, then clamped to the 16x9 grid.
-	float tx0 = clamp(floor((minx * 0.5 + 0.5) * 16.0), 0.0, 15.0);
-	float tx1 = clamp(ceil((maxx * 0.5 + 0.5) * 16.0), 0.0, 15.0);
-	float ty0 = clamp(floor((miny * 0.5 + 0.5) * 9.0), 0.0, 8.0);
-	float ty1 = clamp(ceil((maxy * 0.5 + 0.5) * 9.0), 0.0, 8.0);
+	// DIAGNOSTIC EXPERIMENT (not a fix): widen by one tile on every side. If the
+	// remaining sig deltas vanish, the projected rect is marginally too tight and
+	// the projection is the suspect. If they persist, the bug is elsewhere and the
+	// widening must be reverted rather than kept.
+	float tx0 = clamp(floor((minx * 0.5 + 0.5) * 16.0) - 1.0, 0.0, 15.0);
+	float tx1 = clamp(ceil((maxx * 0.5 + 0.5) * 16.0) + 1.0, 0.0, 15.0);
+	float ty0 = clamp(floor((miny * 0.5 + 0.5) * 9.0) - 1.0, 0.0, 8.0);
+	float ty1 = clamp(ceil((maxy * 0.5 + 0.5) * 9.0) + 1.0, 0.0, 8.0);
 	if (tx1 < tx0) { tx1 = tx0; }
 	if (ty1 < ty0) { ty1 = ty0; }
 	bndbuf.bnd[i] = vec4(tx0, ty0, tx1, ty1);
