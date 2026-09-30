@@ -149,3 +149,8 @@ RGBA32F is the adopted accumulation storage for the GI field (commit 52ab47a).
 
 **Related:** GNE-022 section 11 (spec_022), section 11-R1 (accumulation precision
 experiment).
+## Lesson 8: Manual Test Is Not a Blocking Gate
+**Date:** 2026-10-01
+**Context:** X1 (016.5 slice-1) succeeded manually for weeks without CVS registration; made fail-closed (exit 41) + wrapped (gt_016_5.bat) + rejection-tested (mutation: x1=false alone, exit 41) in one unit.
+**Lesson:** A test that succeeds by hand is NOT a gate. A gate requires exit-code enforcement AND harness integration AND a proven rejection path (something that fails on demand and is refused).
+**Rule:** Every milestone gets its blocking gate before closure; the rejection path is demonstrated, never assumed. (Lesson 6 on git-cwd and the pre-existing Lesson numbering are untouched - this is the next free number.)

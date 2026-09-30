@@ -1621,3 +1621,47 @@ whether section 11 may then be formally closed. Section 11's official wording st
   this measuring shell injects 3 artifact lines (user:// log-open x2 +
   certificate store) that the owner shell does not produce. Formal PASS
   verdict + full belt re-run pending in the owner shell.
+
+## 68. M0.20-M0.24 consolidation (Baseline -> GI -> Shell) - 2026-10-01
+
+(Directive asked for these as §36/§37; those numbers are taken by GNE-019-era
+history, so they land here as §68/§69 with the mapping recorded.)
+
+### M0.20 - Baseline & Profiling
+- perf020: wall-clock frame instrument, us precision, FAIL>25465/WARN>29284
+  ceilings on a quiet-host basis; GPU timers structurally unavailable (KI-001).
+- Provenance fingerprint: exe_sha256 + module_digest + module_dirty bind every
+  binary to its build inputs (tools/gne_verify.ps1); C++ edits re-stamp.
+- Zero Errors/Leaks policy: every gate scans ERROR:/RID lines; history in
+  tools/verify_history.tsv.
+
+### M0.21-M0.22 - GI Convergence
+- Instruments: main_022b (city HDR), main_022_m1 (FP32 field, KI-016), main_022_m2
+  ((b-field) gate), main_022_fvd (field-vs-displayed delta).
+- ISCALE=0.015: ANTI-SATURATION setting (s=0.03 saturated the 8-bit chain at
+  1.0), not a gain correction; gain-neutrality comes from the ratio form.
+- ratio_f (field deltas) / ratio_L (pre-tonemap HDR deltas, NOT 8-bit):
+  convergence-delta mean 0.0007, max 0.0031 - no field/display drift.
+- b-field: criterion-(b) geometry (per-interval ratio <= 0.6, inherited from
+  frozen §11(b)) evaluated on the FP32 FIELD series. M2: 14/14, geomean
+  0.509385, e5=127, det=1, literal-pinned. The VALUE 0.509 is observed, not
+  analytically derived (pure-EMA theory gives 0.349) - open point recorded.
+- §11 CLOSED as RESOLVED via b-field (owner, 2026-10-01); history verbatim.
+
+### M0.23-M0.24 - Shell & Environment
+- Measuring-shell artifacts proven shell-specific: user:// log-open x2 +
+  certificate-store ERROR lines; hung bat runs (zombies) blocking %OUT%
+  writes; recorded as KI-018 (environment, cannot silently PASS).
+- Wrapper hardening: for/f replaced (paren-class bug), quote-free sighzb
+  alias (cmd strips quotes on set/p, exposing pipes); no timeout exists in
+  any gt_*.bat (hangs stall, never certify).
+
+## 69. M0.25 - HZB Occlusion Gate (Tier 2 path A) - 2026-10-01
+
+- main_012_hzb + gt_012hzb.bat, CVS row 25 (baseline pinned, scene-only, no
+  C++ - provenance and perf020 basis untouched).
+- Measured: off=[6,6], wall p1=6/p2=0 (cullpm=1000, fully-designed occlusion
+  on the AABB production path - coverage, not new physics), det byte-equal
+  in-process and d1/d2, temporal-OFF agrees (report-only), control [6,6].
+- Sig: v12hzb|p1=6|p2=0|cullpm=1000|det=1|d1. Status: row wired, FORMAL 25/25
+  PASS verdict pending owner shell (this shell cannot pass artifact scans).

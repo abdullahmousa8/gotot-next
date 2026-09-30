@@ -12,7 +12,7 @@
 | KI-012 | Demo window size externally mutable (pre-existing) | Unassigned | Owner decision | CLOSED 2026-09-30 by decision (accepted and documented; nothing fixed) |
 | KI-013 | gt_regress FAILED reset by XFAIL scene (harness) | Unassigned | Owner decision | Resolved (commit 6bf851a) |
 | KI-014 | Cluster lists under-cover corner pixels (linear vs euclidean slice) | 018-rev (fixed behind rev flag) | Before R1 | FIXED (gated) + verified in R1 |
-| KI-015 | Hardware RT unusable: RT pipeline creation fails (fork-level) | Unassigned | Owner decision | Open - needs engine-level diagnosis |
+| KI-015 | Hardware RT unusable: RT pipeline creation fails (fork-level) | Unassigned | Owner decision | Open - needs engine-level diagnosis |`n| KI-018 | Measuring-shell artifacts (ghost ERRORs, hung runs, no bat timeouts) | Unassigned | Owner decision | Open (2026-10-01) - environment limitation; verdicts from owner shell only |
 
 ## Closure Schedule
 
