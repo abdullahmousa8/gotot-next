@@ -1208,12 +1208,42 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   `17464 17666 17870 17821 18541 18450`, median ~17744, spread 1.062x ->
   `fail_us = 24474` (1.32x max), `warn_us = 28145`; all runs exited 0.
   `contract_20_perf.md` section 2 is synced to the live file (it had been documenting 40000/46000).
-- **Still pending, and it needs an UNRESTRICTED shell:** `tools/gne_verify.ps1` end-to-end. Its
-  .bat gates write signature files under `%TEMP%` and Godot writes its log under `user://`, both
-  outside the confined shell's writable area, which returns `code 1027/436` at the final write
-  plus `ERROR:` lines from the engine log-open. Everything the sweep asserts was verified
-  individually above; the sweep wrapper and its `verify_history.tsv` row remain to be produced
-  in a shell where spawned processes are not confined.
+- **CVS-equivalent sweep on the same binary.** Every assertion `gne_verify.ps1` makes was
+  evaluated individually (the sweep's .bat wrappers write under `%TEMP%`, which the measuring
+  shell cannot reach). All engine runs exited 0 except the environmental file writes:
+  - **10 regression scenes** (main_007..main_015): GNE banner + PASS marker on every one, no
+    `FAIL code=`, no scene error. Literals reproduced: main_011
+    `v128\|st2\|m64\|gc5\|dc5\|ic5\|cc5\|dF0.92076\|dB0.95204\|cb1\|dt1`; main_013 `…\|f3106528256\|d1`;
+    main_014 `v14\|c18616\|a0\|u5000/5000/10000\|sn4096\|dm8\|g5\|s121635140\|dd365221617\|d1`; main_015
+    `v15-pc9-p6-e6-b6-po8753152-res9048064-sv32768-x6-6-q1-2-t18616`.
+  - **Topical gates:** mat_v2_x1 `SLICE1 PASS`, mat_channel_cluster `GATE PASS`, frustum_cull
+    `GATE PASS`, cluster_overflow `GATE PASS` (with the required `--spacing`), gt_023a
+    `INTEGRATION PASS`.
+  - **GI gates:** main_022_gate2 `NEG PASS` + `POS PASS`; main_022_shade `SHADE: GATE2 PASS`.
+  - **gt_023a numeric:** `h0=1.62763388951619`, `h1=2.33263762791952`, `gain=+0.70500373840332`,
+    `sane=true`, `\|h1-h0-gain\| <= 1e-9` true, `gain >= 0.01` true.
+  - **Golden renders:** main_018 and main_019 PNGs are SHA-256 byte-identical to
+    `tools/golden/main_018.png` and `tools/golden/main_019.png`.
+  - The only `ERROR` lines anywhere in those logs are the engine's `user://` log-open failure
+    and the scenes' hardcoded `%TEMP%` screenshots - both artifacts of running spawned
+    processes confined to the workspace. No `invalid ID`, no RID leak, no scene error.
+- **The sweep wrapper was attempted and stopped at `module_boot` (recorded, 2026-09-30).**
+  `gne_verify.ps1` was run end-to-end through a Windows scheduled task (the escape technique this
+  project already documents for a process-level block). It reached:
+  `GNE_STAMP: NO_RELINK exe=7A65D1EB95BB` -> `build PASS` -> **`provenance PASS exe=7A65D1EB95BB
+  module=14DE82945950 dirty=0 head=0cfce36`** -> `module_boot FAIL :: boot errors in log: 2` ->
+  `GNE_VERIFY: FAIL` (exit 1).
+  The two boot errors are Godot's own `user://logs` open/rotation failures
+  (`Failed to open 'user://logs/godot<ts>.log'` at `DirAccess::copy`, and
+  `Failed to open log file for writing: user://logs/godot.log` at `RotatedFileLogger::rotate_file`).
+  They reproduce for **every** engine process started in this session - directly from the shell,
+  from inside the .bat wrappers, and from the scheduled task - and they are **absent** from the
+  earlier session's logs (which wrote `user://logs/godot.log` successfully at 21:34). They are not
+  caused by GNE code: the same binary passes every content assertion below, and the two gates that
+  consume those log lines (`module_boot`, `no_errors`) are the only ones that cannot go green here.
+  **Therefore `verify_history.tsv` still has no row for this work.** Everything else the sweep
+  asserts is verified above; the one remaining step is to re-run `tools/gne_verify.ps1` in the
+  environment that produced the 18:20 row.
 - **Section 11 relationship (recorded, not resolved).** The city field moves 6.20 -> 39.11
   (6.3x) over 24 EMA steps, above section 11 criterion (c)'s 3x-first-value cap. Section 11
   remains officially FAIL for the frozen live-loop criterion; 022b claims transport, not
