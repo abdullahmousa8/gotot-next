@@ -1176,9 +1176,14 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   re-tuned: a measured floor replaced it. `gt_022b.bat` runs the scene twice and fails on
   `sig d1 != sig d2`; `gne_verify.ps1` records PASS and parses the evidence for the detail
   string only, so the criterion lives in exactly one place (the perf020 duplication lesson).
-- **Limit recorded, not hidden.** I1 is an *existence* test (does indirect reach the umbra
-  probe); the magnitude is reported, never gated. A future promotion of `gt_022b` to a literal
-  in `tools/verify_baseline.txt` would pin the magnitude - available, deliberately not done yet.
+- **Promoted to a literal gate (2026-09-30).** Once the signature proved stable
+  across runs, across d1/d2, and across a full relink, `gt_022b` joined the literal loop in
+  `gne_verify.ps1` with the baseline line
+  `gt_022b=v022b|du=0.0000|dh_u=32.9104|dh_l=55.1367|neg=0.0000|rep=0.0000|det=1|d1`, and the
+  separate numeric block was deleted. The magnitude is now pinned exactly like
+  gt_016a..gt_021a, and **no numeric threshold remains anywhere in the harness**. Simulated
+  against a real run: sig d1 == sig d2 == the literal -> `Record gt_022b = PASS`. The 8-bit
+  umbra delta stays deliberately ungated (it saturates on a lit city, KI-017).
 - **Binary / provenance.** Relinked exe `7A65D1EB…`, `module_digest 14DE8294…` (unchanged from
   the a5efca4 era - the two temporary DBG prints added in f7208e2 and removed here are net zero),
   `tree_head 0f81197`, `module_dirty=0`, and the tool wrote the stamp itself:
