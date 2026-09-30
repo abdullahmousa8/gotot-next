@@ -487,3 +487,20 @@ shells). Related shell-hang phenomena are tracked separately under KI-018
 **Re-open/close condition:** closes when every gt_*.bat + gne_verify.ps1 either
 filters precisely (A) or certifies the shell protocol (B), proven by a green
 belt in BOTH shells or a recorded single-shell rule.
+
+## KI-020: Default batch strategy breaks material_draw (structural constraint)
+
+**Date:** 2026-10-01
+**Status:** ACTIVE - constraint documented; fix deferred
+**Severity:** Low (workaround is one line; every scene already uses it)
+**Owner:** GNE Architecture
+**Target:** 0.27 (or defer - decision with the batch-system owner)
+
+**Finding:** gpu_material_draw() FAILS unless gpu_mesh_set_batch_strategy(0)
+(PER_MESH) was set after gpu_mesh_create. Probable cause (owner hypothesis):
+REORDERED groups batches per mesh in a procedural command layout that the mat
+path cannot consume (see code comment at gne_render_server.cpp:7129-7130:
+"The mat path replays the per-mesh indirect args; the grouped path uses a
+different (procedural) command layout it cannot consume").
+**Rule:** every material-draw scene must set strategy(0); measured 2026-10-01
+(0.26-pre: draw failed without it, passed with it - nothing else changed).
