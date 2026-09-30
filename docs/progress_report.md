@@ -1071,3 +1071,20 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   hits the same limit). Cause recorded precisely: raw HDR radiance readback must
   happen BEFORE tone-mapping/8-bit clamp, not from the final screen image.
 - Fast-path trial count: two real cases (KI-011, NOTE 023) - both successful.
+## §55. Session resume (post-OpenCode) + perf020 re-baseline (2026-09-30)
+
+- Context: the OpenCode session (neon-tiger, ses_f3f9) continued GNE far past this
+  agent's last commit: 012-revised CLOSED, KI-017 (HDR readback) implemented with
+  M1' + gt_023a CVS gate, 016.6, 017 channel intensity, 018 cluster channel,
+  KI-011/012 closures verified, CVS grown to 22 gates. Verified on disk:
+  gpu_raster_read_hdr exists (3 refs), verify_history carries rows for the new
+  gates. This agent's session JSON (71MB) was the handoff record.
+- Blocking defect found: CVS perf020 = STALE BASIS FAIL (exe 7EFA98FA vs basis
+  F7288A2F measured on the pre-012-revision binary). The gate's own instruction
+  applied: re-measure, rewrite the basis (exe_sha256 + thresholds together).
+- Re-baseline: 6 sequential gt_020a runs on the current binary: min 22425,
+  median 23377, max 25394 (spread 1.132x). fail = 1.32x max = 33520,
+  warn = 38548. baseline file rewritten with the documented rationale.
+- CVS after re-baseline: 23/23 PASS (perf020 20977us worst, basis 7EFA98FA).
+- Untracked leftovers from the OpenCode session left untouched (audit_012*,
+  012_*.patch) - active WIP of that workspace.
