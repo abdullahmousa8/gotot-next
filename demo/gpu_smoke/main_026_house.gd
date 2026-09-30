@@ -71,7 +71,6 @@ func _ready() -> void:
 		elif a.begins_with("--shot="):
 			shot_file = a.split("=")[1]
 	_setup()
-
 func _setup() -> void:
 	server = GneRenderServer.get_server_singleton()
 	if server == null:
@@ -114,6 +113,15 @@ func _setup() -> void:
 			_fail(2607, "specular " + str(i)); return
 	if not server.gpu_material_set_light(LIGHT_HOUSE):
 		_fail(2608, "set_light"); return
+	if OS.get_cmdline_user_args().has("--unlitlight"):
+		if not server.gpu_material_set_light(Vector3(0, -1, 0)):
+			_fail(2619, "set_light unlit"); return
+		print("GNE 026-pre: unlit protocol (sun straight down, ambient floor)")
+	# A/B isolation protocol flags (dormant unless passed; documented):
+	# --dump : print the readback as hex rows (GNEDUMP/GNEROW) for diffing.
+	# --unlitlight : point the instrument sun straight down so every
+	#   camera-facing normal reads ndl=0 (with black specular the frame is
+	#   exactly 0.1xALBEDO - the GNE ambient floor for unlit comparison).
 	camera = $Camera
 	display = $Overlay/Display
 	camera.global_position = CAM_POS
@@ -121,6 +129,7 @@ func _setup() -> void:
 	camera.near = 300.0
 	camera.far = 6200.0
 	var vp_size: Vector2 = get_viewport().get_visible_rect().size
+	print("GNE 026-pre: viewport=", vp_size)
 	server.gpu_scene_set_viewport(vp_size.x, vp_size.y)
 	server.gpu_scene_set_camera(camera.get_global_transform(), camera.get_camera_projection())
 	print("GNE 026-pre: house ready parts=", parts.size())
@@ -204,6 +213,16 @@ func _measure() -> void:
 		print("GNE 026-pre: shot saved")
 	var m := _metric(pix_a)
 	print("GNE 026-pre: BASELINE contrast=%.6f variance=%.9f edge=%.6f" % [m[0], m[1], m[2]])
+	if OS.get_cmdline_user_args().has("--dump"):
+		print("GNEDUMP: begin ", RASTER_W, "x", RASTER_H)
+		for y in range(RASTER_H):
+			var sb := ""
+			var base := y * RASTER_W * 4
+			for x in range(RASTER_W):
+				var o := base + x * 4
+				sb += "%02x%02x%02x" % [pix_a[o], pix_a[o + 1], pix_a[o + 2]]
+			print("GNEROW:" + sb)
+		print("GNEDUMP: end")
 	var sig := "v26pre|contrast=%.6f|variance=%.9f|edge=%.6f|det=1|d1" % [m[0], m[1], m[2]]
 	print("GNE 026-pre: sig=", sig)
 	print("sig d1: \"" + sig + "\"")
