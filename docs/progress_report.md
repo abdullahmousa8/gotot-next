@@ -1665,3 +1665,26 @@ history, so they land here as §68/§69 with the mapping recorded.)
   in-process and d1/d2, temporal-OFF agrees (report-only), control [6,6].
 - Sig: v12hzb|p1=6|p2=0|cullpm=1000|det=1|d1. Status: row wired, FORMAL 25/25
   PASS verdict pending owner shell (this shell cannot pass artifact scans).
+
+## 70. GNE-026-pre IMPLEMENTED - house scene + metric + baseline (2026-10-01)
+
+- main_026_house.gd/.tscn: 9 procedural parts via gpu_mesh_create_from_arrays
+  (ground, path, body, 2 roof slopes, 2 gables, back wall, chimney), baked
+  local coords, identity instance transforms, LIGHT_HOUSE=(0.5,1,0.5)
+  instrument sun, fixed camera (0,300,1500). No external assets.
+- Metric (in-scene, existing readbacks only): contrast=std/mean,
+  variance=mean per-pixel channel variance, edge=gradient fraction at
+  pre-registered EDGE_T=0.1. d1/d2 byte-identical:
+  contrast=1.857549 variance=0.002933922 edge=0.000654, det=1, exit 0.
+  Sig: v26pre|contrast=1.857549|variance=0.002933922|edge=0.000654|det=1|d1.
+- Two findings, both measured: (1) default batch strategy breaks
+  gpu_material_draw - set_batch_strategy(0) REQUIRED (one-line fix).
+  (2) LIGHT_CANON (-0.5,-1,-0.5) lights bottom-facing surfaces: an outdoor
+  scene under it renders at ambient (~0.07, 0.09% pixels > 0.1); above-front
+  sun renders the house (24% > 0.1). Emissive-probe proved geometry first
+  (ASCII luminance map), then the light flip proved the mechanism. Outdoor
+  scenes must not blindly reuse LIGHT_CANON.
+- Diagnostic scaffolding (--vizmap ASCII map, --emissive probe) removed after
+  use; --shot kept (018 pattern, for owner-shell visual checks).
+- Ready for 0.26a: YES (scene + metric + baseline approved scope complete;
+  no visual features added, no C++, no new APIs).
