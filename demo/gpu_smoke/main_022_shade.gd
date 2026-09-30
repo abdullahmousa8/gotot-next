@@ -222,6 +222,10 @@ func _analyze(pix_off: PackedByteArray, pix_on: PackedByteArray) -> void:
 	var fr := _window_delta(pix_on, pix_off, fp_px, 2)
 	var rt := nr / maxf(fr, 1e-6)
 	print("SHADE: witness near_px=", np_px, " near=", nr, " | far_px=", fp_px, " far=", fr, " | ratio=", rt)
+	# Cull-stream contract: dump cluster ids for one spot and one point column.
+	# The spot column is the one that exercises the cone branch the split touches.
+	_dump_cluster_ids("spot", Vector3(300.0, 150.0, 820.0))
+	_dump_cluster_ids("point", Vector3(0.0, 55.0, 0.0))
 	var sig := "v22shade|nr=%.4f|fr=%.5f|rt=%.2f|s=0.03|clip=%d|d1" % [nr, fr, rt, clip]
 	print("SHADE: sig=" + sig)
 	if sig_file != "":
@@ -293,3 +297,35 @@ func _show(pixels: PackedByteArray) -> void:
 func _fail(code: int, msg: String) -> void:
 	print("SHADE: FAIL code=", code, " ", msg)
 	get_tree().quit(code)
+
+# GNE-021 cull-stream contract (2026-09-30): dump the light ids the cull actually
+# stored, per depth slice, for the column a spot light projects into. The point
+# light scene (main_019_cluster_overflow) already does this, but it only creates
+# point lights, so the cone branch of the cull had no id-level observable at all.
+# Splitting the cull stream would have changed cone handling with nothing able to
+# see it. This closes that before the split, not after.
+#
+# c[0] is the uncapped atomicAdd count; the ids follow from index 1. The sig line
+# and every printed measurement are left untouched, so this adds an observation
+# without changing any existing assertion.
+func _dump_cluster_ids(tag: String, world: Vector3) -> void:
+	var vp: PackedFloat32Array = server.gpu_scene_get_vp()
+	var cands: Array = _proj(world, vp)
+	var px: Vector2 = _first_in_bounds(cands)
+	if px.x < 0.0:
+		print("SHADE: CLUSTER_IDS ", tag, " OFFSCREEN")
+		return
+	var tx := int(px.x) / (RASTER_W / 16)
+	var ty := int(px.y) / (RASTER_H / 9)
+	var parts: Array = []
+	for tz in 24:
+		var c: PackedInt32Array = server.gpu_light_debug_cluster(tx, ty, tz)
+		if c.size() > 1 and c[0] > 0:
+			var ids: Array = []
+			for i in range(1, c.size()):
+				ids.append(c[i])
+			parts.append("t%d(n=%d):%s" % [tz, c[0], str(ids)])
+	if parts.is_empty():
+		print("SHADE: CLUSTER_IDS ", tag, " tile ", tx, "/", ty, " EMPTY")
+		return
+	print("SHADE: CLUSTER_IDS ", tag, " tile ", tx, "/", ty, " ", str(parts))

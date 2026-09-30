@@ -1424,6 +1424,24 @@ layout(std430, set = 0, binding = 6) buffer ConeBuffer {
 }
 conebuf;
 
+// GNE-021: cull-only light stream. 3 vec4 per light.
+//   [0] = (pos.xyz, range)  - read unconditionally below
+//   [1] = (dir.xyz, type)   - read only in the spot branch
+//   [2] = (cone_inner, cone_outer, 0, 0) - read only in the spot branch
+// The cull pass streams this for every light in every cluster, so the point-light
+// path now touches 16 B per light instead of the 64 B GneLight record. The
+// fragment pass still reads light_buffer unchanged.
+// GNE-021 cull stream. Read order is deliberate: vec4 [0] carries position and
+// range and is fetched once per light, then the cone vec4s are fetched only
+// after a hit and only for spot lights. Anything added here must not widen the
+// unconditional read, or the bandwidth point of the split is lost.
+// Verified by main_022_shade's CLUSTER_IDS dump, which must stay byte-identical
+// to the pre-split baseline for both a spot column and a point column.
+layout(std430, set = 0, binding = 7) buffer LightCullBuffer {
+	vec4 recs[];
+}
+cullbuf;
+
 layout(std140, set = 0, binding = 5) uniform ViewBlock {
 	mat4 vp;
 	mat4 view;
@@ -1477,13 +1495,13 @@ void main() {
 	bool rev_cullable = (params.rev.x > 0.5) && (rev_cone.w > 0.1);
 	float rev_sin = rev_cullable ? sqrt(max(0.0, 1.0 - rev_cone.w * rev_cone.w)) : 0.0;
 	for (uint i = 0u; i < nlights; i++) {
-		vec4 L0 = lightbuf.lights[i * 4u + 0u];
-		vec4 L1 = lightbuf.lights[i * 4u + 1u];
-		vec4 L2 = lightbuf.lights[i * 4u + 2u];
-		vec4 L3 = lightbuf.lights[i * 4u + 3u];
-		vec3 vw = (viewdata.view * vec4(L0.xyz, 1.0)).xyz;
+		// GNE-021: read the cull stream, not lightbuf. One vec4 covers position
+		// and range, which is all the point-light path needs. The cone vec4s are
+		// fetched only for spot lights, inside the branch that uses them.
+		vec4 C0 = cullbuf.recs[i * 3u + 0u];
+		vec3 vw = (viewdata.view * vec4(C0.xyz, 1.0)).xyz;
 		vec3 vc = vec3(vw.xy, -vw.z);
-		float rr = L0.w;
+		float rr = C0.w;
 		if (rev_cullable) {
 			// Skip lights the whole cluster faces away from (conservative: only when
 			// even the best-aligned normal direction is behind the light).
@@ -1492,17 +1510,23 @@ void main() {
 			}
 		}
 		bool hit = sphere_vs_aabb(vc, rr, bmin, bmax);
-		if (hit && L2.w > 0.5) {
-			// Spot: cone test around the spot axis (view space).
-			vec3 sd = normalize((viewdata.view * vec4(L2.xyz, 0.0)).xyz);
-			sd = vec3(sd.xy, -sd.z);
-			vec3 bc = (bmin + bmax) * 0.5;
-			vec3 to_b = bc - vc;
-			float dist = max(length(to_b), 1e-4);
-			float ang = acos(clamp(dot(to_b / dist, sd), -1.0, 1.0));
-			float outer = L3.y;
-			float margin = asin(clamp(rr / dist, 0.0, 1.0));
-			hit = ang <= outer + margin;
+		if (hit) {
+			// GNE-021: type and cone arrive only now, so a point light never
+			// pays for them. Previously L2/L3 were fetched for every light.
+			vec4 C1 = cullbuf.recs[i * 3u + 1u];
+			if (C1.w > 0.5) {
+				vec4 C2 = cullbuf.recs[i * 3u + 2u];
+				// Spot: cone test around the spot axis (view space).
+				vec3 sd = normalize((viewdata.view * vec4(C1.xyz, 0.0)).xyz);
+				sd = vec3(sd.xy, -sd.z);
+				vec3 bc = (bmin + bmax) * 0.5;
+				vec3 to_b = bc - vc;
+				float dist = max(length(to_b), 1e-4);
+				float ang = acos(clamp(dot(to_b / dist, sd), -1.0, 1.0));
+				float outer = C2.y;
+				float margin = asin(clamp(rr / dist, 0.0, 1.0));
+				hit = ang <= outer + margin;
+			}
 		}
 		if (hit) {
 			uint slot = atomicAdd(clcnt.cnt[tid], 1u);
@@ -3239,10 +3263,14 @@ void GneRenderServer::_destroy_mesh() {
 			rendering_device->free_rid(mat_light_shader);
 			mat_light_shader = RID();
 		}
-		if (light_buffer.is_valid()) {
-			rendering_device->free_rid(light_buffer);
-			light_buffer = RID();
-		}
+	if (light_buffer.is_valid()) {
+		rendering_device->free_rid(light_buffer);
+		light_buffer = RID();
+	}
+	if (light_cull_buffer.is_valid()) {
+		rendering_device->free_rid(light_cull_buffer);
+		light_cull_buffer = RID();
+	}
 		if (cluster_offset_buffer.is_valid()) {
 			rendering_device->free_rid(cluster_offset_buffer);
 			cluster_offset_buffer = RID();
@@ -7191,6 +7219,30 @@ bool GneRenderServer::_light_read_params(const Dictionary &p_params, GneLight &r
 	return true;
 }
 
+// GNE-021: pack one light into the cull-only stream. Layout is 3 vec4 per light:
+//   [0] = (pos.xyz, range)               read unconditionally by the cull
+//   [1] = (dir.xyz, type)                 read only inside the spot branch
+//   [2] = (cone_inner, cone_outer, 0, 0) read only inside the spot branch
+// The point-light path therefore touches 16 B instead of the 64 B GneLight
+// record. Color and intensity are deliberately absent: the cull never reads
+// them, which is also why gpu_light_set_intensity does not touch this buffer.
+void GneRenderServer::_light_pack_cull(int p_id, const GneLight &p_light) {
+	float rec[12];
+	rec[0] = p_light.pos[0];
+	rec[1] = p_light.pos[1];
+	rec[2] = p_light.pos[2];
+	rec[3] = p_light.range;
+	rec[4] = p_light.dir[0];
+	rec[5] = p_light.dir[1];
+	rec[6] = p_light.dir[2];
+	rec[7] = p_light.type;
+	rec[8] = p_light.cone_inner;
+	rec[9] = p_light.cone_outer;
+	rec[10] = 0.0f;
+	rec[11] = 0.0f;
+	rendering_device->buffer_update(light_cull_buffer, (uint32_t)(p_id * 48), 48, rec);
+}
+
 int GneRenderServer::gpu_light_create(const Dictionary &p_params) {
 // GNE-018-rev: measurement-only override (unset in every gate) - lets the
 // gated scenes run with the rev flag for A/B candidate-count measurements.
@@ -7207,6 +7259,8 @@ if (!light_cone_env_checked) {
 	}
 	if (!gpu_light_valid) {
 		light_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_LIGHT_MAX * 64));
+		// GNE-021: cull-only stream, 3 vec4 per light. See the header comment.
+		light_cull_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_LIGHT_MAX * 48));
 		cluster_offset_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 4));
 		cluster_count_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 4));
 		cluster_index_buffer = rendering_device->storage_buffer_create(
@@ -7216,7 +7270,7 @@ if (!light_cone_env_checked) {
 			// GNE-018-rev: cluster normal-cone records (3456 x vec4). Zero-filled =
 			// the "never cull" sentinel default; the cone pass will rewrite per frame.
 			cluster_cone_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 16));
-		if (light_buffer.is_null() || cluster_offset_buffer.is_null()
+		if (light_buffer.is_null() || light_cull_buffer.is_null() || cluster_offset_buffer.is_null()
 				|| cluster_count_buffer.is_null() || cluster_index_buffer.is_null()
 				|| light_overflow_buffer.is_null() || cluster_cone_buffer.is_null()) {
 			print_error("[GNE] gpu_light_create: buffer_create failed.");
@@ -7257,6 +7311,7 @@ if (!light_cone_env_checked) {
 	int id = light_count;
 	light_cpu[id] = rec;
 	rendering_device->buffer_update(light_buffer, (uint32_t)(id * 64), 64, &light_cpu[id]);
+	_light_pack_cull(id, rec);
 	light_count++;
 	return id;
 }
@@ -7276,6 +7331,7 @@ bool GneRenderServer::gpu_light_update(int p_id, const Dictionary &p_params) {
 	}
 	light_cpu[p_id] = rec;
 	rendering_device->buffer_update(light_buffer, (uint32_t)(p_id * 64), 64, &light_cpu[p_id]);
+	_light_pack_cull(p_id, rec);
 	return true;
 }
 
@@ -7290,6 +7346,7 @@ bool GneRenderServer::gpu_light_destroy(int p_id) {
 	}
 	memset(&light_cpu[p_id], 0, sizeof(GneLight));
 	rendering_device->buffer_update(light_buffer, (uint32_t)(p_id * 64), 64, &light_cpu[p_id]);
+	_light_pack_cull(p_id, light_cpu[p_id]);
 	return true;
 }
 
@@ -7430,11 +7487,12 @@ bool GneRenderServer::_light_ensure_geo() {
 	}
 	light_cull_pipeline = rendering_device->compute_pipeline_create(light_cull_shader);
 	Vector<RD::Uniform> cu;
-	const RID cbufs[7] = {
+	const RID cbufs[8] = {
 		light_buffer, cluster_offset_buffer, cluster_count_buffer,
-		cluster_index_buffer, light_overflow_buffer, view_ubo, cluster_cone_buffer
+		cluster_index_buffer, light_overflow_buffer, view_ubo, cluster_cone_buffer,
+		light_cull_buffer
 	};
-	for (uint32_t b = 0; b < 7; b++) {
+	for (uint32_t b = 0; b < 8; b++) {
 		RD::Uniform u;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 		u.binding = b;

@@ -234,6 +234,23 @@ bool gne_present_lowres = false;
 	bool gpu_light_valid = false;
 	GneLight light_cpu[GNE_LIGHT_MAX];
 	RID light_buffer;          // GneLight[1024] (65536 B)
+	// GNE-021: cull-only stream. The cull pass streams every light for every one
+	// of the 3456 clusters but only needs pos+range, and — for spot lights only —
+	// dir, type and the cone angles. It never reads color, intensity or
+	// cone_inner. So the cull reads this 3-vec4 record instead of the 4-vec4
+	// GneLight: 16 B fetched per point light instead of 64 B.
+	// light_buffer stays exactly as it is for the fragment loop, which uses all
+	// four vec4s — splitting the cull away from shading is the point, converting
+	// the whole store to SoA would have hurt the fragment loop.
+	//
+	// gpu_light_set_intensity deliberately does NOT touch this buffer: the cull
+	// never reads intensity, so a single-float intensity write can no longer
+	// dirty the stream the cull walks for all 3456 clusters. Anyone adding a
+	// cull-visible field must add it here and to _light_pack_cull, and must
+	// check whether the three full-record write sites are enough or whether the
+	// partial intensity write also has to call _light_pack_cull.
+	RID light_cull_buffer;     // vec4[3*1024] = (pos,range) (dir,type) (inner,outer)
+	void _light_pack_cull(int p_id, const GneLight &p_light);
 	RID cluster_offset_buffer; // uint[3456] flat-list offsets
 	RID cluster_count_buffer;  // uint[3456] per-cluster counts
 	RID cluster_index_buffer;  // uint[3456*16] flat sorted light ids

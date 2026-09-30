@@ -361,16 +361,23 @@ $basisExe = if ($p020base.ContainsKey('exe_sha256')) { $p020base['exe_sha256'].T
 $basisOk = ($basisExe -ne '') -and ($exeNow -eq $basisExe)
 if ($avgAll.Count -gt 0) {
   $w020 = ($avgAll | Measure-Object -Maximum).Maximum
+  # The thresholds come from the basis file, not from constants here. They used
+  # to be hardcoded in this script while the file ALSO listed them, which meant
+  # the file looked authoritative and was not: re-baselining updated the file and
+  # left the gate judging against the old numbers. One source of truth, or the
+  # file is a lie.
+  $fail020 = if ($p020base.ContainsKey('fail_us')) { [int]$p020base['fail_us'] } else { 40000 }
+  $warn020 = if ($p020base.ContainsKey('warn_us')) { [int]$p020base['warn_us'] } else { 46000 }
   # WARN is a severity label INSIDE failure, not a pass. The first cut tested
   # -ne 'FAIL' on a chain that marked >40000 as FAIL, so 110977 - the exact
   # contaminated-host value used above to justify the ceiling - landed on WARN
   # and passed the build silently. Ordering the elseif the other way is the
   # only reading consistent with the rationale above.
-  $p020 = if ($w020 -gt 46000) { 'WARN' } elseif ($w020 -gt 40000) { 'FAIL' } else { 'PASS' }
+  $p020 = if ($w020 -gt $warn020) { 'WARN' } elseif ($w020 -gt $fail020) { 'FAIL' } else { 'PASS' }
   if (-not $basisOk) {
     Record 'perf020' $false ('STALE BASIS: threshold was measured on exe=' + $(if ($basisExe) { $basisExe.Substring(0, 12) } else { '<none recorded>' }) + ' but this binary is ' + $(if ($exeNow) { $exeNow.Substring(0, 12) } else { 'missing' }) + '. The reading ' + $w020 + 'us is NOT comparable - re-measure and rewrite tools/perf020_baseline.txt. Do not widen the threshold.')
   } else {
-    Record 'perf020' ($p020 -eq 'PASS') ($w020.ToString() + 'us worst of ' + $avgAll.Count + ' [FAIL>40000 WARN>46000, basis exe=' + $exeNow.Substring(0, 12) + ']')
+    Record 'perf020' ($p020 -eq 'PASS') ($w020.ToString() + 'us worst of ' + $avgAll.Count + ' [FAIL>' + $fail020 + ' WARN>' + $warn020 + ', basis exe=' + $exeNow.Substring(0, 12) + ']')
   }
 } else {
   Record 'perf020' $false 'no wall_avg_us in gt_020a.log'

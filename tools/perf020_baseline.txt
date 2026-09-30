@@ -9,13 +9,23 @@
 # runs, confirm none of them clip or drift, then rewrite exe_sha256 AND the two
 # thresholds together. Never widen a threshold to make a run pass.
 #
-# Original basis (2026-09-30): 10 samples, 5 runs x 2 passes, quiet host.
-# min 26703, median 28846, mean 28873, max 30679 us - a 1.15x spread.
-# FAIL sits 1.30x above that max. The 31 pre-gate history samples were REJECTED
-# as a basis: they spread 6.9x and are left-skewed.
+# RE-BASELINED 2026-09-30 for the GNE-021 cull-stream split.
+# New binary F2E5F3DF2253. 12 samples, 6 runs x 2 passes, quiet host:
+#   min 17449  median 17838  mean 17774  max 18105  spread 1.038x
+# fail = 1.32x over that max, the same rule used for the previous basis.
 #
-# The 31 historical samples are deliberately not the basis. See the contract.
+# IMPORTANT - this number is NOT evidence that the cull split made the scene
+# faster. The pre-split series was already falling across this session:
+# 29734, 27168, 21207, 18402, 18282, 18166, 17844 -> ~17800 before any change.
+# The scene had settled below the old 40000 ceiling on its own. The split's
+# effect is UNPROVEN and this harness cannot measure it: GPU timestamps are
+# unavailable (max_timestamp_query_elements unset, gpu_last_ns always 0), so
+# every figure here is CPU-side wall time with back-pressure mixed in.
+#
+# The old basis (exe 49F4EFCEBC90, max 30679, fail 40000) is superseded, not
+# widened. Its rows remain in verify_history.tsv as history; the STALE BASIS
+# check is what stops them being judged against this binary.
 
-exe_sha256 = 49F4EFCEBC90DB6BB811BCCD173B1FC2B89D99E6258B9353126B9927622A036A
-fail_us = 40000
-warn_us = 46000
+exe_sha256 = F2E5F3DF225340BE8C0A185AB633613E36CA043EE5EC6174ADA43D6F0D43DD61
+fail_us = 24000
+warn_us = 28000
