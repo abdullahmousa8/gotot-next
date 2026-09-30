@@ -1481,10 +1481,17 @@ void main() {
 	}
 	// NDC -> tile indices, rounding OUTWARD so the rect is never inside the true
 	// footprint, then clamped to the 16x9 grid.
-	// DIAGNOSTIC EXPERIMENT (not a fix): widen by one tile on every side. If the
-	// remaining sig deltas vanish, the projected rect is marginally too tight and
-	// the projection is the suspect. If they persist, the bug is elsewhere and the
-	// widening must be reverted rather than kept.
+	// ONE-TILE MARGIN, and its cause is NOT yet understood. Without it, gt_021a's
+	// sig came back v21|lc=256|of=36096|sl=38605|on=38419 against the expected
+	// of=36097|sl=38620|on=38434 - exactly 15 assignments lost in one cluster, one
+	// overflow lost with it. Widening by one tile on every side restored the sig
+	// byte-for-byte. A superset construction should not need any margin, so
+	// either the projection is subtly off at the rect edge or the cluster box is
+	// wider than its tile at near depths (bmin.x is evaluated at z1 while the box
+	// spans bz0..z1, so at bz0 the same world x maps to a larger NDC). I have not
+	// proved which, so this is recorded as an unexplained margin rather than
+	// dressed up as a correctness fix. Tracked as an open question; it must not be
+	// narrowed away without an explanation.
 	float tx0 = clamp(floor((minx * 0.5 + 0.5) * 16.0) - 1.0, 0.0, 15.0);
 	float tx1 = clamp(ceil((maxx * 0.5 + 0.5) * 16.0) + 1.0, 0.0, 15.0);
 	float ty0 = clamp(floor((miny * 0.5 + 0.5) * 9.0) - 1.0, 0.0, 8.0);
