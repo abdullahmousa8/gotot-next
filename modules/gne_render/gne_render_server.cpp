@@ -9262,11 +9262,14 @@ draw_frame_seq++;
 	cp.rev[1] = 0.0f;
 	cp.rev[2] = 0.0f;
 	cp.rev[3] = 0.0f;
-	_run_compute_pass(light_cull_pipeline, light_cull_uniform_set, &cp, sizeof(cp), 54, 1, 1);
-	// GNE-021: bounds pass, one thread per light, dispatched before the cull so
-	// the cull reads a rect written this frame rather than last frame's. Uses the
-	// same tanv/aspect the cull's own cluster math uses, taken from the same
-	// push params, so the two cannot disagree about the projection.
+	// GNE-021: bounds pass FIRST, one thread per light, so the cull below reads a
+	// rect written THIS frame. It was previously dispatched after the cull while
+	// its comment claimed "before", so the cull read the previous frame's rect —
+	// or uninitialised memory on the first frame. The cluster-id contract caught
+	// it immediately: frustum_cull lost membership (1=1 became 1=0),
+	// cluster_overflow's overflow collapsed 2404 -> 2, and mat_v2_x1's diff_px
+	// went 0 -> 243. Same tanv/aspect as the cull's own math, from the same
+	// values, so the two cannot disagree about the projection.
 	{
 		struct BoundsPush {
 			uint32_t light_count;
@@ -9282,6 +9285,7 @@ draw_frame_seq++;
 		uint32_t bgroups = (uint32_t)(((light_count - 1) / 64) + 1);
 		_run_compute_pass(light_bounds_pipeline, light_bounds_uniform_set, &bp, sizeof(bp), bgroups, 1, 1);
 	}
+	_run_compute_pass(light_cull_pipeline, light_cull_uniform_set, &cp, sizeof(cp), 54, 1, 1);
 	int cone_age = draw_frame_seq - cone_src_frame;
 	cone_age_last = cone_age;
 	if (cone_age > cone_age_max) {
