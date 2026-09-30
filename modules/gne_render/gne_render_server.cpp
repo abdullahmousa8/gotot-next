@@ -2053,33 +2053,38 @@ void main() {
 		vec2 t_xz = fract(vec2(v_world.x, v_world.z) * m2b.xy);
 		vec2 t_xy = fract(vec2(v_world.x, v_world.y) * m2b.xy);
 		if (m2a.x >= 0.0 && m2a.x <= 4.0) {
+			// GNE-016.6: the `if (tia < 8)` guard that used to wrap this body was
+			// ALWAYS TRUE and has been removed. For tia >= 8 you would need
+			// m2a.x >= 7.5, which the outer test above forbids. It was dead logic,
+			// not a guard - and it was NOT what excluded channels 5..7. THIS RANGE
+			// TEST is the adopted contract bound (contract_016_5) and is unchanged.
+			// If you are here deciding whether to widen it: do not read that as a
+			// debt being paid. Widening to 0..7 changes how EVERY material renders
+			// and needs its own numeric AND visual contract - see
+			// contract_016_6_channel_guard.md section 4, option (b), rejected.
 			int tia = int(m2a.x + 0.5);
-			if (tia < 8) {
-				vec3 ca = texture(tex_arr[tia], t_yz).rgb * aw.x + texture(tex_arr[tia], t_xz).rgb * aw.y + texture(tex_arr[tia], t_xy).rgb * aw.z;
-				alb = albedo * ca;
-			}
+			vec3 ca = texture(tex_arr[tia], t_yz).rgb * aw.x + texture(tex_arr[tia], t_xz).rgb * aw.y + texture(tex_arr[tia], t_xy).rgb * aw.z;
+			alb = albedo * ca;
 		}
 		if (m2a.y >= 0.0 && m2a.y <= 4.0) {
+			// GNE-016.6: dead `tir < 8` removed, always true. See the tia note above.
 			int tir = int(m2a.y + 0.5);
-			if (tir < 8) {
-				float cr = texture(tex_arr[tir], t_yz).r * aw.x + texture(tex_arr[tir], t_xz).r * aw.y + texture(tex_arr[tir], t_xy).r * aw.z;
-				rough = clamp(rough * cr, 0.0, 1.0);
-			}
+			float cr = texture(tex_arr[tir], t_yz).r * aw.x + texture(tex_arr[tir], t_xz).r * aw.y + texture(tex_arr[tir], t_xy).r * aw.z;
+			rough = clamp(rough * cr, 0.0, 1.0);
 		}
 		if (m2a.z >= 0.0 && m2a.z <= 4.0) {
+			// GNE-016.6: dead `tin < 8` removed, always true. See the tia note above.
 			int tin = int(m2a.z + 0.5);
-			if (tin < 8) {
-				vec3 nm = (texture(tex_arr[tin], t_yz).rgb * aw.x + texture(tex_arr[tin], t_xz).rgb * aw.y + texture(tex_arr[tin], t_xy).rgb * aw.z) * 2.0 - 1.0;
-				vec3 an2 = abs(N);
-				if (an2.x >= an2.y && an2.x >= an2.z) {
-					N = normalize(N + vec3(0.0, nm.y, nm.z) * 0.6);
-				} else if (an2.y >= an2.x && an2.y >= an2.z) {
-					N = normalize(N + vec3(nm.x, 0.0, nm.z) * 0.6);
-				} else {
-					N = normalize(N + vec3(nm.x, nm.y, 0.0) * 0.6);
-				}
-				out_normal = vec4(N, 0.0);
+			vec3 nm = (texture(tex_arr[tin], t_yz).rgb * aw.x + texture(tex_arr[tin], t_xz).rgb * aw.y + texture(tex_arr[tin], t_xy).rgb * aw.z) * 2.0 - 1.0;
+			vec3 an2 = abs(N);
+			if (an2.x >= an2.y && an2.x >= an2.z) {
+				N = normalize(N + vec3(0.0, nm.y, nm.z) * 0.6);
+			} else if (an2.y >= an2.x && an2.y >= an2.z) {
+				N = normalize(N + vec3(nm.x, 0.0, nm.z) * 0.6);
+			} else {
+				N = normalize(N + vec3(nm.x, nm.y, 0.0) * 0.6);
 			}
+			out_normal = vec4(N, 0.0);
 		}
 	}
 	vec3 L = params.light_dir_ambient.xyz;

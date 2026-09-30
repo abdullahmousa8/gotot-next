@@ -1,7 +1,7 @@
-# Contract 016.5 — channel array bounds
+﻿# Contract 016.5 â€” channel array bounds
 
 **Status:** behaviour MEASURED. Bound `0..4` **ADOPTED as the official contract**
-(owner decision, 2026-09-29). Dead `tia < 8` remains DEFERRED technical debt.
+(owner decision, 2026-09-29). The dead `tia < 8` guards were RESOLVED on 2026-09-30 - see contract_016_6_channel_guard.md. They were dead logic filed here as "deferred technical debt", which mis-filed them: dead code is not a debt, and filing it as one invites someone to "fix" it by widening the bound, which would be a feature change, not a fix. Corrected in 016_6; the adopted bound 0..4 below is UNCHANGED.
 **Date:** 2026-09-29. **Method:** measurement (Y2 payload probe), not inference.
 
 ## The effective contract, as measured
@@ -11,16 +11,16 @@ Material channels sample array positions **0..4** out of a texture array that is
 and are then **never sampled**. The skip is **silent**: the frame is
 byte-identical to the all-slots-unset baseline (`diff_px = 0`, `max_lsb = 0`).
 
-## Two independent axes — do not conflate
+## Two independent axes â€” do not conflate
 
 | Constant | Value | Governs | Enforced at |
 |---|---|---|---|
 | `GNE_MAT_TEX_SLOTS` | 5 | the **material** tex slot (`p_slot` in `gpu_texture_bind`) | validated, `gne_render_server.cpp:7084` |
-| `m2a.X <= 4.0` | 4 | the **array position** a channel samples (`tex_arr[tia]`) | shader guard, `cpp:1842 / 1849 / 1856` |
+| `m2a.X <= 4.0` | 4 | the **array position** a channel samples (`tex_arr[tia]`) | shader guard, `cpp:2055 / 2062 / 2069` |
 
 `gpu_texture_bind` derives the array position as `p_tex % GNE_TEX_ARRAY`
 (`GNE_TEX_ARRAY = 8`, `cpp:7089`), so positions 0..7 are all reachable. Passing
-`p_slot >= 5` is rejected outright — that is the *material slot* bound, and it is
+`p_slot >= 5` is rejected outright â€” that is the *material slot* bound, and it is
 not what limits channels.
 
 `gpu_material_set_maps` validates **only** `p_mat` (`cpp:6831`); the slot integer
@@ -57,7 +57,7 @@ is there".
 `tia < 8` / `tir < 8` / `tin < 8` are **unreachable-false**: the outer
 `m2a.X >= 0.0 && m2a.X <= 4.0` already forces the index into {0..4}, so the inner
 bound is always true when reached. Note this is the **opposite** of a guard that
-permits 8 positions — it never admits five.
+permits 8 positions â€” it never admits five.
 
 ## Intent: undetermined (do not read intent into the above)
 
@@ -79,15 +79,15 @@ access to the isolated positions and states the real processing limit for
 developers.
 
 **Scope of the decision:** this settles the *bound*, and nothing else. It does
-not authorise a shader edit, and it does not resolve the dead `tia < 8`, which
-stays registered as deferred technical debt for a future shader review. The
+and it did not resolve the dead `tia < 8` guards, which this document then
+carried as "deferred technical debt" — a mis-filing, since dead logic is not a
 alternatives recorded below (widen to 8) remain reachable only via a new
-requirement, and would then need their own measurement — the evidence here
+requirement, and would then need their own measurement â€” the evidence here
 describes the current code, not a claim about what the code ought to be.
 
 ## Scope
 
-Covers the channel→array bound only. Does not cover: `p_tex >= 8` (where
+Covers the channelâ†’array bound only. Does not cover: `p_tex >= 8` (where
 `p_tex % 8` silently wraps), seam stitching, or per-material slot capacity
 (`GNE_MAT_TEX_SLOTS`).
 
