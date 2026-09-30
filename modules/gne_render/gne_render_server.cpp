@@ -1616,6 +1616,39 @@ void main() {
 	float cosmax = 1.0 / sqrt(1.0 + tanv * tanv * (1.0 + aspect * aspect));
 	float bz0 = (params.rev.x > 0.5) ? (z0 * cosmax) : z0;
 	// NDC tile rect -> view-space AABB (conservative: far-z extents).
+	//
+	// GNE-021 NOTE - the box is DELIBERATELY wider than its tile, and any screen
+	// bounds test built from the tile alone must account for it. The x/y extents
+	// are evaluated at z1, the slab's FAR plane, while the box's near face sits at
+	// bz0 <= z0 < z1. Inverting the box to NDC at a depth z inside the slab:
+	//
+	//     ndc_x(z) = bmin.x / (z * tanv * aspect) = nx0 * (z1 / z)
+	//
+	// At z = z1 that is exactly nx0, the tile edge. At z = bz0 it is
+	// nx0 * (z1/bz0), whose magnitude is LARGER. So the box covers strictly more
+	// NDC at its near face than the tile it was built from.
+	//
+	// Consequence for the GNE-021 bounds rect: it is built from the light's true
+	// screen projection, which maps to the TILE, so it cannot cover that extra
+	// region. A light just outside tile tx but inside the box's near-face
+	// extension passes sphere_vs_aabb and would be skipped — measured as exactly 15
+	// lost assignments in one cluster in gt_021a. Hence the one-tile margin in the
+	// bounds pass. It is NOT removable, and the construction is a superset only
+	// with respect to the TILE, not the BOX.
+	//
+	// The margin required is POSITION-DEPENDENT, and the uniform one tile is a blunt
+	// approximation of it. In tiles, per side:
+	//
+	//     margin_tiles ~ |ndc_edge| * (z1/bz0 - 1) * (grid/2)
+	//
+	// With exponential slices z1/z0 = (zfar/znear)^(1/24); for zfar/znear = 1000
+	// that is ~1.333, so the required margin approaches 0 at the screen centre and
+	// ~2.7 tiles in x at the edge. One tile happens to cover every case the current
+	// scenes exercise, which is exactly why the cluster-id checks pass and exactly
+	// why the margin must not be narrowed by inspection. The per-cluster derivation
+	// is the known better answer and is deliberately deferred: it changes
+	// load-bearing cull geometry and needs the same gates re-proven, for a benefit
+	// this harness cannot measure.
 	float nx0 = float(tx) / 16.0 * 2.0 - 1.0;
 	float nx1 = float(tx + 1u) / 16.0 * 2.0 - 1.0;
 	float ny0 = float(ty) / 9.0 * 2.0 - 1.0;

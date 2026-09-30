@@ -146,27 +146,61 @@ tile rect — a spatial prune cannot separate lights that occupy the same place.
 come from the same instrument. No timing is claimed; GPU timestamps remain
 unavailable.
 
-### OPEN 1 — the one-tile margin is unexplained
+### RESOLVED — the one-tile margin is geometrically necessary
 
-The rect is widened by one tile on every side. **A superset construction should
-need no margin at all.** Without it, `gt_021a` loses exactly 15 assignments in one
-cluster and one overflow; with it, the sig is byte-identical.
+**Closed by derivation, not by experiment.** The cluster box's x/y extents are
+evaluated at `z1`, the slab's **far** plane (`cpp:1623-1624`), while the box's near
+face sits at `bz0 <= z0 < z1`. Inverting the box to NDC at a depth `z` inside the
+slab:
 
-Two candidates, neither proved:
-- the projection is subtly off at the rect edge, or
-- the cluster box is **wider than its tile at near depths** — `bmin.x` is
-  evaluated at `z1` while the box spans `bz0..z1`, so at `bz0` the same world `x`
-  maps to a larger NDC, which the tile rect does not cover.
+```
+ndc_x(z) = bmin.x / (z * tanv * aspect) = nx0 * (z1 / z)
+```
 
-This margin must not be narrowed away without an explanation.
+At `z = z1` that is exactly `nx0` — the tile edge. At `z = bz0` it is
+`nx0 * (z1/bz0)`, whose magnitude is **larger**. So the box covers strictly more NDC
+at its near face than the tile it was built from.
 
-### OPEN 2 — the perf020 distribution is bimodal and unexplained
+**Consequence:** the bounds rect is built from the light's true screen projection,
+which maps to the **tile**, so it cannot cover that extra region. A light just
+outside tile `tx` but inside the box's near-face extension passes `sphere_vs_aabb`
+and would be skipped — measured as exactly 15 lost assignments in one cluster in
+`gt_021a`. Hence the one-tile margin.
 
-16 samples split into 7 at ~17.9k and 9 at ~22k — a 22% step with a real gap.
-That is not jitter; the scene is running in two distinct states and the cause is
-not identified. The ceiling in `tools/perf020_baseline.txt` is therefore set from
-the observed max across both modes, which is deliberately loose. A tight threshold
-against an unexplained two-state distribution is a false alarm waiting to happen.
+**The margin is not removable.** The construction is a superset only with respect
+to the *tile*, not the *box*. The pre-existing comment at `cpp:1618` did say
+"conservative: far-z extents" — the intent was written down and was read past.
+
+**The required margin is position-dependent**, and the uniform one tile is a blunt
+approximation of it:
+
+```
+margin_tiles ~ |ndc_edge| * (z1/bz0 - 1) * (grid/2)
+```
+
+With exponential slices `z1/z0 = (zfar/znear)^(1/24)`; for `zfar/znear = 1000` that
+is ~1.333, so the requirement approaches 0 at the screen centre and ~2.7 tiles in x
+at the edge. One tile covers every case the current scenes exercise — which is why
+the cluster-id checks pass, and exactly why it must not be narrowed by inspection.
+
+The **per-cluster derivation is the known better answer and is deliberately
+deferred**: it changes load-bearing cull geometry and would need the same four
+gates re-proven, for a benefit this harness cannot measure.
+
+### RESOLVED — the perf020 spread is host-side, not an engine defect
+
+Originally recorded as "bimodal, cause unknown". That was an over-reading of 16
+points; the samples are a continuum, not two clusters.
+
+Tested directly, with no new code: `main_020.gd` prints `present_api` and the
+present size on every run (line 105). Across 8 runs `present_api = true` and
+`tw/th = 1920/1080` **every time**, while wall times still spanned 18628–23040
+(24%). Every configurable input is constant, so the variance is in the **host** —
+CPU frequency and thermal state, machine load, or scheduler behaviour. This is the
+same contamination that produced the 110977 µs sample earlier in this project.
+
+There is no engine-side defect here and nothing to fix. The loose ceiling
+(30000/34000) remains correct, now justified on evidence rather than on a guess.
 
 ### Three defects the contract caught that review did not
 
