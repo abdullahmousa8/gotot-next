@@ -81,3 +81,47 @@ attachment exists today)
 - Visual quality subjectivity (compounded by the missing instrument - D11-6).
 - Regression risk (25-row belt must stay green; row 25 itself still awaits its
   first owner-shell verdict).
+
+## 11. Pre-conditions (REQUIRED - Architect AMEND 2026-10-01)
+
+### 11.1 Scene Definition (0.26-pre)
+- Country House scene missing (verified: no record in demo/ or docs/).
+- Must be created (procedural or glTF).
+- Stored: demo/gpu_smoke/main_026_house.gd + .tscn.
+- Must NOT use external assets (offline constraints).
+
+### 11.2 Visual Metric (D11-6 revised - no subjective scoring)
+- No subjective 5.9->7.0. Objective metrics from the framebuffer:
+  - Contrast ratio >= baseline + 10%.
+  - Color variance >= baseline + 15%.
+  - Edge density <= baseline x 1.2.
+- Measured from framebuffer (8-bit readback; HDR series available as
+  cross-evidence, FVD pattern).
+
+### 11.3 Existing APIs Audit (measured 2026-10-01 - full bind list read)
+- Scene/geometry: gpu_scene_create/dispatch, set_instance_transform/mesh,
+  gpu_mesh_create, gpu_mesh_create_from_arrays (PROCEDURAL path exists -
+  the house can be built with zero external assets), gpu_meshlet_load[_path].
+- Shading: gpu_material_create/set_albedo/set_specular/set_params/set_maps/
+  set_emissive, gpu_light_create/update/set_intensity (point+spot+cone),
+  gpu_texture_load/bind.
+- Readback: gpu_raster_read_pixels (8-bit), _hdr, _normal[_all], _depth,
+  _viewz[_all] - the metric tool needs NO new API.
+- Shadows: gpu_shadow_map_create/render_maps/light_bind, ESM flag; CSM only -
+  no screen-space contact-shadow path exists.
+- Post: NO bloom / tone-map / fullscreen-pass API exists. Finding: 0.26b
+  bloom+tonemap canNOT ride existing shaders without new C++ unless done
+  CPU-side (measurement-only, slow) - new-API justification is REQUIRED,
+  not optional, for the visual half of 0.26b. The audit therefore PARTIALLY
+  REFUTES the "post-process via existing shaders if possible" hope for
+  bloom/tonemap (sky-as-geometry and CSM contact darkening remain possible
+  without new APIs).
+- Verdict: NO new APIs needed for 0.26-pre (scene + metric) and 0.26a (fix);
+  0.26b needs a justified new-API proposal (Architect).
+
+### 11.4 Phase Split (binding order)
+- 0.26-pre: Scene + metric + audit. NOTHING else starts before its approval.
+- 0.26a: Scene fix.
+- 0.26b: Visual (needs the new-API justification from §11.3 first).
+- 0.26c: KI-019.
+- D11-1..D11-5 status: OPEN (recorded, not decided - no Architect answers yet).
