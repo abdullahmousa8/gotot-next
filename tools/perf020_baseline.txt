@@ -30,6 +30,6 @@
 # margin is what keeps host variance from becoming a false alarm, so it must not be
 # narrowed on the strength of one quiet batch.
 
-exe_sha256 = 26F906AFA511C05595289600992813A08B6921A3A0E53E6B950D9F5E0845ECAC
-fail_us = 33000
-warn_us = 37000
+exe_sha256 = CED5166375E9406568E6A61A72C31EFD69F5C624F9F49353B730E2A76C8D2191
+fail_us = 30000
+warn_us = 34000

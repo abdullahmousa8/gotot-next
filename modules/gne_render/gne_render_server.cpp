@@ -97,7 +97,12 @@ const char *gpu_cull_compute_glsl = R"(
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(push_constant, std430) uniform CullParams {
+// GNE-021/L35: was CullParams. Three shaders in this file declared that exact
+// name with three different layouts, so a reader who assumed one had assumed the
+// other two. Renamed per the L35 binding condition, which fired on the GNE-021
+// commits that edited this file. The `Shadow` prefix on a fourth block
+// (ShadowCullParams) was already this file's own idiom for the same hazard.
+layout(push_constant, std430) uniform MeshCullParams {
 	uint instance_count;
 	uint pad0;
 	uint pad1;
@@ -1507,7 +1512,12 @@ const char *gpu_light_cull_glsl = R"(
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(push_constant, std430) uniform CullParams {
+// GNE-021/L35: was CullParams (48 B). Renamed to disambiguate from the 16 B
+// MeshCullParams and the 32 B GmsCullParams. Layout and every field comment are
+// untouched, and the C++ side `struct CullPush` still matches field-for-field:
+// dims / range / rev, 3 x vec4 = 48 B both sides. That pairing was verified
+// field-by-field in commit 9ec1cb0 and is unaffected by a GLSL type name.
+layout(push_constant, std430) uniform ClusterCullParams {
 	vec4 dims;   // x = light_count, y = tan_half_fov_v, z = aspect, w = unused
 	vec4 range;  // x = near, y = far, z = raster_w, w = raster_h
 	vec4 rev;    // GNE-018-rev: x = flag (1 = extended slab; cone filter later)
@@ -10350,7 +10360,10 @@ const char *gpu_meshlet_cull_glsl = R"(
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(push_constant, std430) uniform CullParams {
+// GNE-021/L35: was CullParams (32 B). Renamed to disambiguate from the 16 B
+// MeshCullParams and the 48 B ClusterCullParams. Layout untouched: uvec4 cfg +
+// vec4 thr = 32 B.
+layout(push_constant, std430) uniform GmsCullParams {
 	uvec4 cfg; // x = instance_count, y = ml0_max, z = lod_count, w = 0
 	vec4 thr;  // x = lod_t0, y = lod_t1
 }
