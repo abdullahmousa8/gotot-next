@@ -290,6 +290,22 @@ if ($m1pass -and $mm) {
   $m1detail = ('h0=' + $h0 + ' h1=' + $h1 + ' gain=' + $gain)
 }
 Record 'gt_023a' $m1ok $m1detail
+# City-scale GI standing gate (022b): HDR I1. Markers from gt_022b.bat plus
+# numeric validation of the FRESH umbra HDR delta (>= 0.5 pre-clamp radiance
+# gain). The 8-bit umbra delta is deliberately NOT gated: it saturates to 0.0
+# on a lit city (documented, KI-017). Determinism is gated inside GDScript.
+$lf2 = Join-Path $logDir 'gt_022b.log'
+& (Join-Path $root 'tools\gt_022b.bat') > $lf2 2>&1
+$cgiok = $false
+$cgidetail = ''
+$cgipass = ((Select-String -LiteralPath $lf2 -Pattern 'GT_022B: PASS' | Measure-Object).Count -ge 1)
+$um = Select-String -LiteralPath $lf2 -Pattern 'GI umbra.*delta=([0-9.eE+-]+) \|' | Select-Object -Last 1
+if ($cgipass -and $um) {
+  $dhu = [double]$um.Matches[0].Groups[1].Value
+  $cgiok = $dhu -ge 0.5
+  $cgidetail = ('dh_u=' + $dhu)
+}
+Record 'gt_022b' $cgiok $cgidetail
 # render regression: golden byte-compare (018 + 019)
 foreach ($gs in @(@('main_018','main_018.png'), @('main_019','main_019.png'))) {
   $scene = $gs[0]
