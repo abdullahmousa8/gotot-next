@@ -320,6 +320,23 @@ driver-level condition on this pipeline configuration.
 current boundaries. Until then: hardware RT = unavailable; designs must not assume it.
 
 **Evidence:** temp rt0_run1.log / rt0_run2.log / rt0_verbose.log; code references above.
+## KI-007 closure update (2026-09-30)
+
+**Status: CLOSED via GNE-019 (real depth HZB, `rd=1`) - the entry above is kept as the design record.**
+The 019 gate proves the real-depth path feeds occlusion (`rd=1`, `pcount=41498`, literal
+`v19|lc=20|sm=5|cs=4|rd=1|hr=1.00|d1`).
+
+**Measured boundary, added 2026-09-30 (progress section 61):** the separate raster-depth
+*feed* path (`gpu_hzb_depth_feed` writing `hzb_pyramid_data_buffer`) still cannot influence the
+phase-2 decision, because `gpu_visibility_prod_dispatch()` clears that buffer and rebuilds it
+from the registered AABB occluders. With no occluders the fed depth is erased (`pyr_nz_l0=0`) and
+the occluded TARGET stays visible (`p2=3`), in both orderings tested; with an AABB occluder and no
+feed the TARGET is correctly occluded (`p2=2`, `pyr_nz_l0=47560`). So AABB occluders remain the
+only effective producer in the 012-revised path, and 019 is what carries real depth. Audit scene:
+`demo/gpu_smoke/audit_012_depthfeed.gd`.
+
+---
+
 ## 015.5 C6 status (closed in 015.6)
 
 **الحالة:** مقبول + موثّق (double-buffering مؤجّل إلى 020) — "تقليل الحجم" يكسر DET.

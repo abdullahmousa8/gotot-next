@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3 uid="uid://bgt012auditdf1"]
+
+[ext_resource type="Script" path="res://audit_012_depthfeed.gd" id="1_audit012"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_audit012")
+
+[node name="Camera" type="Camera3D" parent="."]
+fov = 60.0
+near = 300.0
+far = 4000.0
+current = true

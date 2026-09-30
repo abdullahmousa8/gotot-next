@@ -8,8 +8,8 @@
 | KI-002 | Async readback shares staging | 015.6 | Before 018 | CLOSED (015.6): accepted + documented (engine-owned staging) |
 | KI-003 | Presentation optimization no effect | 020 | Before Production | CLOSED via 020: root in engine; mitigation measured (spec_020); zero-copy stays future |
 | KI-007 | HZB uses AABB occluders | 019 | Before 020 | CLOSED via 019 (real depth, rd=1) |
-| KI-011 | Specular not gated by NdotL (pre-existing) | Unassigned | Owner decision | Open |
-| KI-012 | Demo window size externally mutable (pre-existing) | Unassigned | Owner decision | Open |
+| KI-011 | Specular not gated by NdotL (pre-existing) | Unassigned | Owner decision | CLOSED 2026-09-29 (fix executed; literals unchanged; goldens re-baselined) |
+| KI-012 | Demo window size externally mutable (pre-existing) | Unassigned | Owner decision | CLOSED 2026-09-30 by decision (accepted and documented; nothing fixed) |
 | KI-013 | gt_regress FAILED reset by XFAIL scene (harness) | Unassigned | Owner decision | Resolved (commit 6bf851a) |
 | KI-014 | Cluster lists under-cover corner pixels (linear vs euclidean slice) | 018-rev (fixed behind rev flag) | Before R1 | FIXED (gated) + verified in R1 |
 | KI-015 | Hardware RT unusable: RT pipeline creation fails (fork-level) | Unassigned | Owner decision | Open - needs engine-level diagnosis |

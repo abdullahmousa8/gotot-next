@@ -1270,3 +1270,50 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   (6.3x) over 24 EMA steps, above section 11 criterion (c)'s 3x-first-value cap. Section 11
   remains officially FAIL for the frozen live-loop criterion; 022b claims transport, not
   convergence.
+
+## §61. GNE-012 depth-feed audit CLOSED - the raster-depth feed cannot reach phase-2 occlusion (2026-09-30)
+
+**Verdict: the hypothesis is CONFIRMED by measurement, not by source reading.** The raster-depth
+feed (`gpu_hzb_depth_feed`, which writes `hzb_pyramid_data_buffer` from `raster_viewz_texture`)
+cannot influence the phase-2 occlusion decision, because `gpu_visibility_prod_dispatch()` clears
+that buffer and rebuilds it from the registered AABB occluders. In the 012-revised path the AABB
+occluder list is the **only** effective occlusion producer.
+
+Scene: `demo/gpu_smoke/audit_012_depthfeed.gd` (committed with this section) - 3 instances,
+PER_MESH, one surface each; instance 0 BLOCKER scale 120 at (0,0,-800), 1 TARGET scale 30 dead
+behind it, 2 CONTROL scale 30 beside it. Settled order per frame: cull -> visibility ->
+batch_dispatch -> build -> batch_draw; the three arms run on frames 3, 4 and 5.
+
+| arm | occluders | order | p1 | p2 | blocker | target | control | pyr_nz_l0 | depthfeed_pcount | coherent |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A_depth_first | none | depth_feed -> prod_dispatch | 3 | 3 | true | **true (visible)** | true | **0** | **11890** | false |
+| B_aabb_control | 1 AABB | prod_dispatch only | 3 | 2 | true | **false (occluded)** | true | **47560** | 0 | true |
+| C_depth_after | none | prod_dispatch -> depth_feed -> prod_dispatch | 3 | 3 | true | **true (visible)** | true | **0** | **11890** | true |
+
+Raster-validity witness (frame 2, after at least one completed draw): `target_px=960,540
+viewz=-2440.0`, `control_px=1167,540 viewz=-2685.0`, `far_plane_sample=3999.9993` - the raster
+depth buffer is populated, so the null result is not a dead framebuffer.
+
+**How to read it:**
+
+1. The feed itself works: `depthfeed_pcount=11890` on both depth-fed arms, i.e. it processed a
+   real pixel set. What fails is survival - level 0 of the pyramid ends with **zero** nonzero
+   texels in both orderings, so nothing the feed wrote is left when phase-2 reads it.
+2. The positive control proves the scene and the machinery: with the AABB occluder and no feed,
+   TARGET is correctly occluded (p2 drops 3 -> 2), level 0 carries 47560 nonzero texels, and the
+   CONTROL stays visible. So arm A is a real negative, not a broken measurement.
+3. Ordering does not rescue it: feeding after one prod_dispatch and before another (arm C) gives
+   the same 11890 / 0 / visible result as feeding first (arm A).
+4. Recorded observation without interpretation: `coherent` reads false in arm A and true in arm C
+   although both end with `pyr_nz_l0=0`. Not explained here; recorded as measured.
+
+**Consequence, recorded for whoever wants scene-depth occlusion:** the fix is to make the phase-2
+path consume the fed pyramid (or to feed after the clear inside `prod_dispatch`), **not** to call
+`gpu_hzb_depth_feed` more often. The re-open condition is in `open_items_register.md`; KI-007 in
+`known_issues.md` carries the same boundary next to its 019 closure.
+
+**Files settled with this section:** the audit scene and its `.tscn` are now committed (they were
+untracked WIP), and the three `docs/012_*.patch` artifacts are committed as diagnostic evidence
+only - `docs/note_012_memb_diag.md` section 11 already classifies all three as "do not merge", and
+`012_d1d2_gate.patch` explicitly as not representing the final state. Nothing from those patches is
+in the tree; they are the saved fingerprints the note cites.
