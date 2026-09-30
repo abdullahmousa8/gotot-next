@@ -465,3 +465,25 @@ a green one by the missing verdict line, not by a false PASS.
 Secondary-shell runs are measurement/diagnosis only. Any future gate that
 reads a sidecar file must keep the del-first + guarded-read pattern, and any
 new wrapper should add a timeout (none exists today).
+
+## KI-019: Harness ERROR-scan noise - user:// log lines in gate logs (opened with SPEC 0.26)
+
+**Date:** 2026-10-01
+**Status:** OPEN - scoped under M0.26c; decision required (Architect D11, SPEC 0.26 §9)
+**Severity:** Low-Medium (blocks formal PASS verdicts only in shells that emit the lines; never corrupts measurements)
+**Owner:** GNE Architecture
+
+**Problem:** gate wrappers fail their ERROR scan on lines the engine did not
+cause: `user://logs/...` open failures (+ certificate-store line in some
+shells). Related shell-hang phenomena are tracked separately under KI-018
+(environment); KI-019 is ONLY about the log-noise classification question.
+
+**Options (M0.26c):**
+- A: filter the known user:// noise lines at the harness layer (explicit
+  allowlist, documented per line - never a blanket ERROR exemption).
+- B: clean-environment protocol: owner shell is the reference; secondary
+  shells are measurement-only by rule (status quo, formalized).
+
+**Re-open/close condition:** closes when every gt_*.bat + gne_verify.ps1 either
+filters precisely (A) or certifies the shell protocol (B), proven by a green
+belt in BOTH shells or a recorded single-shell rule.
