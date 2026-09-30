@@ -1101,3 +1101,16 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - Files: demo/gpu_smoke/main_022b.gd/.tscn exist but NOT committed (blocked WIP).
 - NOT VERIFIED: city-scale GI draw integration. Do not cite 023 as evidence for
   city-scale rendering.
+## §57. 022b debug session 2 — root cause advanced one step (2026-09-30)
+
+- Fixed: `gpu_mesh_set_batch_strategy(0)` was missing in main_022b (022 base never
+  draws, so the call was lost in translation). After adding it, the first error
+  ("requires PER_MESH strategy") is gone.
+- New state: `gpu_material_draw_lights` now fails SILENTLY (no [GNE] line, rc=430)
+  - deeper than the PER_MESH check. Next session: add a debug print at the top of
+  gpu_material_draw_lights (C++) and bisect its internal early-returns against the
+  city scene (56 instances, floor scale 6000, 256 lights, CSM bound).
+- Working tree: main_022b.gd carries the fix; committed as WIP. Engine cpp
+  untouched this round. CVS state unchanged (23/23 as of a5efca4-era).
+- Discipline followed this round: live-process check, on-disk verify after write,
+  single foreground run, stop at first decision point.

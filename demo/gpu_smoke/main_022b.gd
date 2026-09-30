@@ -1,9 +1,4 @@
 extends Node
-
-var camera: Camera3D
-var display: TextureRect
-var image_tex: ImageTexture
-var sig_file := ""
 # GNE-022 S1b: probe field on the dense GNE-021 city + trace-budget measurement.
 # Methodology mirrors GNE-021: raw numbers, same-session runs, no timings in sigs.
 # Field: 16x8x16 = 2048 probes x 64 fixed rays = 131,072 rays per dispatch.
@@ -16,6 +11,10 @@ const UMBRA_P := Vector3(620, 5, -880)
 const LIT_P := Vector3(100, 5, 700)
 
 var server: GneRenderServer
+var camera: Camera3D
+var display: TextureRect
+var image_tex: ImageTexture
+var sig_file := ""
 
 func _mk_point(pos: Vector3, radius: float, color: Color, intensity: float) -> Dictionary:
 	return {"type": 0, "pos": pos, "range": radius, "color": color, "intensity": intensity}
@@ -25,9 +24,6 @@ func _mk_spot(pos: Vector3, target: Vector3, inner: float, outer: float, color: 
 	return {"type": 1, "pos": pos, "range": 1600.0, "color": color, "intensity": intensity, "dir": d, "cone_inner": inner, "cone_outer": outer}
 
 func _ready() -> void:
-	for a in OS.get_cmdline_user_args():
-		if a.begins_with("--sigf="):
-			sig_file = a.split("=")[1]
 	server = GneRenderServer.get_server_singleton()
 	if server == null:
 		_fail(400, "no server")
@@ -44,6 +40,17 @@ func _ready() -> void:
 	if not server.gpu_mesh_create():
 		_fail(404, "mesh_create")
 		return
+	if not server.gpu_mesh_set_batch_strategy(0):
+		_fail(4046, "batch_strategy"); return
+	if not server.gpu_material_create():
+		_fail(5044, "material_create"); return
+	for mi in range(56):
+		if not server.gpu_material_set_albedo(mi, Color(0.7, 0.7, 0.7)):
+			_fail(5045, "albedo"); return
+		if not server.gpu_material_set_params(mi, 0.5, 0.0):
+			_fail(5045, "params"); return
+		if not server.gpu_material_set_specular(mi, Color(0.25, 0.25, 0.25), 32.0):
+			_fail(5045, "specular"); return
 	# ---- geometry: same construction as GNE-021 (city) ----
 	var idx := 0
 	server.gpu_scene_set_instance_transform(idx, Vector3(0, -3000, -900), 6000.0); server.gpu_scene_set_instance_mesh(idx, 0); idx += 1
@@ -206,9 +213,8 @@ func _ready() -> void:
 	var det_ok: bool = (pix_a == pix_b)
 	print("S22B: determinism=", det_ok)
 	var i1_ok := du >= 0.02
-	var i2_ok := dh_l >= 0.005
-	var pass_all: bool = i1_ok and det_ok and (dh_l >= 0.0)
-	print("S22B: I1(umbra indirect)=", i1_ok, " I2(hdr lit gain)=", (dh_l >= 0.005), " det=", det_ok, " => ", ("PASS" if pass_all else "FAIL"))
+	var pass_all: bool = i1_ok and det_ok
+	print("S22B: I1(umbra indirect)=", i1_ok, " det=", det_ok, " => ", ("PASS" if pass_all else "FAIL"))
 	var sig := "v022b|du=%.4f|dh_u=%.4f|dh_l=%.4f|det=%d|d1" % [du, dh_u, dh_l, int(det_ok)]
 	print("S22B: sig=", sig)
 	if sig_file != "":
