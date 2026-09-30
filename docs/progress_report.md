@@ -1473,3 +1473,67 @@ the whole atlas. No 8-bit pixel readback appears anywhere in the scene.
 
 - Signature: `v022m1|frames=160|dfirst=0.045421503|dlast=0.000001073|r10gm=0.509385|r10med=0.509178|e5=127|e6=-1|det=1|d1`
 - Run: `godot.windows.editor.dev.x86_64.console.exe --path demo/gpu_smoke --rendering-method forward_plus res://main_022_m1.tscn -- --sigf=<path>`
+
+## §64. GNE-022 §11-M2 - criterion (b-field) registered, implemented and gated (2026-09-30)
+
+Spec: `docs/spec_022_gi_scoping.md` section 11-M2 (owner-directed drafting AND implementation).
+M2 is the registered decision the M1 spec reserved: it puts the geometric-decay criterion on a
+measurable observable. It does **not** touch section 11.
+
+**What was built:**
+
+- `demo/gpu_smoke/main_022_m2.gd` **extends** `main_022_m1.gd` - not one line of the instrument is
+  duplicated; the whole sequence, readbacks and table stay the parent's. M2 adds the (b-field)
+  evaluation and one extra integrity condition, so the process exit code can gate.
+- The only change to M1 is a behaviour-neutral `_final_ok()` hook (the same three conditions it
+  always evaluated inline), so the instrument stays measurement-only.
+- `demo/gpu_smoke/main_022_m2.tscn`, gate `tools/gt_022m2.bat` (two runs, byte-equal signature,
+  markers, empty-signature guard, ERROR/RID checks), CVS row `gt_022m2` with a **literal** baseline
+  in `tools/verify_baseline.txt`, exactly like `gt_016a..gt_022b`.
+
+**Criterion (b-field), as registered:** for `f(k)`, `k = 1..160`, sampled every 10 frames on the
+section-11 near probe (16 samples), every successive interval-delta ratio `r_j = d_j/d_(j-1)`,
+`j = 2..15`, satisfies `r_j <= 0.6`; series finite; in-process double run byte-equal; no ERROR or
+RID-leak lines. **0.6 is inherited** from the frozen section-11 criterion (b) - M2 changes only the
+observable (float field instead of the tonemapped 8-bit image), which is exactly the defect 11-R1
+isolated. Endpoints are reported, not gated.
+
+**Measured (binary `F3D350CB`, two separate processes):**
+
+| quantity | value |
+|---|---|
+| `M2: criterion_b_field` | **PASS** (both runs, rc=0) |
+| ratio10 min / max / geomean | 0.507853 / 0.511340 / **0.509385** |
+| intervals below the 0.6 rule | **14/14** |
+| finite / frame count / determinism | true / 160 / **byte-equal** |
+| `|delta| < 1e-5` endpoint | frame 127 (reported, not gated) |
+| scene errors | 0 |
+| signature d1 vs d2 | byte-identical, and equal to the baseline literal |
+
+`v022m2|frames=160|r10min=0.507853|r10max=0.511340|r10gm=0.509385|below=14/14|e5=127|det=1|d1`
+
+**Two real defects the work caught, recorded rather than smoothed over:**
+
+1. **The criterion failed closed on my own arithmetic.** The first implementation required
+   `ratios.size() == FRAMES/SAMPLE_EVERY - 1` (= 15) while the derived count is 14 (16 samples - 1
+   interval series), so the verdict printed FAIL even though `14/14` intervals satisfied the rule.
+   Fixed to the derived value; re-run gives PASS. The instrument refused to pass on a wrong
+   expectation - the behaviour a gate is supposed to have.
+2. **The wrapper was broken until it was exercised.** Two `echo` lines carried the text `(b-field)`
+   inside an `if (...)` block; cmd treats the `)` as the end of the block and aborted with
+   `PASS was unexpected at this time` (rc=255, no verdict printed). Both lines were rewritten
+   without parentheses and the gate then emitted `GT_022M2: PASS` with the correct signatures. This
+   is why the wrapper was validated with a path-relocated copy before being trusted.
+
+**Environment note (measured, not assumed):** in the measuring shell the gate's ERROR scan sees
+only the shell's own `user://` log-open and certificate-store artifacts (4 unique lines, 6
+occurrences across two runs) and therefore reports FAIL on that one check. The owner's session
+produces none of them - the 23:27 sweep records `no_errors PASS 0 error lines` - so the gate is
+expected to pass there. Nothing else about M2 depends on the shell.
+
+**Explicitly NOT done (owner decisions):** whether (b-field) *retires* criterion (b) as a gate, and
+whether section 11 may then be formally closed. Section 11's official wording stands verbatim:
+`FAIL (criterion b)`, and `main_022_loop.gd` remains frozen and unedited.
+
+- Run: `godot.windows.editor.dev.x86_64.console.exe --path demo/gpu_smoke --rendering-method forward_plus res://main_022_m2.tscn -- --sigf=<path>`
+- Gate: `tools\gt_022m2.bat` (added to the CVS literal loop; CVS is now 24 rows).

@@ -169,9 +169,15 @@ func _setup() -> void:
 	print("M1: determinism_byte_equal=", det)
 	_report(r1, r2, det)
 	server.gpu_scene_destroy()
-	var ok: bool = det and bool(r1[5]) and int(r1[4]) == FRAMES
+	var ok: bool = _final_ok(r1, det)
 	print("M1: instrument_integrity=", "PASS" if ok else "FAIL")
 	get_tree().quit(0 if ok else 60)
+
+# Instrument integrity, isolated into a hook so a successor unit (11-M2) can add
+# its own criterion without touching the instrument's logic. This is the same
+# three-condition check the scene always evaluated inline.
+func _final_ok(p_r1: Array, p_det: bool) -> bool:
+	return p_det and bool(p_r1[5]) and int(p_r1[4]) == FRAMES
 
 # Returns [fstr, dstr, rstr, fvals, count, finite, p50_read_us, p50_accum_us, probe_last]
 func _run_sequence() -> Array:

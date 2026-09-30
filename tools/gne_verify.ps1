@@ -153,7 +153,7 @@ $baseline = @{}
 foreach ($ln in [System.IO.File]::ReadAllLines((Join-Path $root 'tools\verify_baseline.txt'))) {
   if ($ln -match '^([^#][^=]*)=(.+)$') { $baseline[$Matches[1].Trim()] = $Matches[2].Trim() }
 }
-foreach ($g in @('gt_016a','gt_017a','gt_018a','gt_018a_rev','gt_019a','gt_020a','gt_021a','gt_022b')) {
+foreach ($g in @('gt_016a','gt_017a','gt_018a','gt_018a_rev','gt_019a','gt_020a','gt_021a','gt_022b','gt_022m2')) {
   $lf = Join-Path $logDir ($g + '.log')
   & (Join-Path $root ('tools\' + $g + '.bat')) > $lf 2>&1
   $m = Select-String -LiteralPath $lf -Pattern 'sig d1: "([^"]+)"' | Select-Object -Last 1

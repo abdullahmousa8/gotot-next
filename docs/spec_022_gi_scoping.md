@@ -858,3 +858,62 @@ and engine code untouched except the new scene.
 
 **STOP POINT (as directed): spec written; NO implementation until explicit owner
 approval.**
+---
+
+## 11-M2. Criterion (b-field): section-11 criterion (b) evaluated on the float field (spec, owner-directed 2026-09-30)
+
+**Purpose (single):** put the section-11 geometric-decay criterion on a measurable observable.
+Section 11 evaluates it on the 8-bit displayed image - the instrument the R1 experiment itself
+identified as the remaining obstruction (its own quantization walk in the ratios while the
+underlying field is textbook-clean). M2 registers a separately named criterion, evaluated on the
+float field series produced by the M1 instrument, and gates it. It does NOT rewrite section 11.
+
+**What stays EXACTLY as it is:**
+
+- Section 11's criterion text, gain, window and its official state: **FAIL (criterion b)**, under
+  the frozen wording of the R1 closure. Nothing in the historical record is rewritten, softened or
+  re-scored.
+- `main_022_loop.gd` stays frozen and unedited.
+- The M1 instrument stays measurement-only. M2 uses it; the only change to M1 is a behaviour-neutral
+  `_final_ok()` hook (the same three conditions it already evaluated inline).
+
+**The new criterion (proposed text, frozen on approval):**
+
+> **(b-field)** For the float field series `f(k)`, `k = 1..160`, sampled every 10 frames on the
+> section-11 near probe (16 samples), every successive interval-delta ratio
+> `r_j = d_j / d_(j-1)`, `j = 2..15`, satisfies `r_j <= 0.6`; the series is finite at every sample;
+> the in-process double run is byte-equal on the series, the ratios and the 10-frame samples; and
+> the run emits no ERROR or RID-leak lines.
+
+- **0.6 is inherited, not chosen here.** It is the constant the frozen section-11 criterion (b)
+  already uses. M2 changes only the OBSERVABLE (float field instead of the tonemapped 8-bit image),
+  which is precisely the defect R1 isolated. No new constant is introduced, so no threshold can
+  drift unnoticed.
+- Endpoint characteristics (frames to `|delta| < 1e-5` and `< 1e-6`) are **reported, not gated**: a
+  fixed horizon metric would smuggle the window in as a criterion.
+
+**Implementation of this unit:**
+
+- `demo/gpu_smoke/main_022_m2.gd` extends `main_022_m1.gd` (no duplicated setup): it reuses the whole
+  sequence and then evaluates (b-field), printing explicit `M2:` verdicts.
+- `demo/gpu_smoke/main_022_m2.tscn`.
+- Gate `tools/gt_022m2.bat`: two runs (d1/d2), byte-equal signature required, PASS marker,
+  empty-signature guard, no `ERROR:` and no RID-leak lines.
+- Registered as CVS row `gt_022m2` with a LITERAL baseline in `tools/verify_baseline.txt`, exactly
+  like `gt_016a..gt_022b`.
+
+**Acceptance (this unit):**
+
+1. `M2: criterion_b_field=PASS` with the measured ratio series (min / max / geomean) printed.
+2. Signature byte-equal across two separate processes (the literal baseline value).
+3. No existing gate changes: the diff is limited to the new files plus the additive CVS rows, and
+   the previously verified literals still reproduce.
+4. Zero ERROR / RID lines in the M2 run.
+5. Section-11 official wording preserved verbatim in every document touched.
+
+**Explicit non-scope:** closing section 11, changing criterion (b) itself, changing the gain or the
+window, denoiser, temporal sophistication, algorithm changes, S3/RT.
+
+**Decisions NOT taken here (they stay with the owner):** whether (b-field) RETIRES criterion (b) as
+a gate, and whether section 11 may then be formally closed. M2 records and gates the new criterion;
+it does not re-score history.
