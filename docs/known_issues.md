@@ -60,16 +60,22 @@ reports GPU `UNAVAILABLE` with `NA`, never zero cost.
    (`rendering_device.cpp:8625`), so a module must set it before creating a device if it wants a
    different size; GNE now merely prints the effective value and guards a sub-minimum.
 2. The single blocker is publication: `timestamp_result_count` is published only in
-   `RenderingDevice::_begin_frame()` (`rendering_device.cpp:8342`), which a **local** device never
-   reaches. The earlier note that `drivers/vulkan` "has no `utilities.cpp`" pointed at the wrong
-   file: the gles3 driver has its own copy of that logic, and the Vulkan path publishes through the
-   core `rendering_device.cpp`.
+   `RenderingDevice::_begin_frame()` (`rendering_device.cpp:8342`). It is reachable in principle from
+   a readback (the staging path at 1081 calls `_flush_and_stall_for_all_frames()` with the default
+   `p_begin_frame = true`, `rendering_device.h:1902`), so "a local device never reaches
+   `_begin_frame()`" is NOT proven and is withdrawn. Measured instead: over 300 frames with 2100
+   captures, **no frame ever saw a result** (`gpu_result_count=0`, `gpu_result_count_max=0`). Candidate
+   mechanism, with lines: the pool prefers growing the download staging buffer (1052-1054) or
+   `STAGING_REQUIRED_ACTION_STALL_PREVIOUS` (1062) over the publishing
+   `STAGING_REQUIRED_ACTION_FLUSH_AND_STALL_ALL` (1037). The earlier note that `drivers/vulkan`
+   "has no `utilities.cpp`" pointed at the wrong file: the gles3 driver keeps its own copy of that
+   logic; the Vulkan path publishes through the core `rendering_device.cpp`.
 
-**Evidence surface:** `gpu_frame_stats()` now returns `gpu_capture_count` and `gpu_result_count`,
+**Evidence surface:** `gpu_frame_stats()` now returns `gpu_capture_count`, `gpu_result_count` and (in the phase4 scene report) the run maximum `gpu_result_count_max`,
 and `ensure_gpu_device()` prints the effective pool size at device creation, so this limit is
 checked by any run instead of being asserted here.
 
-**Closure condition (unchanged in kind, now precise):** one engine-side change - (a) expose/trigger
+**Closure condition (unchanged in kind, now precise):** one engine-side change - (a) force the publishing staging action or expose/trigger
 `_begin_frame()` for local devices, (b) resolve the pool in `submit()`/`sync()` for local devices,
 or (c) drive the local device through the engine frame flow. All are edits inside `godot-master`
 and require an explicit owner decision; until then GPU columns stay `NA`.

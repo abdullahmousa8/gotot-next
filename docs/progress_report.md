@@ -1332,16 +1332,26 @@ per-frame pools from it (8727). Measured: a scene that sets nothing now prints
 carried since 015.5 - "the pool is 0 unless the project enables it" - is **not true for this tree**;
 7 captures per frame fit in 256 many times over.
 
-**Correction 2 - the one real limit is publication.** `timestamp_result_count` is published in
-exactly one place, `RenderingDevice::_begin_frame()` (`rendering_device.cpp:8342`), reachable only
-through the engine frame flow / `_flush_and_stall_for_all_frames()` (8561-8571). GNE creates a
-**local** RenderingDevice, nothing drives `_begin_frame()` on it, so the pool is filled by
-`capture_timestamp()` and never resolved.
+**Correction 2 - the limit is publication, and the first mechanism claim was TOO STRONG.**
+`timestamp_result_count` is published in exactly one place, `RenderingDevice::_begin_frame()`
+(`rendering_device.cpp:8342`). That function is reachable without the engine frame flow:
+`_flush_and_stall_for_all_frames()` defaults to `p_begin_frame = true`
+(`rendering_device.h:1902`) and is called that way from the staging path (1081) that a readback can
+trigger. So "a local device never reaches `_begin_frame()`" is **not proven** and is withdrawn as a
+cause. What IS measured: over a full 300-frame run with 2100 captures, **no frame ever saw a
+published result** - `gpu_result_count=0` at frames 1/50/100/300 and `gpu_result_count_max=0` (the
+maximum over every frame, added precisely because a single-sample zero cannot tell "never published"
+from "published a slot we are not reading"). The remaining unproven detail is which staging action
+these readbacks take: the code prefers growing the download staging pool (1052-1054) and falls back to
+`STAGING_REQUIRED_ACTION_STALL_PREVIOUS` (1062), while the only action that publishes is
+`STAGING_REQUIRED_ACTION_FLUSH_AND_STALL_ALL` (1037 -> 1081). Recorded as a candidate with its line
+numbers, not as an established cause.
 
 | measured (main_015_5_phase4, 300 frames, binary `65D8904D`) | value |
 |---|---|
 | `gpu_capture_count` (1 frame marker + 6 pass marks per frame) | **2100** |
-| `gpu_result_count` (results the device ever published) | **0** |
+| `gpu_result_count` (results the device published, last sample) | **0** |
+| `gpu_result_count_max` (best frame of the whole run) | **0** |
 | `gpu_last_ns` at frames 1 / 50 / 100 / 300 | 0 / 0 / 0 / 0 |
 | GPU columns | `gpu UNAVAILABLE ... gpu_avg_ns=NA` |
 | `sig=v15.5-p4 warm=100 meas=200 passes=200` | unchanged, PASS - no signature moved |
@@ -1358,9 +1368,9 @@ a measurement field that could not disagree with anything. It now divides by the
 module accumulates: measured **92** (4,666,260 / 5,049,589), which is what the field always claimed
 to be.
 
-**What would actually enable per-pass GPU time (NOT done - needs an owner decision):** (a) expose
-or trigger `RenderingDevice::_begin_frame()` for local devices, (b) resolve the pool inside
-`submit()`/`sync()` for local devices, or (c) drive GNE's device through the engine frame flow.
+**What would actually enable per-pass GPU time (NOT done - needs an owner decision):** (a) force the publishing staging action (or expose `RenderingDevice::_begin_frame()`) for local
+devices, (b) resolve the pool inside `submit()`/`sync()` for local devices, or (c) drive GNE's
+device through the engine frame flow.
 All three are edits inside `godot-master`, which the standing rule forbids (KI-001/002/003 +
 `spec_012`/`spec_020`: no engine edits) and which would also make the build non-reproducible from an
 upstream tag. Until one of them is authorized: per-pass numbers stay CPU-side, **no per-pass

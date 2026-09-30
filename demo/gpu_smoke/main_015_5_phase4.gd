@@ -34,6 +34,7 @@ var frame := 0
 var shot_done := false
 var probe_wall := {}
 var probe_gpu := {}
+var result_max := 0
 var wall_series: Array = []
 var pass_count_ok := 0
 # Differential probe: skip the raster readbacks to measure their share of the
@@ -173,6 +174,10 @@ func _process(_delta: float) -> void:
 	# The interval closed by this begin() is the previous frame's wall time.
 	var st: Dictionary = server.gpu_frame_stats()
 	wall_series.append(int(st["wall_last_us"]))
+	# KI-001: track the MAXIMUM published-result count seen on ANY frame. A single
+	# zero sample cannot distinguish "never published" from "published a slot we
+	# are not reading", so the report carries the maximum over the whole run.
+	result_max = maxi(result_max, int(st["gpu_result_count"]))
 	if frame in PROBE_FRAMES:
 		probe_wall[frame] = int(st["wall_last_us"])
 		probe_gpu[frame] = int(st["gpu_last_ns"])
@@ -212,7 +217,8 @@ func _report(st: Dictionary) -> void:
 	# every capture, but the device never published a single result. The pool is
 	# now enabled by the MODULE (ensure_gpu_device), not by this scene.
 	print("GNE 015.5 p4: gpu_capture_count=", st["gpu_capture_count"], " gpu_result_count=", st["gpu_result_count"],
-		" (results 0 = local device never reaches RenderingDevice::_begin_frame; engine-side limit, KI-001)")
+		" gpu_result_count_max=", result_max,
+		" (max 0 over the whole run = no frame ever saw a published result; engine-side limit, KI-001)")
 	for f in PROBE_FRAMES:
 		if probe_wall.has(f):
 			print("GNE 015.5 p4: probe frame=", f, " wall_us=", probe_wall[f], " gpu_ns=", probe_gpu[f])
