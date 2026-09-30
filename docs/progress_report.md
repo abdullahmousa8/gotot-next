@@ -1244,6 +1244,17 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   **Therefore `verify_history.tsv` still has no row for this work.** Everything else the sweep
   asserts is verified above; the one remaining step is to re-run `tools/gne_verify.ps1` in the
   environment that produced the 18:20 row.
+- **Gate PASS logic proven despite the environment (relocated-copy experiment, 2026-09-30).**
+  A copy of `gt_022b.bat` with only its three scratch paths pointed inside the workspace (the copy
+  lives outside the repo) produced the complete success shape:
+  `--- rc1=0 rc2=0 ---`, `--- sig d1:` and `--- sig d2:` byte-identical
+  (`v022b|du=0.0000|dh_u=32.9104|dh_l=55.1367|neg=0.0000|rep=0.0000|det=1|d1`), both floors 0.0,
+  `S22B: I1(umbra indirect)=true floor=0.0 det=true => PASS`. That copy still printed
+  `GT_022B: FAIL` for exactly one reason: its `ERROR:` scan matched Godot's `user://logs`
+  open/rotate lines. Feeding the same output through the CVS regexes (`gne_verify.ps1` lines
+  304-312) yields `Record gt_022b = PASS  detail: dh_u=32.9104 repeat=0.0 neg=0.0`. **The gate is
+  correct; the row is blocked by one environment line, not by the gate.**
+
 - **Section 11 relationship (recorded, not resolved).** The city field moves 6.20 -> 39.11
   (6.3x) over 24 EMA steps, above section 11 criterion (c)'s 3x-first-value cap. Section 11
   remains officially FAIL for the frozen live-loop criterion; 022b claims transport, not
