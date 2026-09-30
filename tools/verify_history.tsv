@@ -1,4 +1,21 @@
-﻿2026-09-29 01:30	7c51bd2	PASS	build:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;gi_gate2:PASS;gi_shade:PASS;no_errors:PASS
+# verify_history.tsv - one appended row per gne_verify.ps1 run.
+#
+# READ THIS BEFORE COMPUTING ANY MEAN, TREND OR BASELINE FROM THIS FILE.
+# It is NOT one comparable series. The rows span different harnesses and
+# different binaries:
+#   * rows before 2026-09-29 18:28 predate the provenance gate, so the exe
+#     those runs measured is unrecorded and cannot be identified.
+#   * perf020 exists in only the later rows. The older perf samples in this
+#     file were already rejected as a threshold basis (6.9x spread, left-
+#     skewed) - see tools/perf020_baseline.txt and contract_20_perf.md.
+#   * gate coverage grows over time: 10 of the 22 gates are younger than the
+#     file, so two PASS rows are not automatically comparable.
+#   * the two FAIL rows are genuine history from before those gates passed.
+# For a defensible perf baseline use tools/perf020_baseline.txt, which pins
+# the basis to one exe_sha256 and blocks on mismatch.
+#
+# Columns: timestamp <TAB> commit <TAB> PASS|FAIL <TAB> gate:PASS,... <TAB> 020:avg/peak
+2026-09-29 01:30	7c51bd2	PASS	build:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;gi_gate2:PASS;gi_shade:PASS;no_errors:PASS
 2026-09-29 01:54	4ffc125	PASS	build:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;gi_gate2:PASS;gi_shade:PASS;no_errors:PASS
 2026-09-29 02:05	43baa5d	PASS	build:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;gi_gate2:PASS;gi_shade:PASS;render_main_018:PASS;render_main_019:PASS;no_errors:PASS	020:24706/62867
 2026-09-29 02:29	d43c252	PASS	build:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;gi_gate2:PASS;gi_shade:PASS;render_main_018:PASS;render_main_019:PASS;no_errors:PASS	020:22052/59486
@@ -40,3 +57,4 @@
 2026-09-30 02:26	018d691	PASS	build:PASS;provenance:PASS;module_boot:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;mat_v2_x1:PASS;mat_channel_cluster:PASS;frustum_cull:PASS;cluster_overflow:PASS;gi_gate2:PASS;gi_shade:PASS;gt_023a:PASS;render_main_018:PASS;render_main_019:PASS;no_errors:PASS;perf020:PASS	020:17135/43637
 2026-09-30 02:33	58ab58a	PASS	build:PASS;provenance:PASS;module_boot:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;mat_v2_x1:PASS;mat_channel_cluster:PASS;frustum_cull:PASS;cluster_overflow:PASS;gi_gate2:PASS;gi_shade:PASS;gt_023a:PASS;render_main_018:PASS;render_main_019:PASS;no_errors:PASS;perf020:PASS	020:17652/46511
 2026-09-30 02:42	95c590c	PASS	build:PASS;provenance:PASS;module_boot:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;mat_v2_x1:PASS;mat_channel_cluster:PASS;frustum_cull:PASS;cluster_overflow:PASS;gi_gate2:PASS;gi_shade:PASS;gt_023a:PASS;render_main_018:PASS;render_main_019:PASS;no_errors:PASS;perf020:PASS	020:17609/41364
+2026-09-30 03:00	722ffdc	PASS	build:PASS;provenance:PASS;module_boot:PASS;gt_regress:PASS;gt_016a:PASS;gt_017a:PASS;gt_018a:PASS;gt_018a_rev:PASS;gt_019a:PASS;gt_020a:PASS;gt_021a:PASS;mat_v2_x1:PASS;mat_channel_cluster:PASS;frustum_cull:PASS;cluster_overflow:PASS;gi_gate2:PASS;gi_shade:PASS;gt_023a:PASS;render_main_018:PASS;render_main_019:PASS;no_errors:PASS;perf020:PASS	020:17475/44444
