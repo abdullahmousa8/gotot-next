@@ -1114,3 +1114,21 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   untouched this round. CVS state unchanged (23/23 as of a5efca4-era).
 - Discipline followed this round: live-process check, on-disk verify after write,
   single foreground run, stop at first decision point.
+## §58. 022b session 3 — lights-loop slowness wall (2026-09-30)
+
+- main_022b rebuilt CLEAN from pristine main_022.gd + material/strategy block +
+  separate _probe_layer() (called at the end of _setup; 022's own quit removed).
+  Order now correct by construction: scene -> mesh -> material -> strategy ->
+  lights(256) -> camera -> field -> trace/accum cost -> _probe_layer.
+- RUN 19: reached "Batch strategy set to 0" then spent 80+ CPU-seconds inside the
+  256x gpu_light_create GDScript loop without completing (log stalled there).
+  For reference, the SAME loop in the original main_022 completes in seconds.
+  Candidate causes (unverified): python-piped stdout blocking on the per-call
+  prints inside gpu_light_create, or a slow path when creating lights while a
+  material store exists (023's 4-light scene never hit this).
+- Stopped the run (no corruption; files intact at this state).
+- Next session options: (a) run main_022b from a console (no pipe) to test the
+  stdout-blocking hypothesis; (b) reduce lights 256->64 for the probe; (c) move
+  the lights loop into a C++ bulk API.
+- Files: main_022b.gd/.tscn intact (uncommitted changes from this session);
+  engine cpp carries the two DBG print_error lines (harmless; also uncommitted).

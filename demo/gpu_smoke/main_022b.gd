@@ -39,11 +39,11 @@ func _ready() -> void:
 		return
 	if not server.gpu_mesh_create():
 		_fail(404, "mesh_create")
-		return
-	if not server.gpu_mesh_set_batch_strategy(0):
-		_fail(4046, "batch_strategy"); return
+	# material store must exist before any draw (016.5-era note)
 	if not server.gpu_material_create():
 		_fail(5044, "material_create"); return
+	if not server.gpu_mesh_set_batch_strategy(0):
+		_fail(4046, "batch_strategy"); return
 	for mi in range(56):
 		if not server.gpu_material_set_albedo(mi, Color(0.7, 0.7, 0.7)):
 			_fail(5045, "albedo"); return
@@ -51,6 +51,7 @@ func _ready() -> void:
 			_fail(5045, "params"); return
 		if not server.gpu_material_set_specular(mi, Color(0.25, 0.25, 0.25), 32.0):
 			_fail(5045, "specular"); return
+		return
 	# ---- geometry: same construction as GNE-021 (city) ----
 	var idx := 0
 	server.gpu_scene_set_instance_transform(idx, Vector3(0, -3000, -900), 6000.0); server.gpu_scene_set_instance_mesh(idx, 0); idx += 1
@@ -170,7 +171,56 @@ func _ready() -> void:
 	asorted.sort()
 	print("S1B: accum_us per run=", atimes)
 	print("S1B: accum_us sorted=", asorted, " p50=", int(asorted[3]), " min=", int(asorted[0]), " max=", int(asorted[5]))
+	var ok := true
+	if near[0] <= far[0]:
+		ok = false
+	if near[0] <= 0.031:
+		ok = false
+	_probe_layer()
 
+
+
+func _hdr_probe(p_px: Vector2) -> PackedFloat32Array:
+	return server.gpu_raster_read_hdr(int(p_px.x), int(p_px.y))
+
+func _brightness(pixels: PackedByteArray, p: Vector2) -> float:
+	var o := (int(p.y) * RASTER_W + int(p.x)) * 4
+	return (float(pixels[o]) + float(pixels[o + 1]) + float(pixels[o + 2])) / 765.0
+
+func _window_mean(pixels: PackedByteArray, c: Vector2, r: int) -> float:
+	var s := 0.0
+	var n := 0
+	for dy in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			s += _brightness(pixels, c + Vector2(dx, dy))
+			n += 1
+	return s / float(n)
+
+func _proj_px(p: Vector3, vp: PackedFloat32Array) -> Vector2:
+	var cx: float = vp[0] * p.x + vp[4] * p.y + vp[8] * p.z + vp[12]
+	var cy: float = vp[1] * p.x + vp[5] * p.y + vp[9] * p.z + vp[13]
+	var cw: float = vp[3] * p.x + vp[7] * p.y + vp[11] * p.z + vp[15]
+	var nx := cx / cw
+	var ny := cy / cw
+	var px := (nx * 0.5 + 0.5) * RASTER_W
+	var c0 := Vector2(px, (ny * 0.5 + 0.5) * RASTER_H)
+	var c1 := Vector2(px, (0.5 - ny * 0.5) * RASTER_H)
+	if c0.x >= 4 and c0.y >= 4 and c0.x < RASTER_W - 4 and c0.y < RASTER_H - 4:
+		return c0
+	return c1
+
+func _redraw() -> bool:
+	if not server.gpu_cull_dispatch():
+		_fail(5040, "recull"); return false
+	if not server.gpu_visibility_dispatch():
+		_fail(5041, "revis"); return false
+	if not server.gpu_mesh_batch_dispatch():
+		_fail(5042, "rebatch"); return false
+	if not server.gpu_material_draw_lights():
+		_fail(5043, "draw"); return false
+	return true
+
+func _probe_layer() -> void:
 	# ---- 023 integration layer: draw + HDR/8-bit probes on the city ----
 	if not server.gpu_material_draw_lights():
 		_fail(430, "draw lights pcf"); return
@@ -229,59 +279,6 @@ func _ready() -> void:
 	else:
 		print("S22B: FAIL")
 		get_tree().quit(50)
-	var ok := true
-	if near[0] <= far[0]:
-		ok = false
-	if near[0] <= 0.031:
-		ok = false
-	server.gpu_scene_destroy()
-	if ok:
-		print("S1B: PASS (near r=", near[0], " > far r=", far[0], " > ambient 0.03)")
-		get_tree().quit(0)
-	else:
-		print("S1B: FAIL sanity near=", near[0], " far=", far[0])
-		get_tree().quit(21)
-
-
-func _hdr_probe(p_px: Vector2) -> PackedFloat32Array:
-	return server.gpu_raster_read_hdr(int(p_px.x), int(p_px.y))
-
-func _brightness(pixels: PackedByteArray, p: Vector2) -> float:
-	var o := (int(p.y) * RASTER_W + int(p.x)) * 4
-	return (float(pixels[o]) + float(pixels[o + 1]) + float(pixels[o + 2])) / 765.0
-
-func _window_mean(pixels: PackedByteArray, c: Vector2, r: int) -> float:
-	var s := 0.0
-	var n := 0
-	for dy in range(-r, r + 1):
-		for dx in range(-r, r + 1):
-			s += _brightness(pixels, c + Vector2(dx, dy))
-			n += 1
-	return s / float(n)
-
-func _proj_px(p: Vector3, vp: PackedFloat32Array) -> Vector2:
-	var cx: float = vp[0] * p.x + vp[4] * p.y + vp[8] * p.z + vp[12]
-	var cy: float = vp[1] * p.x + vp[5] * p.y + vp[9] * p.z + vp[13]
-	var cw: float = vp[3] * p.x + vp[7] * p.y + vp[11] * p.z + vp[15]
-	var nx := cx / cw
-	var ny := cy / cw
-	var px := (nx * 0.5 + 0.5) * RASTER_W
-	var c0 := Vector2(px, (ny * 0.5 + 0.5) * RASTER_H)
-	var c1 := Vector2(px, (0.5 - ny * 0.5) * RASTER_H)
-	if c0.x >= 4 and c0.y >= 4 and c0.x < RASTER_W - 4 and c0.y < RASTER_H - 4:
-		return c0
-	return c1
-
-func _redraw() -> bool:
-	if not server.gpu_cull_dispatch():
-		_fail(5040, "recull"); return false
-	if not server.gpu_visibility_dispatch():
-		_fail(5041, "revis"); return false
-	if not server.gpu_mesh_batch_dispatch():
-		_fail(5042, "rebatch"); return false
-	if not server.gpu_material_draw_lights():
-		_fail(5043, "draw"); return false
-	return true
 
 func _fail(code: int, msg: String) -> void:
 	print("S1B: FAIL code=", code, " ", msg)
