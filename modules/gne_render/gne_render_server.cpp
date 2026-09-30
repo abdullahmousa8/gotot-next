@@ -1381,6 +1381,116 @@ static String _gne_glsl_with_shared(const char *p_src, bool p_with_cone_math) {
 	}
 	return s.replace("#version 450", String("#version 450\n") + shared);
 }
+// ============================================================================
+//  GNE-021: per-light conservative screen footprint.
+//
+//  WHY: the cull tests every light against every one of the 3456 clusters, so it
+//  performs exactly clusters x lights tests per frame. Measured, 022_shade gives
+//  3456 x 256 = 884736 and 019 gives 3456 x 16 = 55296 — the full cross product,
+//  none of it pruned. Most of those pairs cannot possibly overlap.
+//
+//  HOW: project the light's view-space AABB (centre +- range per axis) and take
+//  the min/max NDC of its 8 corners. Perspective projection of a convex polytope
+//  is bounded by its projected vertices, and the sphere is inside that AABB, so
+//  the rect is a SUPERSET. That is the whole point: anything this rect rejects
+//  would have failed sphere_vs_aabb anyway.
+//
+//  The cull's own NDC convention is reused, not re-derived. From cpp:1467-1472 a
+//  tile maps to NDC as nx = tx/16*2-1, ny = ty/9*2-1, and the box is built as
+//  x = nx * z * tanv * aspect. Inverting that gives the forward map used below.
+//  Re-deriving it is exactly how the cull and the fragment lookup drift apart.
+//
+//  FAIL-SAFE, in both directions:
+//   * if any corner is at or behind the near plane the vertex bound does not
+//     hold, so the light gets a FULL-SCREEN rect and can never be skipped here;
+//   * a rect that comes out empty after clamping degrades to ONE tile, never to
+//     zero. This pass can only ever make the cull test fewer pairs, and it can
+//     never drop a light that the old path would have kept.
+// ============================================================================
+const char *gpu_light_bounds_glsl = R"(
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant, std430) uniform BoundsParams {
+	uint light_count;
+	float tanv;
+	float aspect;
+	float unused;
+}
+bparams;
+
+layout(std430, set = 0, binding = 0) buffer CullLightStream {
+	vec4 recs[];
+}
+cullbuf;
+
+layout(std430, set = 0, binding = 1) buffer LightBoundsOut {
+	vec4 bnd[];
+}
+bndbuf;
+
+// Same ViewBlock the cull uses, so the transform and the viewport cannot drift.
+layout(std140, set = 0, binding = 5) uniform ViewBlock {
+	mat4 vp;
+	mat4 view;
+	vec4 planes[6];
+	vec4 viewport; // x = viewport_w, y = viewport_h, z = hzb_texel_count, w = tan_half_fov_v
+	uint occ_count;
+	float far_plane;
+	uint hzb_valid;
+	float pad1;
+}
+viewdata;
+
+void main() {
+	uint i = gl_GlobalInvocationID.x;
+	if (i >= bparams.light_count) {
+		return;
+	}
+	vec4 C0 = cullbuf.recs[i * 3u + 0u];
+	vec3 vw = (viewdata.view * vec4(C0.xyz, 1.0)).xyz;
+	// View convention matches the cull: +z forward, so depth is -vz.
+	float z = -vw.z;
+	float r = max(C0.w, 0.0);
+
+	vec4 full = vec4(0.0, 0.0, 15.0, 8.0);
+	if (z <= r + 1e-4) {
+		// Sphere reaches the eye plane: projection unbounded, do not skip.
+		bndbuf.bnd[i] = full;
+		return;
+	}
+	float inv_tan = 1.0 / max(bparams.tanv, 1e-6);
+	float inv_aspect = 1.0 / max(bparams.aspect, 1e-6);
+	float minx = 1e30, maxx = -1e30, miny = 1e30, maxy = -1e30;
+	for (int c = 0; c < 8; c++) {
+		float sx = ((c & 1) == 0) ? -r : r;
+		float sy = ((c & 2) == 0) ? -r : r;
+		float sz = ((c & 4) == 0) ? -r : r;
+		float cz = z + sz; // -vz including the corner offset
+		if (cz <= 1e-4) {
+			bndbuf.bnd[i] = full;
+			return;
+		}
+		float nx = (vw.x + sx) * inv_tan * inv_aspect / cz;
+		float ny = (vw.y + sy) * inv_tan / cz;
+		minx = min(minx, nx);
+		maxx = max(maxx, nx);
+		miny = min(miny, ny);
+		maxy = max(maxy, ny);
+	}
+	// NDC -> tile indices, rounding OUTWARD so the rect is never inside the true
+	// footprint, then clamped to the 16x9 grid.
+	float tx0 = clamp(floor((minx * 0.5 + 0.5) * 16.0), 0.0, 15.0);
+	float tx1 = clamp(ceil((maxx * 0.5 + 0.5) * 16.0), 0.0, 15.0);
+	float ty0 = clamp(floor((miny * 0.5 + 0.5) * 9.0), 0.0, 8.0);
+	float ty1 = clamp(ceil((maxy * 0.5 + 0.5) * 9.0), 0.0, 8.0);
+	if (tx1 < tx0) { tx1 = tx0; }
+	if (ty1 < ty0) { ty1 = ty0; }
+	bndbuf.bnd[i] = vec4(tx0, ty0, tx1, ty1);
+}
+)";
+
 const char *gpu_light_cull_glsl = R"(
 #version 450
 
@@ -1448,6 +1558,13 @@ layout(std430, set = 0, binding = 7) buffer LightCullBuffer {
 }
 cullbuf;
 
+// GNE-021: per-light conservative screen tile rect, written by the bounds pass.
+// Read first in the light loop so a miss costs one vec4 instead of an AABB test.
+layout(std430, set = 0, binding = 8) buffer LightBoundsBuffer {
+	vec4 bnd[];
+}
+bndbuf;
+
 layout(std140, set = 0, binding = 5) uniform ViewBlock {
 	mat4 vp;
 	mat4 view;
@@ -1501,6 +1618,15 @@ void main() {
 	bool rev_cullable = (params.rev.x > 0.5) && (rev_cone.w > 0.1);
 	float rev_sin = rev_cullable ? sqrt(max(0.0, 1.0 - rev_cone.w * rev_cone.w)) : 0.0;
 	for (uint i = 0u; i < nlights; i++) {
+		// GNE-021: skip lights whose conservative screen rect misses this tile.
+		// The rect is a superset of the light's true footprint, so a miss here is
+		// a miss sphere_vs_aabb would also have produced. Depth is deliberately
+		// NOT part of this test: the slices are exponential and reusing that
+		// convention is a separate, larger change.
+		vec4 B = bndbuf.bnd[i];
+		if (float(tx) < B.x || float(tx) > B.z || float(ty) < B.y || float(ty) > B.w) {
+			continue;
+		}
 		// GNE-021: read the cull stream, not lightbuf. One vec4 covers position
 		// and range, which is all the point-light path needs. The cone vec4s are
 		// fetched only for spot lights, inside the branch that uses them.
@@ -3292,10 +3418,14 @@ void GneRenderServer::_destroy_mesh() {
 			rendering_device->free_rid(cluster_index_buffer);
 			cluster_index_buffer = RID();
 		}
-		if (light_overflow_buffer.is_valid()) {
-			rendering_device->free_rid(light_overflow_buffer);
-			light_overflow_buffer = RID();
-		}
+	if (light_overflow_buffer.is_valid()) {
+		rendering_device->free_rid(light_overflow_buffer);
+		light_overflow_buffer = RID();
+	}
+	if (light_bounds_buffer.is_valid()) {
+		rendering_device->free_rid(light_bounds_buffer);
+		light_bounds_buffer = RID();
+	}
 		if (cluster_cone_buffer.is_valid()) {
 			rendering_device->free_rid(cluster_cone_buffer);
 			cluster_cone_buffer = RID();
@@ -7270,6 +7400,7 @@ if (!light_cone_env_checked) {
 		light_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_LIGHT_MAX * 64));
 		// GNE-021: cull-only stream, 3 vec4 per light. See the header comment.
 		light_cull_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_LIGHT_MAX * 48));
+		light_bounds_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_LIGHT_MAX * 16));
 		cluster_offset_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 4));
 		cluster_count_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 4));
 		cluster_index_buffer = rendering_device->storage_buffer_create(
@@ -7281,7 +7412,8 @@ if (!light_cone_env_checked) {
 			cluster_cone_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 16));
 		if (light_buffer.is_null() || light_cull_buffer.is_null() || cluster_offset_buffer.is_null()
 				|| cluster_count_buffer.is_null() || cluster_index_buffer.is_null()
-				|| light_overflow_buffer.is_null() || cluster_cone_buffer.is_null()) {
+				|| light_overflow_buffer.is_null() || cluster_cone_buffer.is_null()
+			|| light_bounds_buffer.is_null()) {
 			print_error("[GNE] gpu_light_create: buffer_create failed.");
 			return -1;
 		}
@@ -7497,12 +7629,12 @@ bool GneRenderServer::_light_ensure_geo() {
 	}
 	light_cull_pipeline = rendering_device->compute_pipeline_create(light_cull_shader);
 	Vector<RD::Uniform> cu;
-	const RID cbufs[8] = {
+	const RID cbufs[9] = {
 		light_buffer, cluster_offset_buffer, cluster_count_buffer,
 		cluster_index_buffer, light_overflow_buffer, view_ubo, cluster_cone_buffer,
-		light_cull_buffer
+		light_cull_buffer, light_bounds_buffer
 	};
-	for (uint32_t b = 0; b < 8; b++) {
+	for (uint32_t b = 0; b < 9; b++) {
 		RD::Uniform u;
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 		u.binding = b;
@@ -7515,6 +7647,30 @@ bool GneRenderServer::_light_ensure_geo() {
 	light_cull_uniform_set = rendering_device->uniform_set_create(cu, light_cull_shader, 0);
 	if (light_cull_uniform_set.is_null()) {
 		print_error("[GNE] light cull uniform_set_create failed.");
+		return false;
+	}
+	// GNE-021: the bounds pass must exist and be valid before the cull can read
+	// light_bounds_buffer, so it is created here, next to the cull, rather than
+	// lazily at first use where a failure would be invisible.
+	if (!compile_compute(_gne_glsl_with_shared(gpu_light_bounds_glsl, true).utf8().get_data(), "gne_light_bounds", light_bounds_shader)) {
+		return false;
+	}
+	light_bounds_pipeline = rendering_device->compute_pipeline_create(light_bounds_shader);
+	Vector<RD::Uniform> bu;
+	const RID bbufs[3] = { light_cull_buffer, light_bounds_buffer, view_ubo };
+	for (uint32_t b = 0; b < 3; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		if (b == 2) {
+			u.uniform_type = RD::UNIFORM_TYPE_UNIFORM_BUFFER;
+		}
+		u.append_id(bbufs[b]);
+		bu.push_back(u);
+	}
+	light_bounds_uniform_set = rendering_device->uniform_set_create(bu, light_bounds_shader, 0);
+	if (light_bounds_uniform_set.is_null()) {
+		print_error("[GNE] light bounds uniform_set_create failed.");
 		return false;
 	}
 	Vector<uint8_t> vert_spirv = rendering_device->shader_compile_spirv_from_source(
@@ -9096,6 +9252,25 @@ draw_frame_seq++;
 	cp.rev[2] = 0.0f;
 	cp.rev[3] = 0.0f;
 	_run_compute_pass(light_cull_pipeline, light_cull_uniform_set, &cp, sizeof(cp), 54, 1, 1);
+	// GNE-021: bounds pass, one thread per light, dispatched before the cull so
+	// the cull reads a rect written this frame rather than last frame's. Uses the
+	// same tanv/aspect the cull's own cluster math uses, taken from the same
+	// push params, so the two cannot disagree about the projection.
+	{
+		struct BoundsPush {
+			uint32_t light_count;
+			float tanv;
+			float aspect;
+			float unused;
+		};
+		BoundsPush bp;
+		bp.light_count = (uint32_t)light_count;
+		bp.tanv = cam_tan_v;
+		bp.aspect = 1920.0f / 1080.0f;
+		bp.unused = 0.0f;
+		uint32_t bgroups = (uint32_t)(((light_count - 1) / 64) + 1);
+		_run_compute_pass(light_bounds_pipeline, light_bounds_uniform_set, &bp, sizeof(bp), bgroups, 1, 1);
+	}
 	int cone_age = draw_frame_seq - cone_src_frame;
 	cone_age_last = cone_age;
 	if (cone_age > cone_age_max) {

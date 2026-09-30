@@ -250,6 +250,11 @@ bool gne_present_lowres = false;
 	// check whether the three full-record write sites are enough or whether the
 	// partial intensity write also has to call _light_pack_cull.
 	RID light_cull_buffer;     // vec4[3*1024] = (pos,range) (dir,type) (inner,outer)
+	// GNE-021: per-light conservative screen tile rect (tx0, ty0, tx1, ty1).
+	RID light_bounds_buffer;  // vec4[1024]
+	RID light_bounds_shader;
+	RID light_bounds_pipeline;
+	RID light_bounds_uniform_set;
 	void _light_pack_cull(int p_id, const GneLight &p_light);
 	RID cluster_offset_buffer; // uint[3456] flat-list offsets
 	RID cluster_count_buffer;  // uint[3456] per-cluster counts
