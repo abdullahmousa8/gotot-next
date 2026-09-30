@@ -15,6 +15,7 @@ var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
 var sig_file := ""
+var shot_file := ""
 
 func _mk_point(pos: Vector3, radius: float, color: Color, intensity: float) -> Dictionary:
 	return {"type": 0, "pos": pos, "range": radius, "color": color, "intensity": intensity}
@@ -39,7 +40,9 @@ func _ready() -> void:
 		return
 	if not server.gpu_mesh_create():
 		_fail(404, "mesh_create")
-	# material store must exist before any draw (016.5-era note)
+		return
+
+	# GNE-016.5 note: material store must exist before any draw
 	if not server.gpu_material_create():
 		_fail(5044, "material_create"); return
 	if not server.gpu_mesh_set_batch_strategy(0):
@@ -51,8 +54,6 @@ func _ready() -> void:
 			_fail(5045, "params"); return
 		if not server.gpu_material_set_specular(mi, Color(0.25, 0.25, 0.25), 32.0):
 			_fail(5045, "specular"); return
-		return
-	# ---- geometry: same construction as GNE-021 (city) ----
 	var idx := 0
 	server.gpu_scene_set_instance_transform(idx, Vector3(0, -3000, -900), 6000.0); server.gpu_scene_set_instance_mesh(idx, 0); idx += 1
 	for side in [1.0, -1.0]:
@@ -70,6 +71,7 @@ func _ready() -> void:
 	while idx < INSTANCE_COUNT:
 		server.gpu_scene_set_instance_transform(idx, Vector3(0, -9000, 0), 1.0); server.gpu_scene_set_instance_mesh(idx, 0); idx += 1
 	# ---- lights: same 256 as GNE-021 ----
+	_flog("lights loop start")
 	var want := 0
 	for side2 in [1.0, -1.0]:
 		for k in range(20):
@@ -104,6 +106,7 @@ func _ready() -> void:
 		if server.gpu_light_create(_mk_point(Vector3(-1500.0 + r4 * 280.0, 200.0, -2600.0), 420.0, Color(0.9, 0.75, 0.95), 1.8)) != want:
 			_fail(414, "point id " + str(want)); return
 		want += 1
+	_flog("street+row+tower+back spots/points done, want=" + str(want))
 	var scatter := 0
 	var zz := 860.0
 	while scatter < 76:
@@ -176,52 +179,24 @@ func _ready() -> void:
 		ok = false
 	if near[0] <= 0.031:
 		ok = false
+	# teardown + quit handled by _probe_layer
 	_probe_layer()
 
 
+func _flog(msg: String) -> void:
+	var f := FileAccess.open("C:/Users/opc/AppData/Local/Temp/opencode/s22b_flog.txt", FileAccess.READ_WRITE)
+	if f == null:
+		f = FileAccess.open("C:/Users/opc/AppData/Local/Temp/opencode/s22b_flog.txt", FileAccess.WRITE)
+	if f != null:
+		f.seek_end()
+		f.store_line(str(Time.get_ticks_msec()) + "ms " + msg)
+		f.close()
 
-func _hdr_probe(p_px: Vector2) -> PackedFloat32Array:
-	return server.gpu_raster_read_hdr(int(p_px.x), int(p_px.y))
-
-func _brightness(pixels: PackedByteArray, p: Vector2) -> float:
-	var o := (int(p.y) * RASTER_W + int(p.x)) * 4
-	return (float(pixels[o]) + float(pixels[o + 1]) + float(pixels[o + 2])) / 765.0
-
-func _window_mean(pixels: PackedByteArray, c: Vector2, r: int) -> float:
-	var s := 0.0
-	var n := 0
-	for dy in range(-r, r + 1):
-		for dx in range(-r, r + 1):
-			s += _brightness(pixels, c + Vector2(dx, dy))
-			n += 1
-	return s / float(n)
-
-func _proj_px(p: Vector3, vp: PackedFloat32Array) -> Vector2:
-	var cx: float = vp[0] * p.x + vp[4] * p.y + vp[8] * p.z + vp[12]
-	var cy: float = vp[1] * p.x + vp[5] * p.y + vp[9] * p.z + vp[13]
-	var cw: float = vp[3] * p.x + vp[7] * p.y + vp[11] * p.z + vp[15]
-	var nx := cx / cw
-	var ny := cy / cw
-	var px := (nx * 0.5 + 0.5) * RASTER_W
-	var c0 := Vector2(px, (ny * 0.5 + 0.5) * RASTER_H)
-	var c1 := Vector2(px, (0.5 - ny * 0.5) * RASTER_H)
-	if c0.x >= 4 and c0.y >= 4 and c0.x < RASTER_W - 4 and c0.y < RASTER_H - 4:
-		return c0
-	return c1
-
-func _redraw() -> bool:
-	if not server.gpu_cull_dispatch():
-		_fail(5040, "recull"); return false
-	if not server.gpu_visibility_dispatch():
-		_fail(5041, "revis"); return false
-	if not server.gpu_mesh_batch_dispatch():
-		_fail(5042, "rebatch"); return false
-	if not server.gpu_material_draw_lights():
-		_fail(5043, "draw"); return false
-	return true
 
 func _probe_layer() -> void:
 	# ---- 023 integration layer: draw + HDR/8-bit probes on the city ----
+	if not _redraw():
+		return
 	if not server.gpu_material_draw_lights():
 		_fail(430, "draw lights pcf"); return
 	var pix_pcf := server.gpu_raster_read_pixels()
@@ -262,7 +237,7 @@ func _probe_layer() -> void:
 	var pix_b := server.gpu_raster_read_pixels()
 	var det_ok: bool = (pix_a == pix_b)
 	print("S22B: determinism=", det_ok)
-	var i1_ok := du >= 0.02
+	var i1_ok := dh_u >= 0.5 # HDR-based: pre-clamp radiance gain on the umbra probe
 	var pass_all: bool = i1_ok and det_ok
 	print("S22B: I1(umbra indirect)=", i1_ok, " det=", det_ok, " => ", ("PASS" if pass_all else "FAIL"))
 	var sig := "v022b|du=%.4f|dh_u=%.4f|dh_l=%.4f|det=%d|d1" % [du, dh_u, dh_l, int(det_ok)]
@@ -279,6 +254,46 @@ func _probe_layer() -> void:
 	else:
 		print("S22B: FAIL")
 		get_tree().quit(50)
+
+func _hdr_probe(p_px: Vector2) -> PackedFloat32Array:
+	return server.gpu_raster_read_hdr(int(p_px.x), int(p_px.y))
+
+func _brightness(pixels: PackedByteArray, p: Vector2) -> float:
+	var o := (int(p.y) * RASTER_W + int(p.x)) * 4
+	return (float(pixels[o]) + float(pixels[o + 1]) + float(pixels[o + 2])) / 765.0
+
+func _window_mean(pixels: PackedByteArray, c: Vector2, r: int) -> float:
+	var s := 0.0
+	var n := 0
+	for dy in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			s += _brightness(pixels, c + Vector2(dx, dy))
+			n += 1
+	return s / float(n)
+
+func _proj_px(p: Vector3, vp: PackedFloat32Array) -> Vector2:
+	var cx: float = vp[0] * p.x + vp[4] * p.y + vp[8] * p.z + vp[12]
+	var cy: float = vp[1] * p.x + vp[5] * p.y + vp[9] * p.z + vp[13]
+	var cw: float = vp[3] * p.x + vp[7] * p.y + vp[11] * p.z + vp[15]
+	var nx := cx / cw
+	var ny := cy / cw
+	var px := (nx * 0.5 + 0.5) * RASTER_W
+	var c0 := Vector2(px, (ny * 0.5 + 0.5) * RASTER_H)
+	var c1 := Vector2(px, (0.5 - ny * 0.5) * RASTER_H)
+	if c0.x >= 4 and c0.y >= 4 and c0.x < RASTER_W - 4 and c0.y < RASTER_H - 4:
+		return c0
+	return c1
+
+func _redraw() -> bool:
+	if not server.gpu_cull_dispatch():
+		_fail(5040, "recull"); return false
+	if not server.gpu_visibility_dispatch():
+		_fail(5041, "revis"); return false
+	if not server.gpu_mesh_batch_dispatch():
+		_fail(5042, "rebatch"); return false
+	if not server.gpu_material_draw_lights():
+		_fail(5043, "draw"); return false
+	return true
 
 func _fail(code: int, msg: String) -> void:
 	print("S1B: FAIL code=", code, " ", msg)

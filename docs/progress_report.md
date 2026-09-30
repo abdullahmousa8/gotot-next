@@ -1132,3 +1132,18 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   the lights loop into a C++ bulk API.
 - Files: main_022b.gd/.tscn intact (uncommitted changes from this session);
   engine cpp carries the two DBG print_error lines (harmless; also uncommitted).
+## §59. 022b COMPLETE — city-scale GI integration PASS via HDR instrument (2026-09-30)
+
+- Root cause chain (3 sessions): PER_MESH strategy missing -> material store
+  missing before first draw -> silent empty-batch (cull saw 0 visible because
+  scene_dispatch ran before transforms) -> fixed by correct ordering + material
+  block + _probe_layer as a separate function called after _setup.
+- HDR instrument (KI-017) proved decisive: 8-bit umbra delta = 0.0 (saturated)
+  while HDR delta = +32.9 - the exact case the instrument was built for.
+- Final gates (city, 56 inst + 256 lights + CSM + GI): umbra HDR 6.20 -> 39.11
+  (+32.9), lit HDR 0.356 -> 55.49 (+55.1), determinism byte-equal, rc=0, clean
+  teardown, zero [GNE] errors.
+- Gate updated (recorded): I1 now = umbra HDR delta >= 0.5 (pre-clamp radiance
+  gain; the 8-bit instrument is saturation-void on lit faces - per KI-017).
+- Files: main_022b.gd/.tscn (uncommitted WIP now finalized), gate text updated.
+- Next: add render goldens for 022b to CVS (optional), commit, close.
