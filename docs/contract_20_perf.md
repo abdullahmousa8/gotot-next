@@ -18,33 +18,34 @@ and pipeline creation included. It is not a steady-state frame time.
 
 | Metric | FAIL | WARN | Gated? |
 |---|---|---|---|
-| `wall_avg_us` | `> 31302` | `> 35997` | **yes** |
+| `wall_avg_us` | `> 25465` | `> 29284` | **yes** |
 | `wall_peak_us` | — | — | **no — recorded only** |
 
 The gate evaluates the **worse of the two passes**, not the last one, so a
 regression confined to d1 is still caught. `WARN` is reported in the detail
 column and does **not** fail the build.
 
-**Basis — re-baselined 2026-09-30 for the KI-001 instrumentation binary (`65D8904D…`):**
+**Basis — re-baselined 2026-09-30 (final) for the KI-001 instrumentation binary
+(`F3D350CB…`, the artifact the sweep will verify):**
 
-| min | max | spread | first-3 avg | last-3 avg |
-|---|---|---|---|---|
-| 18129 | 23714 | **1.308x** | 18319 | 22958 |
+| min | max | spread |
+|---|---|---|
+| 17116 | 19292 | **1.127x** |
 
 6 samples, each the **worst of its two `main_020` passes** — the exact statistic
-the gate computes. `fail_us = 31302` is **1.32x above the measured maximum**
-(23714 x 1.32) and `warn_us = 35997` is `fail x 1.15`. All runs exited 0.
+the gate computes. `fail_us = 25465` is **1.32x above the measured maximum**
+(19292 x 1.32 = 25465.44) and `warn_us = 29284` is `fail x 1.15`. All runs
+exited 0.
 
-**Host drift inside the window, recorded not hidden:** the first three samples
-average 18319 and the last three 22958 — the host slowed during the run, the same
-contamination the register documents. A quieter window would tighten this basis;
-it is deliberately not tightened by hand, because the rule is "1.32x over the
-observed maximum". The module change that forced this re-baseline is
-timing-neutral for this scene (`main_020` never calls `gpu_frame_*`). Method as
-recorded in `tools/perf020_baseline.txt`: two direct engine runs per sample
-instead of the `.bat` wrapper, which cannot write its `%TEMP%` signature files in
-the measuring shell. The previous basis (`7A65D1EB`, fail 24474) is void because
-the exe was relinked.
+**Why this binary:** refreshing the provenance stamp required a full relink (the
+exe and the module lib were deleted and `gne_verify` rebuilt them), which yields a
+new binary hash from identical sources; the basis is therefore taken on the
+artifact that will actually be verified, not on the incremental relink
+(`65D8904D`, whose 6 samples drifted 1.308x and are superseded — both windows are
+recorded in progress section 62). Method as recorded in
+`tools/perf020_baseline.txt`: two direct engine runs per sample instead of the
+`.bat` wrapper, which cannot write its `%TEMP%` signature files in the measuring
+shell.
 
 ## 3. What is deliberately NOT the basis
 
@@ -108,5 +109,5 @@ recorded in `open_items_register.md` as a known structural limit.
 
 The threshold is one-sided (cost rising), so it is verified by **injection**:
 run `gne_verify.ps1` with `gt_020a.log` carrying a synthetic `wall_avg_us`
-above `31302` and confirm `perf020: FAIL` and `GNE_VERIFY: FAIL`. The pass path
+above `25465` and confirm `perf020: FAIL` and `GNE_VERIFY: FAIL`. The pass path
 is confirmed by the live 5-run measurement above, all `GT_020A: PASS`.

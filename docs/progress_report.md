@@ -1366,8 +1366,14 @@ All three are edits inside `godot-master`, which the standing rule forbids (KI-0
 upstream tag. Until one of them is authorized: per-pass numbers stay CPU-side, **no per-pass
 threshold is admissible**, and GPU columns stay NA rather than zero.
 
-**perf020 re-baselined for the new binary** (`65D8904D`, the module change relinked the exe):
-6 samples (worst of the two passes each) `18568 18129 18259 21962 23714 23199`, min 18129, max 23714,
-spread 1.308x, first-three average 18319 vs last-three 22958 (host drift inside the window,
-recorded). `fail_us = 31302` (1.32x max), `warn_us = 35997` (fail x 1.15); all runs exited 0.
-`contract_20_perf.md` section 2 is synced to the live file.
+**perf020 re-baselined - twice, and the second one is the one that counts.** The module change first
+produced the incremental relink `65D8904D` (6 samples `18568 18129 18259 21962 23714 23199`, max
+23714, spread 1.308x, first-three average 18319 vs last-three 22958 - host drift inside the window,
+recorded; that window would have given fail 31302 / warn 35997). Refreshing the provenance stamp then
+required a **full relink** (exe and module lib deleted, `gne_verify` rebuilt them), which yields a new
+binary hash from identical sources - so the basis was re-taken on the artifact the sweep will actually
+verify: `F3D350CB`, 6 samples `19292 18039 17730 17949 18562 17116`, min 17116, max 19292, spread
+**1.127x** (a quiet window) -> `fail_us = 25465` (1.32x max), `warn_us = 29284` (fail x 1.15); all
+runs exited 0. The stamp was written by the tool itself in that run:
+`GNE_STAMP: RELINK exe=F3D350CB tree=425d212 module=0B622B2D` then `provenance PASS`, with
+`module_dirty=0`. `contract_20_perf.md` section 2 is synced to the live file.
