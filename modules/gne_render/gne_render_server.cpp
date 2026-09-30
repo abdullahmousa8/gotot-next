@@ -1413,6 +1413,12 @@ layout(std430, set = 0, binding = 3) buffer ClIndexBuffer {
 }
 clidx;
 
+// GNE-021: ovf[0] is the cluster-cap overflow count (pre-existing).
+// ovf[1] is tests_performed - how many sphere_vs_aabb calls the cull actually
+// made this frame. It exists so the cost of the cull can be a NUMBER READ BACK
+// from the engine rather than an argument about how the code looks. Without it
+// any claim about the cull's work is an inference, and this project has spent a
+// long session dismantling inferences.
 layout(std430, set = 0, binding = 4) buffer OverflowBuffer {
 	uint ovf[];
 }
@@ -1510,6 +1516,9 @@ void main() {
 			}
 		}
 		bool hit = sphere_vs_aabb(vc, rr, bmin, bmax);
+		// GNE-021: count the work actually done, so a later cull change can be
+		// judged by a measured number instead of a claim.
+		atomicAdd(ovfb.ovf[1], 1u);
 		if (hit) {
 			// GNE-021: type and cone arrive only now, so a point light never
 			// pays for them. Previously L2/L3 were fetched for every light.
@@ -7265,7 +7274,7 @@ if (!light_cone_env_checked) {
 		cluster_count_buffer = rendering_device->storage_buffer_create((uint32_t)(GNE_CLUSTER_COUNT * 4));
 		cluster_index_buffer = rendering_device->storage_buffer_create(
 				(uint32_t)(GNE_CLUSTER_COUNT * GNE_CLUSTER_LIGHT_CAP * 4));
-		light_overflow_buffer = rendering_device->storage_buffer_create(4);
+		light_overflow_buffer = rendering_device->storage_buffer_create(8);
 
 			// GNE-018-rev: cluster normal-cone records (3456 x vec4). Zero-filled =
 			// the "never cull" sentinel default; the cone pass will rewrite per frame.
@@ -7281,7 +7290,7 @@ if (!light_cone_env_checked) {
 		}
 		rendering_device->buffer_clear(cluster_offset_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
 		rendering_device->buffer_clear(cluster_count_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
-		rendering_device->buffer_clear(light_overflow_buffer, 0, 4);
+		rendering_device->buffer_clear(light_overflow_buffer, 0, 8);
 			rendering_device->buffer_clear(cluster_cone_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 16));
 		cone_src_frame = draw_frame_seq; // initial zeros count as source frame 0
 		// Static layout: cluster tid owns slots [tid*16, tid*16+16). Filled
@@ -7383,6 +7392,7 @@ Dictionary GneRenderServer::gpu_light_get_stats() {
 	d["clusters_touched"] = light_clusters_touched;
 	d["assignments"] = light_assignments;
 	d["overflows"] = light_overflows;
+	d["tests_performed"] = light_tests_performed;
 	d["normal_cone"] = light_cone_enabled;
 	return d;
 }
@@ -9066,7 +9076,7 @@ draw_frame_seq++;
 	}
 	// 1. Cull: clear counts + overflow, dispatch 3456 threads, sync.
 	rendering_device->buffer_clear(cluster_count_buffer, 0, (uint32_t)(GNE_CLUSTER_COUNT * 4));
-	rendering_device->buffer_clear(light_overflow_buffer, 0, 4);
+	rendering_device->buffer_clear(light_overflow_buffer, 0, 8);
 	struct CullPush {
 		float dims[4];  // light_count, tan_half_fov_v, aspect, unused
 		float range[4]; // near, far, raster_w, raster_h
@@ -9106,11 +9116,15 @@ draw_frame_seq++;
 				}
 			}
 		}
-		Vector<uint8_t> ob = rendering_device->buffer_get_data(light_overflow_buffer, 0, 4);
+		Vector<uint8_t> ob = rendering_device->buffer_get_data(light_overflow_buffer, 0, 8);
 		light_overflows = 0;
-		if (ob.size() == 4) {
+		light_tests_performed = 0;
+		if (ob.size() == 8) {
 			uint32_t o = 0;
+			uint32_t t = 0;
 			memcpy(&o, ob.ptr(), 4);
+			memcpy(&t, ob.ptr() + 4, 4);
+			light_tests_performed = (int)t;
 			light_overflows = (int)o;
 		}
 	}

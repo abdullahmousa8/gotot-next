@@ -258,6 +258,7 @@ bool gne_present_lowres = false;
 	RID light_cull_pipeline;
 	RID light_cull_uniform_set;
 	RID light_overflow_buffer; // uint[1] per-cluster-cap overflow counter
+	int light_tests_performed = 0; // GNE-021: sphere_vs_aabb calls made by the cull last frame
 	RID cluster_cone_buffer;   // GNE-018-rev vec4[3456] cluster normal cones (0 = never cull)
 	RID light_cone_shader;
 	RID light_cone_pipeline;

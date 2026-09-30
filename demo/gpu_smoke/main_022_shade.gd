@@ -226,6 +226,14 @@ func _analyze(pix_off: PackedByteArray, pix_on: PackedByteArray) -> void:
 	# The spot column is the one that exercises the cone branch the split touches.
 	_dump_cluster_ids("spot", Vector3(300.0, 150.0, 820.0))
 	_dump_cluster_ids("point", Vector3(0.0, 55.0, 0.0))
+	# GNE-021: how many sphere_vs_aabb tests the cull actually performed. This is
+	# a count read back from the engine, not an estimate, so a cull change can be
+	# judged by a measured number instead of a claim about how the code looks.
+	var st: Dictionary = server.gpu_light_get_stats()
+	print("SHADE: CULL_TESTS performed=", int(st["tests_performed"]),
+		" assignments=", int(st["assignments"]),
+		" clusters_touched=", int(st["clusters_touched"]),
+		" overflows=", int(st["overflows"]))
 	var sig := "v22shade|nr=%.4f|fr=%.5f|rt=%.2f|s=0.03|clip=%d|d1" % [nr, fr, rt, clip]
 	print("SHADE: sig=" + sig)
 	if sig_file != "":
