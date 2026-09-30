@@ -1537,3 +1537,20 @@ whether section 11 may then be formally closed. Section 11's official wording st
 
 - Run: `godot.windows.editor.dev.x86_64.console.exe --path demo/gpu_smoke --rendering-method forward_plus res://main_022_m2.tscn -- --sigf=<path>`
 - Gate: `tools\gt_022m2.bat` (added to the CVS literal loop; CVS is now 24 rows).
+
+- **SWEEP GREEN with the new gate (2026-10-01 00:01, owner shell): 24/24 rows.**
+  `GNE_STAMP: NO_RELINK exe=F3D350CBDC1C` -> `build PASS` ->
+  `provenance PASS exe=F3D350CBDC1C module=0B622B2DFBE3 dirty=0 head=472566c` -> `module_boot PASS`
+  -> `gt_regress PASS` -> the seven original literals **plus** `gt_022b` **plus the new**
+  `gt_022m2 PASS sig=v022m2|frames=160|r10min=0.507853|r10max=0.511340|r10gm=0.509385|below=14/14|e5=127|det=1|d1`
+  -> the five topical gates -> `gi_gate2` / `gi_shade` -> `gt_023a` -> both golden renders ->
+  `no_errors PASS 0 error lines` -> `perf020 PASS 23912us worst of 2 [FAIL>25465 WARN>29284]`.
+  History row: `2026-10-01 00:01  472566c  PASS  ... gt_022m2:PASS ... perf020:PASS  020:23912/58394`.
+  The (b-field) gate is therefore registered, literal-pinned and green in the harness, and
+  `no_errors` in the owner's session confirms the environment note above: the `user://`/certificate
+  ERROR lines are this measuring shell's artifacts, not the gate's.
+- **perf020 observation, recorded rather than smoothed:** this sweep read `23912 us`, i.e. **1.24x**
+  the maximum of the six-sample window the basis was built on (19292 -> fail 25465). It passed, but
+  with a 6.5% margin, so the host was noisier than during the basis window - the same variance the
+  register already documents as the dominant term. No action now; per the file's own rule a future
+  breach is answered by re-measuring on a quiet host, never by widening the threshold.
