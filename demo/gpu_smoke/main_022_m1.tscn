@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3 uid="uid://bgt022m1float001"]
+
+[ext_resource type="Script" path="res://main_022_m1.gd" id="1_m1"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_m1")
+
+[node name="Camera" type="Camera3D" parent="."]
+fov = 60.0
+near = 300.0
+far = 6200.0
+current = true

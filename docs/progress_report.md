@@ -1408,3 +1408,68 @@ runs exited 0. The stamp was written by the tool itself in that run:
   History row: `2026-09-30 23:27  d4818bc  PASS  ... gt_022b:PASS ... perf020:PASS  020:16812/41921`.
   The KI-001 instrumentation change is therefore verified end-to-end: no signature moved, the GPU
   columns stay NA (never zero), and the re-baselined gate is green on the artifact it was measured on.
+
+## §63. GNE-022 §11-M1 / KI-016 - FLOAT FIELD CONVERGENCE INSTRUMENT (implemented 2026-09-30)
+
+Spec: `docs/spec_022_gi_scoping.md` section 11-M1 (frozen 2026-09-29, approved and executed now).
+**Measurement only**: the section-11 criterion is untouched, its official state remains
+`FAIL (criterion b)`, and `main_022_loop.gd` (frozen) was not edited - confirmed by `git diff`:
+the change set is exactly the two new files `demo/gpu_smoke/main_022_m1.gd` and `.tscn`.
+
+**What it measures.** The GI field itself at float precision, through the same
+`gpu_gi_read_avg()` readback the section-11 scene uses (float32 since 11-R1), on the section-11
+near probe plus a fixed probe set for robustness. Per frame: `accum_step` + redraw (the gather's
+visibility gate consumes the raster, so the loop context matches section 11) and **one field
+readback**; the extra probes are sampled on the section-11 cadence, because each readback fetches
+the whole atlas. No 8-bit pixel readback appears anywhere in the scene.
+
+**Measured (binary `F3D350CB`, 160 frames, in-process double run):**
+
+| k | f (near probe, red) | delta over the 10-frame interval | ratio vs previous interval |
+|---|---|---|---|
+| 10 | 0.365740716 | - | - |
+| 20 | 0.552415311 | 0.186674595 | - |
+| 30 | 0.647609890 | 0.095194578 | 0.509949 |
+| 40 | 0.696123779 | 0.048513889 | 0.509629 |
+| 50 | 0.720837355 | 0.024713576 | 0.509412 |
+| 60 | 0.733423293 | 0.012585938 | 0.509272 |
+| 70 | 0.739831924 | 0.006408632 | 0.509190 |
+| 80 | 0.743094921 | 0.003262997 | 0.509157 |
+| 90 | 0.744756281 | 0.001661360 | 0.509152 |
+| 100 | 0.745602190 | 0.000845909 | 0.509167 |
+| 110 | 0.746032894 | 0.000430703 | 0.509160 |
+| 120 | 0.746252179 | 0.000219285 | 0.509134 |
+| 130 | 0.746363819 | 0.000111639 | 0.509106 |
+| 140 | 0.746420741 | 0.000056922 | 0.509877 |
+| 150 | 0.746449649 | 0.000028908 | 0.507853 |
+| 160 | 0.746464431 | 0.000014782 | 0.511340 |
+
+- **The acceptance figure is resolved on the field, with no 8-bit involvement:** ratio per 10 frames
+  `geomean = 0.509385`, `median = 0.509178`, and **14/14** intervals at or below the section-11
+  0.6 rule. The 11-R1 record states "clean 0.509 decay".
+- **The recorded 11-R1 delta range is reproduced at both ends:** 10-frame deltas run
+  `1.8667e-1 -> 1.4782e-5`, against the record's `1.87e-1 ... 1.4e-5`. (Per-frame deltas are also
+  reported: `4.5422e-2 -> 1.0727e-6`, min = max-order of the tail.) This is the first independent
+  reproduction of those numbers since the R1 experiment.
+- **Endpoint characteristics (per-frame |delta|):** `< 1e-5` first at frame **127**; `< 1e-6`
+  **not reached within 160** - a characteristic, reported, not a failure.
+- **Probe-set robustness (values at the final sample):** near 0.746464431, far 0.020764926,
+  spread A 0.017331215, B 0.051677477, C 0.332301825; all finite. The far probe is ~36x dimmer than
+  near, the same near/far ordering sections 10-11 rely on.
+- **Determinism:** in-process double run byte-equal on the series, the ratio series AND the 10-frame
+  samples (`det=1`).
+- **Cost, measured:** one whole-atlas readback per frame costs `p50 = 718 us`, `accum p50 = 564 us`;
+  the full 160-frame sequence (twice) plus the probe set runs in **3.7 s wall**. The spec's batched
+  readback fallback is therefore NOT needed, and that is recorded rather than assumed.
+- **Zero ERROR/leak in the scene's own output** (0 non-environment error lines; the only ERROR lines
+  in the log are this shell's `user://` log-open and certificate-store artifacts, which appear in
+  every run here and are absent from the owner's session).
+- **Not a gate, by spec:** nothing was added to `tools/gne_verify.ps1` or `tools/verify_baseline.txt`.
+  The instrument reports; any future use of it to re-evaluate criterion (b) is a separate registered
+  decision (the spec names it section 11-M2), not this unit.
+- **No regression:** only two new files exist as changes (`git diff` empty), `gt_018a` and `gt_022b`
+  still reproduce their literals, the `main_018` golden is still SHA-256 identical, and the
+  provenance stamp still matches the binary because nothing was rebuilt.
+
+- Signature: `v022m1|frames=160|dfirst=0.045421503|dlast=0.000001073|r10gm=0.509385|r10med=0.509178|e5=127|e6=-1|det=1|d1`
+- Run: `godot.windows.editor.dev.x86_64.console.exe --path demo/gpu_smoke --rendering-method forward_plus res://main_022_m1.tscn -- --sigf=<path>`
