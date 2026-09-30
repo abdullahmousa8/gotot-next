@@ -437,3 +437,31 @@ fully (`v18|lc=20|cc=2841|ot=0|hr=0.94|d1`, EXIT=0), as did the full CVS afterwa
 cause claimed. Pattern resembles the historical first-run flakes (Lesson 5 class:
 silent kills with a quiet event log), hence recorded rather than dismissed.
 Re-open as a KI only on second occurrence with logs attached.
+
+## KI-018: Measuring-shell artifacts - ghost ERROR lines, hung runs, missing %OUT% (ENVIRONMENT, not engine)
+
+**Date:** 2026-10-01
+**Status:** OPEN - environment limitation; proven shell-specific by cross-shell comparison
+**Severity:** Medium (can only cause false FAIL/stall, never false PASS - see below)
+**Owner:** GNE Architecture
+
+**Symptoms (all measured 2026-10-01, secondary measuring shell only):**
+1. Every Godot invocation prints 3 artifact lines: `user://logs/...log` open x2
+   + root certificate store read failure. The owner shell prints none on the
+   identical tree and binary (24/24 PASS, 0 error lines).
+2. Bat-launched runs can HANG indefinitely (zombie godot.exe holding GPU/file
+   locks; two resisted kill with Access denied), so the bat `%OUT%` file is
+   never written. Direct scene launches from the same shell complete normally.
+3. No timeout mechanism exists in ANY gt_*.bat wrapper - a hung run stalls the
+   belt instead of failing it.
+
+**Why it cannot silently PASS (structural):** every wrapper deletes `%OUT%` /
+`%SIGF%` BEFORE launching, and every sig read is guarded (empty sig = FAIL,
+missing markers = FAIL). The failure modes are therefore loud FAIL or
+infinite stall - never a stale-file PASS. A hung belt is distinguishable from
+a green one by the missing verdict line, not by a false PASS.
+
+**Rule adopted:** gate verdicts (PASS) are only taken from the owner shell.
+Secondary-shell runs are measurement/diagnosis only. Any future gate that
+reads a sidecar file must keep the del-first + guarded-read pattern, and any
+new wrapper should add a timeout (none exists today).
