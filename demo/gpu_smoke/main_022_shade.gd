@@ -28,6 +28,7 @@ var display: TextureRect
 var image_tex: ImageTexture
 var sig_file := ""
 var shot_path := ""
+var dumptile := ""
 
 func _mk_point(pos: Vector3, radius: float, color: Color, intensity: float) -> Dictionary:
 	return {"type": 0, "pos": pos, "range": radius, "color": color, "intensity": intensity * ISCALE}
@@ -42,6 +43,8 @@ func _ready() -> void:
 			sig_file = a.split("=")[1]
 		elif a.begins_with("--png="):
 			shot_path = a.split("=")[1]
+		elif a.begins_with("--dumptile="):
+			dumptile = a.split("=")[1]
 	_setup()
 
 func _setup() -> void:
@@ -229,6 +232,11 @@ func _analyze(pix_off: PackedByteArray, pix_on: PackedByteArray) -> void:
 	# The spot column is the one that exercises the cone branch the split touches.
 	_dump_cluster_ids("spot", Vector3(300.0, 150.0, 820.0))
 	_dump_cluster_ids("point", Vector3(0.0, 55.0, 0.0))
+	if dumptile != "":
+		for spec in dumptile.split(";"):
+			var p := spec.split(",")
+			if p.size() == 2:
+				_dump_tile("probe", int(p[0]), int(p[1]))
 	# GNE-021: how many sphere_vs_aabb tests the cull actually performed. This is
 	# a count read back from the engine, not an estimate, so a cull change can be
 	# judged by a measured number instead of a claim about how the code looks.
@@ -338,6 +346,13 @@ func _dump_cluster_ids(tag: String, world: Vector3) -> void:
 		return
 	var tx := int(px.x) / (RASTER_W / 16)
 	var ty := int(px.y) / (RASTER_H / 9)
+	_dump_tile(tag, tx, ty)
+
+# Direct tile dump for pixel-located probes: the visual artifact at (233,589)
+# projects to tile (1,4), which no world-anchored probe covers. Accessed only via
+# --dumptile=TX,TY (comma-separated "TX,TY;TX,TY;..."), so default belt runs are
+# byte-identical to before.
+func _dump_tile(tag: String, tx: int, ty: int) -> void:
 	var parts: Array = []
 	for tz in 24:
 		var c: PackedInt32Array = server.gpu_light_debug_cluster(tx, ty, tz)
