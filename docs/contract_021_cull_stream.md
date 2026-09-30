@@ -112,7 +112,81 @@ prevent. The basis file says so in writing.
    **edit → commit → run (relink, stamp written clean) → measure → update basis →
    amend.**
 
-## 6. Standing rules this change established
+## 6. Step 2 — coarse screen-space bounds pass (DONE, two items OPEN)
+
+The cull tested every light against every cluster: measured, exactly
+`clusters × lights` per frame. A new bounds pass, one thread per light, writes a
+**conservative** screen tile rect by projecting the 8 corners of the light's
+view-space AABB; perspective projection of a convex polytope is bounded by its
+projected vertices, so the rect is a superset of the light's true footprint. The
+cull skips any light whose rect misses the cluster tile.
+
+Two fail-safes, because this pass can only ever drop lights: a corner at or behind
+the near plane gives the light a full-screen rect, and a rect empty after clamping
+degrades to one tile, never to zero. The cull's NDC convention is inverted from its
+own cluster math rather than re-derived. Depth is deliberately **not** part of the
+test — the slices are exponential and agreeing with `gne_cluster_index` is a
+separate, larger change.
+
+### Measured, not claimed
+
+| scene | tests before | tests after | ratio |
+|---|---|---|---|
+| `022_shade` | 884736 | **359208** | 40.6% |
+| `019` (spacing) | 55296 | **53136** | 96.1% |
+
+and the number that proves nothing was lost: `assignments` 37180 → 37180 and
+`clusters_touched` 2926 → 2926 on 022_shade, 15456 → 15456 and 1479 → 1479 on 019.
+
+019 barely moves because all 16 of its lights are **coincident** and so share one
+tile rect — a spatial prune cannot separate lights that occupy the same place. The
+022_shade figure is the representative one.
+
+`tests_performed` is a new counter (`ovf[1]`), so both the before and the after
+come from the same instrument. No timing is claimed; GPU timestamps remain
+unavailable.
+
+### OPEN 1 — the one-tile margin is unexplained
+
+The rect is widened by one tile on every side. **A superset construction should
+need no margin at all.** Without it, `gt_021a` loses exactly 15 assignments in one
+cluster and one overflow; with it, the sig is byte-identical.
+
+Two candidates, neither proved:
+- the projection is subtly off at the rect edge, or
+- the cluster box is **wider than its tile at near depths** — `bmin.x` is
+  evaluated at `z1` while the box spans `bz0..z1`, so at `bz0` the same world `x`
+  maps to a larger NDC, which the tile rect does not cover.
+
+This margin must not be narrowed away without an explanation.
+
+### OPEN 2 — the perf020 distribution is bimodal and unexplained
+
+16 samples split into 7 at ~17.9k and 9 at ~22k — a 22% step with a real gap.
+That is not jitter; the scene is running in two distinct states and the cause is
+not identified. The ceiling in `tools/perf020_baseline.txt` is therefore set from
+the observed max across both modes, which is deliberately loose. A tight threshold
+against an unexplained two-state distribution is a false alarm waiting to happen.
+
+### Three defects the contract caught that review did not
+
+1. The bounds pass was dispatched **after** the cull while its comment said
+   "before" — the cull read the previous frame's rect. Caught by
+   `frustum_cull` (`1=1` → `1=0`), `cluster_overflow` (`ovf=2404` → `2`) and
+   `mat_v2_x1` (`diff_px` 0 → 243). A comment asserting an ordering the code does
+   not implement is itself the defect.
+2. The uniform set supplied `view_ubo` at array index 2 while the shader declares
+   `ViewBlock` at **binding 5**. Godot requires the declared binding. The cull's
+   set agrees between index and binding by coincidence, so copying its shape
+   produced the bug.
+3. The bounds pass leaked three RIDs — shader, pipeline, uniform set — caught by
+   `gt_023a`'s RID-cleanup check.
+
+Two of the three were found by pre-existing gates, not by review. That is the
+argument for writing the contract before the code, demonstrated rather than
+asserted.
+
+## 7. Standing rules this change established
 
 - A contract — an observable that can fail — is written **before** the code it
   judges, never after.
