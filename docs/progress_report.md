@@ -1232,7 +1232,7 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   - The only `ERROR` lines anywhere in those logs are the engine's `user://` log-open failure
     and the scenes' hardcoded `%TEMP%` screenshots - both artifacts of running spawned
     processes confined to the workspace. No `invalid ID`, no RID leak, no scene error.
-- **The sweep wrapper was attempted and stopped at `module_boot` (recorded, 2026-09-30).**
+- **First sweep attempt stopped at `module_boot` (recorded, 2026-09-30) - superseded by the green sweep below.**
   `gne_verify.ps1` was run end-to-end through a Windows scheduled task (the escape technique this
   project already documents for a process-level block). It reached:
   `GNE_STAMP: NO_RELINK exe=7A65D1EB95BB` -> `build PASS` -> **`provenance PASS exe=7A65D1EB95BB
@@ -1246,9 +1246,15 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   earlier session's logs (which wrote `user://logs/godot.log` successfully at 21:34). They are not
   caused by GNE code: the same binary passes every content assertion below, and the two gates that
   consume those log lines (`module_boot`, `no_errors`) are the only ones that cannot go green here.
-  **Therefore `verify_history.tsv` still has no row for this work.** Everything else the sweep
-  asserts is verified above; the one remaining step is to re-run `tools/gne_verify.ps1` in the
-  environment that produced the 18:20 row.
+  That attempt ran into a real environment limit, recorded here for the next person: the shell
+- **SWEEP GREEN (2026-09-30 22:22, owner shell).** `gne_verify.ps1` was then run in an unrestricted
+  shell and returned `GNE_VERIFY: PASS`, **23/23 rows**, `no_errors PASS 0 error lines`,
+  `perf020 PASS 17724us worst of 2 [FAIL>24474 WARN>28145, basis exe=7A65D1EB95BB]`, and:
+  `gt_022b PASS sig=v022b|du=0.0000|dh_u=32.9104|dh_l=55.1367|neg=0.0000|rep=0.0000|det=1|d1`
+  with `provenance PASS exe=7A65D1EB95BB module=14DE82945950 dirty=0 head=ac8bcc0`. The history row
+  (`2026-09-30 22:22  ac8bcc0  PASS  ... gt_022b:PASS ... perf020:PASS  020:17724/37899`) is the
+  closure evidence for GNE-022b: the city-scale GI integration is gated, literal, deterministic,
+  and inside CVS.
 - **Gate PASS logic proven despite the environment (relocated-copy experiment, 2026-09-30).**
   A copy of `gt_022b.bat` with only its three scratch paths pointed inside the workspace (the copy
   lives outside the repo) produced the complete success shape:
