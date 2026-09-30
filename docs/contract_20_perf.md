@@ -18,22 +18,31 @@ and pipeline creation included. It is not a steady-state frame time.
 
 | Metric | FAIL | WARN | Gated? |
 |---|---|---|---|
-| `wall_avg_us` | `> 40000` | `> 46000` | **yes** |
+| `wall_avg_us` | `> 24474` | `> 28145` | **yes** |
 | `wall_peak_us` | — | — | **no — recorded only** |
 
 The gate evaluates the **worse of the two passes**, not the last one, so a
 regression confined to d1 is still caught. `WARN` is reported in the detail
 column and does **not** fail the build.
 
-**Basis — a controlled quiet-host run, 10 samples (5 runs x 2 passes), 2026-09-30:**
+**Basis — re-baselined 2026-09-30 for the 022b-gate binary (exe `7A65D1EB…`):**
 
-| min | median | mean | max | spread |
-|---|---|---|---|---|
-| 26703 | 28846 | 28873 | 30679 | **1.15x** |
+| min | median | max | spread |
+|---|---|---|---|
+| 17464 | ~17744 | 18541 | **1.062x** |
 
-`40000` sits **1.30x above the measured maximum**. That margin clears the
-1.70x spread that `wall_peak_us` shows on its own, while staying far below the
-`110977 us` a contaminated host recorded.
+6 samples, each the **worst of its two `main_020` passes** — the exact statistic
+the gate computes. `fail_us = 24474` is **1.32x above the measured maximum**
+(18541 x 1.32 = 24474.12) and `warn_us = 28145` is `fail x 1.15`. All runs
+exited 0.
+
+**Recorded method note:** each sample ran `main_020.tscn` twice with the engine
+directly — the same two passes `gt_020a.bat` performs — because the measuring
+shell confines spawned processes to the workspace and so cannot run the `.bat`
+wrappers, which write their signature files under `%TEMP%`. The gate statistic
+and the thresholds are unaffected by that substitution; only the wrapper could
+not run there. The previous basis (`7EFA98FA`, fail 33520) belonged to the
+a5efca4-era binary.
 
 ## 3. What is deliberately NOT the basis
 
@@ -97,5 +106,5 @@ recorded in `open_items_register.md` as a known structural limit.
 
 The threshold is one-sided (cost rising), so it is verified by **injection**:
 run `gne_verify.ps1` with `gt_020a.log` carrying a synthetic `wall_avg_us`
-above `40000` and confirm `perf020: FAIL` and `GNE_VERIFY: FAIL`. The pass path
+above `24474` and confirm `perf020: FAIL` and `GNE_VERIFY: FAIL`. The pass path
 is confirmed by the live 5-run measurement above, all `GT_020A: PASS`.

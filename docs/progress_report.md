@@ -1089,6 +1089,7 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - Untracked leftovers from the OpenCode session left untouched (audit_012*,
   012_*.patch) - active WIP of that workspace.
 ## §56. main_022b (city-scale GI draw probe) — BLOCKED at draw (2026-09-30)
+> **CORRECTED 2026-09-30 (§60):** the failure was NOT silent - the guard at cpp:9302 prints - and its cause was the draw running before `gpu_mesh_batch_dispatch` (fixed by running `_redraw()` first in `_probe_layer`). The root-cause row "scene_dispatch before transforms" is wrong; the message was in the log all along.
 
 - Built main_022b.gd/.tscn: 022 city (56 instances + 256 lights) + GI field + 023
   instruments (8-bit + HDR probes, determinism, cost).
@@ -1102,6 +1103,7 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - NOT VERIFIED: city-scale GI draw integration. Do not cite 023 as evidence for
   city-scale rendering.
 ## §57. 022b debug session 2 — root cause advanced one step (2026-09-30)
+> **CORRECTED 2026-09-30 (§60):** "fails SILENTLY (no [GNE] line)" does not reproduce in any later log; every run prints the explicit `empty batch` guard line.
 
 - Fixed: `gpu_mesh_set_batch_strategy(0)` was missing in main_022b (022 base never
   draws, so the call was lost in translation). After adding it, the first error
@@ -1115,6 +1117,7 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - Discipline followed this round: live-process check, on-disk verify after write,
   single foreground run, stop at first decision point.
 ## §58. 022b session 3 — lights-loop slowness wall (2026-09-30)
+> **CORRECTED 2026-09-30 (§60):** the 80 s lights-loop stall was not reproduced in any later log (dbg5/dbg7/dbg8, run13/14/15 all reach `S1B: lights=256`). With stdout piped, a stalled tail is NOT evidence of position.
 
 - main_022b rebuilt CLEAN from pristine main_022.gd + material/strategy block +
   separate _probe_layer() (called at the end of _setup; 022's own quit removed).
@@ -1145,7 +1148,7 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   teardown, zero [GNE] errors.
 - Gate updated (recorded): I1 now = umbra HDR delta >= 0.5 (pre-clamp radiance
   gain; the 8-bit instrument is saturation-void on lit faces - per KI-017).
-- Files: main_022b.gd/.tscn (uncommitted WIP now finalized), gate text updated.
+- Files: main_022b.gd/.tscn (committed: a6cdaf1; gate hardened in 0f81197), gate text updated.
 - Next: add render goldens for 022b to CVS (optional), commit, close.
 ## §60. 022b closed as a standing gate - GT_022B registered (2026-09-30)
 
@@ -1163,3 +1166,55 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
   across full re-initialization, not just within one process.
 - Debug scaffolding removed from main_022b.gd (the _flog file-trace helper and
   its two call sites). No functional code removed.
+## §60. 022b closure hardened - verified against every literal on the relinked binary (2026-09-30)
+
+- **Gate hardening (commit 0f81197).** The 0.5 threshold §59 recorded was never derived and
+  had no control arm. Both are fixed in the scene: floor `repeat` (same-frame HDR re-read) and
+  floor `neg` (the same draw with `gpu_gi_enabled_set(false)`; the fragment gates the field on
+  `params.gi_params.x`, gpu_mat_light_frag_glsl:2152, written 0 at cpp:9452). Both must be
+  EXACTLY 0.0, and I1 is now `dh_u > max(repeat, neg)`. The tuned number is DELETED, not
+  re-tuned: a measured floor replaced it. `gt_022b.bat` runs the scene twice and fails on
+  `sig d1 != sig d2`; `gne_verify.ps1` records PASS and parses the evidence for the detail
+  string only, so the criterion lives in exactly one place (the perf020 duplication lesson).
+- **Limit recorded, not hidden.** I1 is an *existence* test (does indirect reach the umbra
+  probe); the magnitude is reported, never gated. A future promotion of `gt_022b` to a literal
+  in `tools/verify_baseline.txt` would pin the magnitude - available, deliberately not done yet.
+- **Binary / provenance.** Relinked exe `7A65D1EB…`, `module_digest 14DE8294…` (unchanged from
+  the a5efca4 era - the two temporary DBG prints added in f7208e2 and removed here are net zero),
+  `tree_head 0f81197`, `module_dirty=0`, and the tool wrote the stamp itself:
+  `GNE_STAMP: RELINK` + `provenance PASS`.
+- **Content verification on that binary** (the measuring shell confines spawned processes to the
+  workspace, so every scene was run with a workspace-local `--sigf`; the .bat wrappers, which
+  write under `%TEMP%`, could not be used there). All runs: rc=0, d1==d2, marker PASS:
+
+  | gate | signature | vs verify_baseline.txt |
+  |---|---|---|
+  | gt_016a | `v16\|mc=8\|L-0.41\|-0.82\|-0.41\|amb=0.10\|hp=2072056\|hr=0.95\|d1` | MATCH |
+  | gt_017a | `v17\|tc=1\|fmt=uastc\|slot=5\|hr=0.51\|d1` | MATCH |
+  | gt_018a | `v18\|lc=20\|cc=2841\|ot=0\|hr=0.94\|d1` | MATCH |
+  | gt_018a_rev | `v18-rev\|lc=20\|cc=3091\|dc=13\|ot=9\|dp=2558\|d1` | MATCH |
+  | gt_019a | `v19\|lc=20\|sm=5\|cs=4\|rd=1\|hr=1.00\|d1` | MATCH |
+  | gt_020a | `v20\|tw=1920\|th=1080\|rb=8294400\|rf=60\|d1` | MATCH |
+  | gt_021a | `v21\|lc=256\|of=36097\|sl=38620\|on=38434\|d1` | MATCH |
+  | gt_022b | `v022b\|du=0.0000\|dh_u=32.9104\|dh_l=55.1367\|neg=0.0000\|rep=0.0000\|det=1\|d1` | no literal (marker+numeric gate) |
+
+- **022b result.** `S22B: PASS`; umbra HDR 6.19898 -> 39.10942 (`+32.9104`), lit HDR
+  0.35577 -> 55.49248 (`+55.1367`); **both floors exactly 0.0**; the 8-bit umbra delta stays
+  0.0 (saturated - the KI-017 case that motivated the HDR instrument).
+- **Cross-session stability.** The previous session's 21:34 run (older sig shape) reported
+  `dh_u=32.9104`, `dh_l=55.1367` and today's runs report the identical values before and after
+  a relink, in two separate processes - so the signature carries no wall-clock and is stable.
+- **perf020 re-baselined for the new binary.** 6 samples (worst of the two passes each):
+  `17464 17666 17870 17821 18541 18450`, median ~17744, spread 1.062x ->
+  `fail_us = 24474` (1.32x max), `warn_us = 28145`; all runs exited 0.
+  `contract_20_perf.md` section 2 is synced to the live file (it had been documenting 40000/46000).
+- **Still pending, and it needs an UNRESTRICTED shell:** `tools/gne_verify.ps1` end-to-end. Its
+  .bat gates write signature files under `%TEMP%` and Godot writes its log under `user://`, both
+  outside the confined shell's writable area, which returns `code 1027/436` at the final write
+  plus `ERROR:` lines from the engine log-open. Everything the sweep asserts was verified
+  individually above; the sweep wrapper and its `verify_history.tsv` row remain to be produced
+  in a shell where spawned processes are not confined.
+- **Section 11 relationship (recorded, not resolved).** The city field moves 6.20 -> 39.11
+  (6.3x) over 24 EMA steps, above section 11 criterion (c)'s 3x-first-value cap. Section 11
+  remains officially FAIL for the frozen live-loop criterion; 022b claims transport, not
+  convergence.

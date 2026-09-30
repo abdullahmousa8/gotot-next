@@ -338,6 +338,39 @@ item.
 
 ---
 
+## KI-017: HDR (pre-tonemap) radiance readback - indirect light invisible on the 8-bit chain
+
+**Date:** 2026-09-29 opened / 2026-09-30 CLOSED (DONE) - **Severity:** Medium (instrument, not a renderer defect) - **Owner:** GNE Architecture
+
+**Observed (FACT):** shading is tonemapped before the raster readback, so the GI
+contribution cannot be read on the 8-bit chain: a directly lit surface reports
+`1.0 -> 1.0` and an umbra probe reports `0.8 -> 0.8` (delta exactly 0.0). GNE-023
+recorded this as "I2 VOID by saturation" instead of claiming a pass on a saturated
+number.
+
+**Resolution:** a 5th `R32G32B32A32_SFLOAT` attachment on the raster framebuffer plus
+`gpu_raster_read_hdr(x, y)` reads pre-clamp radiance. Measured on `main_023` at the
+same pixel where the 8-bit chain saw `1.0 -> 1.0`:
+`h0 = 1.62763388951619 -> h1 = 2.33263762791952, gain = +0.70500373840332`.
+Gated by `gt_023a` in `tools/gne_verify.ps1` (numeric: `sane=True`,
+`|h1-h0-gain| <= 1e-9`, `gain >= 0.01`).
+
+**Second and larger use (GNE-022b, 2026-09-30):** on the 256-light city scene the 8-bit
+umbra delta is 0.0 (same saturation) while the HDR delta is `+32.9104452133179` on the
+umbra probe and `+55.1367074549198` on the lit face, **byte-identical across two
+separate processes**. The 022b gate is built on this instrument.
+
+**Proof the instrument is not reading its own noise (added with the 022b gate):** two
+derived floors must be EXACTLY 0.0 - the same-frame re-read (`repeat`) and the same draw
+with `gpu_gi_enabled_set(false)` (`neg`; the fragment gates the field on
+`params.gi_params.x` at `gpu_mat_light_frag_glsl:2152`, written 0 at cpp:9452). Both
+measured 0.0, so `dh_u > max(repeat, neg)` reduces to a separated measurement instead of
+a tuned threshold.
+
+**Evidence:** `%TEMP%\opencode\m022b_*.log`, `gt022b_full.txt`;
+`docs/note_023_gi_shadow_integration.md`; `tools/gt_023a.bat`; `tools/gt_022b.bat`;
+progress sections 53, 54, 59, 60.
+
 ## Monitoring note (2026-09-29): transient silent EXIT=-1 on first run of a fresh binary
 
 **Observed:** one silent process death (EXIT=-1, no `ERROR:` line, no FAIL line) mid-run of
