@@ -157,11 +157,13 @@ func _setup() -> void:
 	if not server.gpu_gi_reset():
 		_fail(431, "reset"); return
 	server.gpu_gi_enabled_set(true)
+	_pre_sequence()
 	# ---- pass 1 ----
 	var r1 := _run_sequence()
 	print("M1: pass1_fseries=", r1[0])
 	if not server.gpu_gi_reset():
 		_fail(432, "reset2"); return
+	_pre_sequence()
 	# ---- pass 2 (determinism) ----
 	var r2 := _run_sequence()
 	print("M1: pass2_fseries=", r2[0])
@@ -178,6 +180,15 @@ func _setup() -> void:
 # three-condition check the scene always evaluated inline.
 func _final_ok(p_r1: Array, p_det: bool) -> bool:
 	return p_det and bool(p_r1[5]) and int(p_r1[4]) == FRAMES
+
+# Hooks for successor units. Both are no-ops here, so the instrument's own
+# behaviour is unchanged; a subclass can prepare state before the sequence and
+# take extra reads on the section-11 cadence without duplicating the loop.
+func _pre_sequence() -> void:
+	pass
+
+func _on_sample(_p_k: int) -> void:
+	pass
 
 # Returns [fstr, dstr, rstr, fvals, count, finite, p50_read_us, p50_accum_us, probe_last]
 func _run_sequence() -> Array:
@@ -215,6 +226,7 @@ func _run_sequence() -> Array:
 				"b": server.gpu_gi_read_avg(SPREAD_B),
 				"c": server.gpu_gi_read_avg(SPREAD_C),
 			}
+			_on_sample(k)
 	if fvals.size() != FRAMES:
 		_fail(435, "series size"); return []
 	# slope ratios on the section-11 cadence: deltas between 10-frame samples

@@ -1554,3 +1554,48 @@ whether section 11 may then be formally closed. Section 11's official wording st
   with a 6.5% margin, so the host was noisier than during the basis window - the same variance the
   register already documents as the dominant term. No action now; per the file's own rule a future
   breach is answered by re-measuring on a quiet host, never by widening the threshold.
+
+## 65. GNE-022 FVD - Field vs Displayed Radiance (Convergence Delta, 2026-10-01)
+
+- New scene main_022_fvd (+ .tscn), extends the M1 instrument via two
+  behaviour-neutral hooks (+12 lines in main_022_m1.gd, M1 behaviour unchanged -
+  M1 sig reproduces byte-identical: r10gm=0.509385, e5=127). Section-11 scene
+  untouched (still frozen). 11-M1 BACKLOG item superset: per-frame FP32 field
+  series + pre-tonemap HDR series (gpu_raster_read_hdr at the same witness,
+  16 samples/pass on the section-11 cadence; 33 MB/readback) + Convergence
+  Delta table. Reports only; no threshold (a gate would be a separate decision).
+- Two findings from the runs, both recorded rather than smoothed over:
+  (1) The first run read the y-mirrored pixel (489 instead of 590) and produced
+  a textbook-clean all-zero displayed series with det=1 - determinism does NOT
+  imply observation validity. Fixed by mirroring the frozen section-11 scene's
+  dual-convention pixel selection instead of assuming the row order.
+  (2) The --sigf file write is silently skipped in this scene (arg parses
+  correctly, console sig prints, no file appears); the console log is therefore
+  the record. Open observation, non-blocking: FVD is not a CVS gate.
+- Initial physical table (3/3 runs byte-identical, det=1 both series):
+  F: 0.365741 -> 0.746464, rF in [0.507853, 0.511340], all 14 <= 0.6.
+  L: 0.453478 -> 0.833347, rL in [0.508264, 0.510549], all 14 <= 0.6.
+  Convergence Delta |rL-rF|: mean 0.000723, max 0.003076 over 14 intervals.
+  Instrument ratio L/f at k=160: 1.116 (dimensionless, instrument-specific -
+  field is irradiance-like, pixel is post-shading radiance; reported, never
+  equated). Sig: v022fvd|samples=16|rLmin=0.508264|rLmax=0.510549|
+  rfmin=0.507853|rfmax=0.511340|dmean=0.000723|dmax=0.003076|det=1|d1.
+- Reading: NO drift between the GI field and the displayed HDR anywhere in the
+  160-frame window - the pre-tonemap image converges at the field's own rate
+  to 3 digits. The drift-catcher is in place for all future GI/raster work.
+
+## 66. Section 11 CLOSED - RESOLVED via b-field (owner decision, 2026-10-01)
+
+- History PRESERVED verbatim (not rewritten): section 11 = FAIL (criterion b)
+  under the frozen displayed-image criterion; 11-R1 wording unchanged (FP16
+  latch cause, 8-bit observation path as the remaining obstruction).
+- The two decisions left open in section 64 are now made by the owner:
+  (1) (b-field) RETIRES criterion (b) as the GI-convergence gate; the 8-bit
+  displayed-image clause stands as a historical instrument record only.
+  (2) Section 11 is formally CLOSED as RESOLVED via b-field.
+- Basis (all measured, same instrument family): 11-R1 (FP32 removes the latch,
+  clean 0.509 field decay), 11-M2 gate green byte-identical across processes
+  (14/14 <= 0.6 on the field, literal-pinned, CVS 24/24), FVD (displayed HDR
+  converges at the field rate, delta mean 0.0007). (b-field) is the primary
+  reference for all GI convergence gates from here on; any future
+  displayed-image gate must state its instrument floor explicitly.
