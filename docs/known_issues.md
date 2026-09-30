@@ -1,107 +1,107 @@
-# GNE — Known Issues
+# GNE â€” Known Issues
 
-قيود معروفة **مُقيسة** في هذا البناء، مسجَّلة حتى لا يُعيد أحدٌ اكتشافها من الصفر. كل بند يحمل دليله (file:line أو قياس حيّ)، ولا يُسجَّل افتراض.
+Ù‚ÙŠÙˆØ¯ Ù…Ø¹Ø±ÙˆÙØ© **Ù…ÙÙ‚ÙŠØ³Ø©** ÙÙŠ Ù‡Ø°Ø§ Ø§Ù„Ø¨Ù†Ø§Ø¡ØŒ Ù…Ø³Ø¬ÙŽÙ‘Ù„Ø© Ø­ØªÙ‰ Ù„Ø§ ÙŠÙØ¹ÙŠØ¯ Ø£Ø­Ø¯ÙŒ Ø§ÙƒØªØ´Ø§ÙÙ‡Ø§ Ù…Ù† Ø§Ù„ØµÙØ±. ÙƒÙ„ Ø¨Ù†Ø¯ ÙŠØ­Ù…Ù„ Ø¯Ù„ÙŠÙ„Ù‡ (file:line Ø£Ùˆ Ù‚ÙŠØ§Ø³ Ø­ÙŠÙ‘)ØŒ ÙˆÙ„Ø§ ÙŠÙØ³Ø¬ÙŽÙ‘Ù„ Ø§ÙØªØ±Ø§Ø¶.
 
 ---
 
 > **Open-items consolidation (2026-09-28):** the single current view of everything
 > still open lives in `docs/open_items_register.md`.
-## KI-001: GPU Timestamps غير متاحة على Vulkan
+## KI-001: GPU Timestamps ØºÙŠØ± Ù…ØªØ§Ø­Ø© Ø¹Ù„Ù‰ Vulkan
 
-**التاريخ:** 2026-09-27 · **الحالة:**Unavailable — قيد في محرّك Godot (خارج نطاق GNE)
-**الأثر:** GNE لا يستطيع قراءة زمن GPU على الواجهة الخلفية Vulkan. لذلك يقيس Phase 5 على **wall-clock** حصراً.
-**الإغلاق (015.6):** مقبول NA + موثّق (c) — كل الأرقام wall-clock حصرًا، ولا يُنشر أي رقم كزمن GPU. يُعاد النظر فقط عند إصلاح upstream.
+**Ø§Ù„ØªØ§Ø±ÙŠØ®:** 2026-09-27 Â· **Ø§Ù„Ø­Ø§Ù„Ø©:**Unavailable â€” Ù‚ÙŠØ¯ ÙÙŠ Ù…Ø­Ø±Ù‘Ùƒ Godot (Ø®Ø§Ø±Ø¬ Ù†Ø·Ø§Ù‚ GNE)
+**Ø§Ù„Ø£Ø«Ø±:** GNE Ù„Ø§ ÙŠØ³ØªØ·ÙŠØ¹ Ù‚Ø±Ø§Ø¡Ø© Ø²Ù…Ù† GPU Ø¹Ù„Ù‰ Ø§Ù„ÙˆØ§Ø¬Ù‡Ø© Ø§Ù„Ø®Ù„ÙÙŠØ© Vulkan. Ù„Ø°Ù„Ùƒ ÙŠÙ‚ÙŠØ³ Phase 5 Ø¹Ù„Ù‰ **wall-clock** Ø­ØµØ±Ø§Ù‹.
+**Ø§Ù„Ø¥ØºÙ„Ø§Ù‚ (015.6):** Ù…Ù‚Ø¨ÙˆÙ„ NA + Ù…ÙˆØ«Ù‘Ù‚ (c) â€” ÙƒÙ„ Ø§Ù„Ø£Ø±Ù‚Ø§Ù… wall-clock Ø­ØµØ±Ù‹Ø§ØŒ ÙˆÙ„Ø§ ÙŠÙÙ†Ø´Ø± Ø£ÙŠ Ø±Ù‚Ù… ÙƒØ²Ù…Ù† GPU. ÙŠÙØ¹Ø§Ø¯ Ø§Ù„Ù†Ø¸Ø± ÙÙ‚Ø· Ø¹Ù†Ø¯ Ø¥ØµÙ„Ø§Ø­ upstream.
 
-### ما يعمل (مُقاس)
-- الـpool مُفعَّل فعلياً: `ProjectSettings.set_setting("debug/settings/profiler/max_timestamp_query_elements", 512)` **قبل** إنشاء الجهاز ⇒ `capture_timestamp()` صار يقبل: `get_captured_timestamps_count()` ينتقل `0 → 1` بعد النداء.
-- كود حلّ النتائج في المحرك **صحيح**: `servers/rendering/rendering_device.cpp:8335-8342` ينادي `timestamp_query_pool_get_results` ثم `SWAP` ثم `timestamp_result_count = timestamp_count`.
-- سائق Vulkan يطبّق مسار القراءة كاملاً: `drivers/vulkan/rendering_device_driver_vulkan.cpp:6822` → `vkGetQueryPoolResults(...)`.
+### Ù…Ø§ ÙŠØ¹Ù…Ù„ (Ù…ÙÙ‚Ø§Ø³)
+- Ø§Ù„Ù€pool Ù…ÙÙØ¹ÙŽÙ‘Ù„ ÙØ¹Ù„ÙŠØ§Ù‹: `ProjectSettings.set_setting("debug/settings/profiler/max_timestamp_query_elements", 512)` **Ù‚Ø¨Ù„** Ø¥Ù†Ø´Ø§Ø¡ Ø§Ù„Ø¬Ù‡Ø§Ø² â‡’ `capture_timestamp()` ØµØ§Ø± ÙŠÙ‚Ø¨Ù„: `get_captured_timestamps_count()` ÙŠÙ†ØªÙ‚Ù„ `0 â†’ 1` Ø¨Ø¹Ø¯ Ø§Ù„Ù†Ø¯Ø§Ø¡.
+- ÙƒÙˆØ¯ Ø­Ù„Ù‘ Ø§Ù„Ù†ØªØ§Ø¦Ø¬ ÙÙŠ Ø§Ù„Ù…Ø­Ø±Ùƒ **ØµØ­ÙŠØ­**: `servers/rendering/rendering_device.cpp:8335-8342` ÙŠÙ†Ø§Ø¯ÙŠ `timestamp_query_pool_get_results` Ø«Ù… `SWAP` Ø«Ù… `timestamp_result_count = timestamp_count`.
+- Ø³Ø§Ø¦Ù‚ Vulkan ÙŠØ·Ø¨Ù‘Ù‚ Ù…Ø³Ø§Ø± Ø§Ù„Ù‚Ø±Ø§Ø¡Ø© ÙƒØ§Ù…Ù„Ø§Ù‹: `drivers/vulkan/rendering_device_driver_vulkan.cpp:6822` â†’ `vkGetQueryPoolResults(...)`.
 
-### السبب الجذري
-`drivers/vulkan` **لا يحتوي ملف `utilities.cpp`** إطلاقاً. الملف الوحيد الذي يضبط
-`timestamp_result_count` في المحرك هو `drivers/gles3/storage/utilities.cpp:367`
+### Ø§Ù„Ø³Ø¨Ø¨ Ø§Ù„Ø¬Ø°Ø±ÙŠ
+`drivers/vulkan` **Ù„Ø§ ÙŠØ­ØªÙˆÙŠ Ù…Ù„Ù `utilities.cpp`** Ø¥Ø·Ù„Ø§Ù‚Ø§Ù‹. Ø§Ù„Ù…Ù„Ù Ø§Ù„ÙˆØ­ÙŠØ¯ Ø§Ù„Ø°ÙŠ ÙŠØ¶Ø¨Ø·
+`timestamp_result_count` ÙÙŠ Ø§Ù„Ù…Ø­Ø±Ùƒ Ù‡Ùˆ `drivers/gles3/storage/utilities.cpp:367`
 (`frames[frame].timestamp_result_count = frames[frame].timestamp_count;`).
-⇒ على Vulkan تُجلب القيم فعلاً لكن **العدّاد لا يُنشر**، فيُرجع كل قارئ `0`.
-والقراءة في **نفس** الإطار الذي التُقطت فيه الترويسة تُرجع استعلاماً غير محلول
-(قِيست: `1.79e18 ns` — قيمة عشوائية).
+â‡’ Ø¹Ù„Ù‰ Vulkan ØªÙØ¬Ù„Ø¨ Ø§Ù„Ù‚ÙŠÙ… ÙØ¹Ù„Ø§Ù‹ Ù„ÙƒÙ† **Ø§Ù„Ø¹Ø¯Ù‘Ø§Ø¯ Ù„Ø§ ÙŠÙÙ†Ø´Ø±**ØŒ ÙÙŠÙØ±Ø¬Ø¹ ÙƒÙ„ Ù‚Ø§Ø±Ø¦ `0`.
+ÙˆØ§Ù„Ù‚Ø±Ø§Ø¡Ø© ÙÙŠ **Ù†ÙØ³** Ø§Ù„Ø¥Ø·Ø§Ø± Ø§Ù„Ø°ÙŠ Ø§Ù„ØªÙÙ‚Ø·Øª ÙÙŠÙ‡ Ø§Ù„ØªØ±ÙˆÙŠØ³Ø© ØªÙØ±Ø¬Ø¹ Ø§Ø³ØªØ¹Ù„Ø§Ù…Ø§Ù‹ ØºÙŠØ± Ù…Ø­Ù„ÙˆÙ„
+(Ù‚ÙÙŠØ³Øª: `1.79e18 ns` â€” Ù‚ÙŠÙ…Ø© Ø¹Ø´ÙˆØ§Ø¦ÙŠØ©).
 
-### قيود إضافية مرتبطة (كلها مُقاسة)
-| القيد | الدليل |
+### Ù‚ÙŠÙˆØ¯ Ø¥Ø¶Ø§ÙÙŠØ© Ù…Ø±ØªØ¨Ø·Ø© (ÙƒÙ„Ù‡Ø§ Ù…ÙÙ‚Ø§Ø³Ø©)
+| Ø§Ù„Ù‚ÙŠØ¯ | Ø§Ù„Ø¯Ù„ÙŠÙ„ |
 |---|---|
-| لا يمكن تفعيله من `project.godot` | مُسجَّل بـ`GLOBAL_DEF_RST` = runtime-only، لا يُقرأ من ولا يُكتب في المشروع — `core/config/project_settings.cpp:1811` |
-| النطاق لا يسمح بـ0 | `PROPERTY_HINT_RANGE, "256,65535,1"` — نفس السطر |
-| يجب الضبط **قبل** `ensure_gpu_device()` | يُقرأ مرة واحدة داخل `RenderingDevice::initialize()` — `rendering_device.cpp:8625`؛ وجهتنا كسولة: `create_local_rendering_device` → `create_local_device` → `initialize` |
-| `max_timestamp_query_elements` خاص | غير قابل للقراءة من خارج `RenderingDevice` (private) ⇒ لا يمكن تأكيد الحجم المحلول إلا عبر عدّاد القراءة نفسه |
+| Ù„Ø§ ÙŠÙ…ÙƒÙ† ØªÙØ¹ÙŠÙ„Ù‡ Ù…Ù† `project.godot` | Ù…ÙØ³Ø¬ÙŽÙ‘Ù„ Ø¨Ù€`GLOBAL_DEF_RST` = runtime-onlyØŒ Ù„Ø§ ÙŠÙÙ‚Ø±Ø£ Ù…Ù† ÙˆÙ„Ø§ ÙŠÙÙƒØªØ¨ ÙÙŠ Ø§Ù„Ù…Ø´Ø±ÙˆØ¹ â€” `core/config/project_settings.cpp:1811` |
+| Ø§Ù„Ù†Ø·Ø§Ù‚ Ù„Ø§ ÙŠØ³Ù…Ø­ Ø¨Ù€0 | `PROPERTY_HINT_RANGE, "256,65535,1"` â€” Ù†ÙØ³ Ø§Ù„Ø³Ø·Ø± |
+| ÙŠØ¬Ø¨ Ø§Ù„Ø¶Ø¨Ø· **Ù‚Ø¨Ù„** `ensure_gpu_device()` | ÙŠÙÙ‚Ø±Ø£ Ù…Ø±Ø© ÙˆØ§Ø­Ø¯Ø© Ø¯Ø§Ø®Ù„ `RenderingDevice::initialize()` â€” `rendering_device.cpp:8625`Ø› ÙˆØ¬Ù‡ØªÙ†Ø§ ÙƒØ³ÙˆÙ„Ø©: `create_local_rendering_device` â†’ `create_local_device` â†’ `initialize` |
+| `max_timestamp_query_elements` Ø®Ø§Øµ | ØºÙŠØ± Ù‚Ø§Ø¨Ù„ Ù„Ù„Ù‚Ø±Ø§Ø¡Ø© Ù…Ù† Ø®Ø§Ø±Ø¬ `RenderingDevice` (private) â‡’ Ù„Ø§ ÙŠÙ…ÙƒÙ† ØªØ£ÙƒÙŠØ¯ Ø§Ù„Ø­Ø¬Ù… Ø§Ù„Ù…Ø­Ù„ÙˆÙ„ Ø¥Ù„Ø§ Ø¹Ø¨Ø± Ø¹Ø¯Ù‘Ø§Ø¯ Ø§Ù„Ù‚Ø±Ø§Ø¡Ø© Ù†ÙØ³Ù‡ |
 
-### الحل العملي
-- القياس على **wall-clock** لكل ممر (كافٍ لـPhase 5، وهو ما ينتج الأرقام الحقيقية).
-- **لا patch للمحرك**: خارج النطاق + خطر. (تقرير bug إلى Godot upstream خيار لاحق، غير معلّق عليه.)
-- عمود GPU في التقارير يُطبع **`NA`** ولا يُقرأ أبداً كـ«تكلفة صفرية» — وهذا مقصود.
-- تفعيل الـpool (512) يبقى في المشهد: الاتجاه صحيح ولا يضرّ.
+### Ø§Ù„Ø­Ù„ Ø§Ù„Ø¹Ù…Ù„ÙŠ
+- Ø§Ù„Ù‚ÙŠØ§Ø³ Ø¹Ù„Ù‰ **wall-clock** Ù„ÙƒÙ„ Ù…Ù…Ø± (ÙƒØ§ÙÙ Ù„Ù€Phase 5ØŒ ÙˆÙ‡Ùˆ Ù…Ø§ ÙŠÙ†ØªØ¬ Ø§Ù„Ø£Ø±Ù‚Ø§Ù… Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠØ©).
+- **Ù„Ø§ patch Ù„Ù„Ù…Ø­Ø±Ùƒ**: Ø®Ø§Ø±Ø¬ Ø§Ù„Ù†Ø·Ø§Ù‚ + Ø®Ø·Ø±. (ØªÙ‚Ø±ÙŠØ± bug Ø¥Ù„Ù‰ Godot upstream Ø®ÙŠØ§Ø± Ù„Ø§Ø­Ù‚ØŒ ØºÙŠØ± Ù…Ø¹Ù„Ù‘Ù‚ Ø¹Ù„ÙŠÙ‡.)
+- Ø¹Ù…ÙˆØ¯ GPU ÙÙŠ Ø§Ù„ØªÙ‚Ø§Ø±ÙŠØ± ÙŠÙØ·Ø¨Ø¹ **`NA`** ÙˆÙ„Ø§ ÙŠÙÙ‚Ø±Ø£ Ø£Ø¨Ø¯Ø§Ù‹ ÙƒÙ€Â«ØªÙƒÙ„ÙØ© ØµÙØ±ÙŠØ©Â» â€” ÙˆÙ‡Ø°Ø§ Ù…Ù‚ØµÙˆØ¯.
+- ØªÙØ¹ÙŠÙ„ Ø§Ù„Ù€pool (512) ÙŠØ¨Ù‚Ù‰ ÙÙŠ Ø§Ù„Ù…Ø´Ù‡Ø¯: Ø§Ù„Ø§ØªØ¬Ø§Ù‡ ØµØ­ÙŠØ­ ÙˆÙ„Ø§ ÙŠØ¶Ø±Ù‘.
 
-### الأثر على GNE
-- Phase 5 يقيس قبل/بعد على wall-clock.
-- **كل التواقيق غير متأثرة**: `013` / `014` / `015` / `v15.5-p4` كما هي.
+### Ø§Ù„Ø£Ø«Ø± Ø¹Ù„Ù‰ GNE
+- Phase 5 ÙŠÙ‚ÙŠØ³ Ù‚Ø¨Ù„/Ø¨Ø¹Ø¯ Ø¹Ù„Ù‰ wall-clock.
+- **ÙƒÙ„ Ø§Ù„ØªÙˆØ§Ù‚ÙŠÙ‚ ØºÙŠØ± Ù…ØªØ£Ø«Ø±Ø©**: `013` / `014` / `015` / `v15.5-p4` ÙƒÙ…Ø§ Ù‡ÙŠ.
 ---
 
 ## KI-002: Async Readback Shares The Sync Staging Buffer
 
-**التاريخ:** 2026-09-27 · **الحالة:** لا أسرع من المتزامن — قيد في المحرك
-**الخطورة:** منخفضة (موثّقة، لا أثر على الإنتاج) · **النطاق:** كل قياس إطار incurs the sync cost
-**الإغلاق (015.6):** مقبول + موثّق — الـstaging مملوك للمحرك ولا يُعزل من GNE؛ لا ادعاء تسريع async بلا دليل بايتات/زمن.
+**Ø§Ù„ØªØ§Ø±ÙŠØ®:** 2026-09-27 Â· **Ø§Ù„Ø­Ø§Ù„Ø©:** Ù„Ø§ Ø£Ø³Ø±Ø¹ Ù…Ù† Ø§Ù„Ù…ØªØ²Ø§Ù…Ù† â€” Ù‚ÙŠØ¯ ÙÙŠ Ø§Ù„Ù…Ø­Ø±Ùƒ
+**Ø§Ù„Ø®Ø·ÙˆØ±Ø©:** Ù…Ù†Ø®ÙØ¶Ø© (Ù…ÙˆØ«Ù‘Ù‚Ø©ØŒ Ù„Ø§ Ø£Ø«Ø± Ø¹Ù„Ù‰ Ø§Ù„Ø¥Ù†ØªØ§Ø¬) Â· **Ø§Ù„Ù†Ø·Ø§Ù‚:** ÙƒÙ„ Ù‚ÙŠØ§Ø³ Ø¥Ø·Ø§Ø± incurs the sync cost
+**Ø§Ù„Ø¥ØºÙ„Ø§Ù‚ (015.6):** Ù…Ù‚Ø¨ÙˆÙ„ + Ù…ÙˆØ«Ù‘Ù‚ â€” Ø§Ù„Ù€staging Ù…Ù…Ù„ÙˆÙƒ Ù„Ù„Ù…Ø­Ø±Ùƒ ÙˆÙ„Ø§ ÙŠÙØ¹Ø²Ù„ Ù…Ù† GNEØ› Ù„Ø§ Ø§Ø¯Ø¹Ø§Ø¡ ØªØ³Ø±ÙŠØ¹ async Ø¨Ù„Ø§ Ø¯Ù„ÙŠÙ„ Ø¨Ø§ÙŠØªØ§Øª/Ø²Ù…Ù†.
 
-### ما هو متاح فعلاً
-- `RenderingDevice::texture_get_data_async` **موجودة** (`servers/rendering/rendering_device.h:475`)، وتُسلِّم `PackedByteArray` عبر `request.callback.call(packed_byte_array)` (`rendering_device.cpp:8543`).
-- **لكنها تستعمل نفس `download_staging_buffers`** المستخدَم في `texture_get_data` — `rendering_device.cpp:1432` و `:2916`.
-- وكلا المسارين يقع في `STAGING_REQUIRED_ACTION_FLUSH_AND_STALL_ALL` عند نضوب المخزن ⇒ `1080: _flush_and_stall_for_all_frames()`.
-- **الجذر (مُقاس في Phase 4):** 8 MB (pixels) + 8 MB (depth) لكل إطار تتجاوز سعة المخزن المؤقت الافتراضية، فالتجميد يقع **كل إطار** ⇒ `raster+output = 81.8%` من زمن الإطار.
+### Ù…Ø§ Ù‡Ùˆ Ù…ØªØ§Ø­ ÙØ¹Ù„Ø§Ù‹
+- `RenderingDevice::texture_get_data_async` **Ù…ÙˆØ¬ÙˆØ¯Ø©** (`servers/rendering/rendering_device.h:475`)ØŒ ÙˆØªÙØ³Ù„ÙÙ‘Ù… `PackedByteArray` Ø¹Ø¨Ø± `request.callback.call(packed_byte_array)` (`rendering_device.cpp:8543`).
+- **Ù„ÙƒÙ†Ù‡Ø§ ØªØ³ØªØ¹Ù…Ù„ Ù†ÙØ³ `download_staging_buffers`** Ø§Ù„Ù…Ø³ØªØ®Ø¯ÙŽÙ… ÙÙŠ `texture_get_data` â€” `rendering_device.cpp:1432` Ùˆ `:2916`.
+- ÙˆÙƒÙ„Ø§ Ø§Ù„Ù…Ø³Ø§Ø±ÙŠÙ† ÙŠÙ‚Ø¹ ÙÙŠ `STAGING_REQUIRED_ACTION_FLUSH_AND_STALL_ALL` Ø¹Ù†Ø¯ Ù†Ø¶ÙˆØ¨ Ø§Ù„Ù…Ø®Ø²Ù† â‡’ `1080: _flush_and_stall_for_all_frames()`.
+- **Ø§Ù„Ø¬Ø°Ø± (Ù…ÙÙ‚Ø§Ø³ ÙÙŠ Phase 4):** 8 MB (pixels) + 8 MB (depth) Ù„ÙƒÙ„ Ø¥Ø·Ø§Ø± ØªØªØ¬Ø§ÙˆØ² Ø³Ø¹Ø© Ø§Ù„Ù…Ø®Ø²Ù† Ø§Ù„Ù…Ø¤Ù‚Øª Ø§Ù„Ø§ÙØªØ±Ø§Ø¶ÙŠØ©ØŒ ÙØ§Ù„ØªØ¬Ù…ÙŠØ¯ ÙŠÙ‚Ø¹ **ÙƒÙ„ Ø¥Ø·Ø§Ø±** â‡’ `raster+output = 81.8%` Ù…Ù† Ø²Ù…Ù† Ø§Ù„Ø¥Ø·Ø§Ø±.
 
-### ما جرى فعلاً (حاولة موثّقة، لا ادّعاء)
-- نُفِّذت واجهة async كاملة في C++ (7 دوال + `bind_method`s) + مشهد `main_015_5_async.gd` بثلاثة أذرع قياس (`sync` / `async` / `no_readback`).
-- البناء **نظيف** (صفر أخطاء؛ أُصلحت 3 أخطاء حقيقية: مسار `callable_mp` = `core/object/` لا `core/variant/`، عدد وسائط `texture_get_data_async` = 3، و`Vector<RID>` غير قابل للتكليف بـ`int`).
-- **النتيجة: لا تحسّن مثبت.** القياس لم يكتمل: العملية كانت **منتظرة لا حاسبة** (‎+3 ثوانِ معالج لكل 28 ثانية زمن) — سلوك `stall` لا حساب.
-- ⇒ طُلب من المالك قرار، وأُرجِع الـAPI بالكامل.
+### Ù…Ø§ Ø¬Ø±Ù‰ ÙØ¹Ù„Ø§Ù‹ (Ø­Ø§ÙˆÙ„Ø© Ù…ÙˆØ«Ù‘Ù‚Ø©ØŒ Ù„Ø§ Ø§Ø¯Ù‘Ø¹Ø§Ø¡)
+- Ù†ÙÙÙÙ‘Ø°Øª ÙˆØ§Ø¬Ù‡Ø© async ÙƒØ§Ù…Ù„Ø© ÙÙŠ C++ (7 Ø¯ÙˆØ§Ù„ + `bind_method`s) + Ù…Ø´Ù‡Ø¯ `main_015_5_async.gd` Ø¨Ø«Ù„Ø§Ø«Ø© Ø£Ø°Ø±Ø¹ Ù‚ÙŠØ§Ø³ (`sync` / `async` / `no_readback`).
+- Ø§Ù„Ø¨Ù†Ø§Ø¡ **Ù†Ø¸ÙŠÙ** (ØµÙØ± Ø£Ø®Ø·Ø§Ø¡Ø› Ø£ÙØµÙ„Ø­Øª 3 Ø£Ø®Ø·Ø§Ø¡ Ø­Ù‚ÙŠÙ‚ÙŠØ©: Ù…Ø³Ø§Ø± `callable_mp` = `core/object/` Ù„Ø§ `core/variant/`ØŒ Ø¹Ø¯Ø¯ ÙˆØ³Ø§Ø¦Ø· `texture_get_data_async` = 3ØŒ Ùˆ`Vector<RID>` ØºÙŠØ± Ù‚Ø§Ø¨Ù„ Ù„Ù„ØªÙƒÙ„ÙŠÙ Ø¨Ù€`int`).
+- **Ø§Ù„Ù†ØªÙŠØ¬Ø©: Ù„Ø§ ØªØ­Ø³Ù‘Ù† Ù…Ø«Ø¨Øª.** Ø§Ù„Ù‚ÙŠØ§Ø³ Ù„Ù… ÙŠÙƒØªÙ…Ù„: Ø§Ù„Ø¹Ù…Ù„ÙŠØ© ÙƒØ§Ù†Øª **Ù…Ù†ØªØ¸Ø±Ø© Ù„Ø§ Ø­Ø§Ø³Ø¨Ø©** (â€Ž+3 Ø«ÙˆØ§Ù†Ù Ù…Ø¹Ø§Ù„Ø¬ Ù„ÙƒÙ„ 28 Ø«Ø§Ù†ÙŠØ© Ø²Ù…Ù†) â€” Ø³Ù„ÙˆÙƒ `stall` Ù„Ø§ Ø­Ø³Ø§Ø¨.
+- â‡’ Ø·ÙÙ„Ø¨ Ù…Ù† Ø§Ù„Ù…Ø§Ù„Ùƒ Ù‚Ø±Ø§Ø±ØŒ ÙˆØ£ÙØ±Ø¬ÙØ¹ Ø§Ù„Ù€API Ø¨Ø§Ù„ÙƒØ§Ù…Ù„.
 
-### القرار (Owner، 2026-09-27)
-- **استرجاع** واجهة async: لا دليل على تحسّن ⇒ لا كود ميت في المستودع.
-- **لا تعديل للمحرك** (خارج النطاق، اتساقاً مع KI-001).
-- **الانتقال إلى Phase 5.1**: تحسين مسار **العرض** فقط (دقة نصفية / تخطي إطار / إعادة استخدام `Image`) — وهو ما يمكن قياسه فعلاً.
+### Ø§Ù„Ù‚Ø±Ø§Ø± (OwnerØŒ 2026-09-27)
+- **Ø§Ø³ØªØ±Ø¬Ø§Ø¹** ÙˆØ§Ø¬Ù‡Ø© async: Ù„Ø§ Ø¯Ù„ÙŠÙ„ Ø¹Ù„Ù‰ ØªØ­Ø³Ù‘Ù† â‡’ Ù„Ø§ ÙƒÙˆØ¯ Ù…ÙŠØª ÙÙŠ Ø§Ù„Ù…Ø³ØªÙˆØ¯Ø¹.
+- **Ù„Ø§ ØªØ¹Ø¯ÙŠÙ„ Ù„Ù„Ù…Ø­Ø±Ùƒ** (Ø®Ø§Ø±Ø¬ Ø§Ù„Ù†Ø·Ø§Ù‚ØŒ Ø§ØªØ³Ø§Ù‚Ø§Ù‹ Ù…Ø¹ KI-001).
+- **Ø§Ù„Ø§Ù†ØªÙ‚Ø§Ù„ Ø¥Ù„Ù‰ Phase 5.1**: ØªØ­Ø³ÙŠÙ† Ù…Ø³Ø§Ø± **Ø§Ù„Ø¹Ø±Ø¶** ÙÙ‚Ø· (Ø¯Ù‚Ø© Ù†ØµÙÙŠØ© / ØªØ®Ø·ÙŠ Ø¥Ø·Ø§Ø± / Ø¥Ø¹Ø§Ø¯Ø© Ø§Ø³ØªØ®Ø¯Ø§Ù… `Image`) â€” ÙˆÙ‡Ùˆ Ù…Ø§ ÙŠÙ…ÙƒÙ† Ù‚ÙŠØ§Ø³Ù‡ ÙØ¹Ù„Ø§Ù‹.
 
-### الأثر على GNE
-- المسار المتزامن **لم يُمَسّ** طوال المحاولة (تحقّق: `git diff` لا يلمس `gpu_raster_read_pixels/depth`).
-- **كل التواقيق محفوظة**: `013` / `014` / `015` / `v15.5-p4` كما هي.
-- لم يُعمل أي commit للـasync API (قيد: «لا commit بلا قياس ناجح»).
+### Ø§Ù„Ø£Ø«Ø± Ø¹Ù„Ù‰ GNE
+- Ø§Ù„Ù…Ø³Ø§Ø± Ø§Ù„Ù…ØªØ²Ø§Ù…Ù† **Ù„Ù… ÙŠÙÙ…ÙŽØ³Ù‘** Ø·ÙˆØ§Ù„ Ø§Ù„Ù…Ø­Ø§ÙˆÙ„Ø© (ØªØ­Ù‚Ù‘Ù‚: `git diff` Ù„Ø§ ÙŠÙ„Ù…Ø³ `gpu_raster_read_pixels/depth`).
+- **ÙƒÙ„ Ø§Ù„ØªÙˆØ§Ù‚ÙŠÙ‚ Ù…Ø­ÙÙˆØ¸Ø©**: `013` / `014` / `015` / `v15.5-p4` ÙƒÙ…Ø§ Ù‡ÙŠ.
+- Ù„Ù… ÙŠÙØ¹Ù…Ù„ Ø£ÙŠ commit Ù„Ù„Ù€async API (Ù‚ÙŠØ¯: Â«Ù„Ø§ commit Ø¨Ù„Ø§ Ù‚ÙŠØ§Ø³ Ù†Ø§Ø¬Ø­Â»).
 
 ---
 
 ## KI-003: Presentation Optimization Has No Measurable Effect
 
-**التاريخ:** 2026-09-27 · **الحالة:** مُغلق (الجذر في المحرك، لا في GNE)
-**الخطورة:** منخفضة (موثّقة، لا أثر على الإنتاج) · **القرار:** إغلاق Phase 5.1 بلا commit
+**Ø§Ù„ØªØ§Ø±ÙŠØ®:** 2026-09-27 Â· **Ø§Ù„Ø­Ø§Ù„Ø©:** Ù…ÙØºÙ„Ù‚ (Ø§Ù„Ø¬Ø°Ø± ÙÙŠ Ø§Ù„Ù…Ø­Ø±ÙƒØŒ Ù„Ø§ ÙÙŠ GNE)
+**Ø§Ù„Ø®Ø·ÙˆØ±Ø©:** Ù…Ù†Ø®ÙØ¶Ø© (Ù…ÙˆØ«Ù‘Ù‚Ø©ØŒ Ù„Ø§ Ø£Ø«Ø± Ø¹Ù„Ù‰ Ø§Ù„Ø¥Ù†ØªØ§Ø¬) Â· **Ø§Ù„Ù‚Ø±Ø§Ø±:** Ø¥ØºÙ„Ø§Ù‚ Phase 5.1 Ø¨Ù„Ø§ commit
 
-### ما جرى Investigation
-| الطريقة | النتيجة | السبب (مُقاس) |
+### Ù…Ø§ Ø¬Ø±Ù‰ Investigation
+| Ø§Ù„Ø·Ø±ÙŠÙ‚Ø© | Ø§Ù„Ù†ØªÙŠØ¬Ø© | Ø§Ù„Ø³Ø¨Ø¨ (Ù…ÙÙ‚Ø§Ø³) |
 |---|---|---|
-| **A** قراءة نصف الدقة (4×) | ❌ **مستحيلة بلا C++ جديد** | `texture_get_data` يقرأ النسيج **كاملاً** بلا sub-region؛ والهدف `RASTER_TARGET_W/H = 1920/1080` ثابت `constexpr` (`gne_render_server.h:77-78`) مستخدَم في 9 مواضع. ول she'd تُغيّر البكسلات المعروضة ⇒ لا يقيسها أي harness يفحص بكسلات. |
-| **B** تخطي إطار (2×) | ⚠️ ممكنة بلا C++ | **لا تعالج الجذر**:تقليل تخطي الطلبات لا يوسّع `download_staging_buffers`، فالتجميد يعود عند الامتلاء. |
-| **C** إعادة استخدام `Image` | ⚠️ ممكنة بلا C++ | **لا تعالج الجذر**: `Image.set_data` (`core/io/image.h:410`) يوفّر تخصيصاً على المعالج، والعبء الحقيقي على البايتات المنسوخة. |
+| **A** Ù‚Ø±Ø§Ø¡Ø© Ù†ØµÙ Ø§Ù„Ø¯Ù‚Ø© (4Ã—) | âŒ **Ù…Ø³ØªØ­ÙŠÙ„Ø© Ø¨Ù„Ø§ C++ Ø¬Ø¯ÙŠØ¯** | `texture_get_data` ÙŠÙ‚Ø±Ø£ Ø§Ù„Ù†Ø³ÙŠØ¬ **ÙƒØ§Ù…Ù„Ø§Ù‹** Ø¨Ù„Ø§ sub-regionØ› ÙˆØ§Ù„Ù‡Ø¯Ù `RASTER_TARGET_W/H = 1920/1080` Ø«Ø§Ø¨Øª `constexpr` (`gne_render_server.h:77-78`) Ù…Ø³ØªØ®Ø¯ÙŽÙ… ÙÙŠ 9 Ù…ÙˆØ§Ø¶Ø¹. ÙˆÙ„ she'd ØªÙØºÙŠÙ‘Ø± Ø§Ù„Ø¨ÙƒØ³Ù„Ø§Øª Ø§Ù„Ù…Ø¹Ø±ÙˆØ¶Ø© â‡’ Ù„Ø§ ÙŠÙ‚ÙŠØ³Ù‡Ø§ Ø£ÙŠ harness ÙŠÙØ­Øµ Ø¨ÙƒØ³Ù„Ø§Øª. |
+| **B** ØªØ®Ø·ÙŠ Ø¥Ø·Ø§Ø± (2Ã—) | âš ï¸ Ù…Ù…ÙƒÙ†Ø© Ø¨Ù„Ø§ C++ | **Ù„Ø§ ØªØ¹Ø§Ù„Ø¬ Ø§Ù„Ø¬Ø°Ø±**:ØªÙ‚Ù„ÙŠÙ„ ØªØ®Ø·ÙŠ Ø§Ù„Ø·Ù„Ø¨Ø§Øª Ù„Ø§ ÙŠÙˆØ³Ù‘Ø¹ `download_staging_buffers`ØŒ ÙØ§Ù„ØªØ¬Ù…ÙŠØ¯ ÙŠØ¹ÙˆØ¯ Ø¹Ù†Ø¯ Ø§Ù„Ø§Ù…ØªÙ„Ø§Ø¡. |
+| **C** Ø¥Ø¹Ø§Ø¯Ø© Ø§Ø³ØªØ®Ø¯Ø§Ù… `Image` | âš ï¸ Ù…Ù…ÙƒÙ†Ø© Ø¨Ù„Ø§ C++ | **Ù„Ø§ ØªØ¹Ø§Ù„Ø¬ Ø§Ù„Ø¬Ø°Ø±**: `Image.set_data` (`core/io/image.h:410`) ÙŠÙˆÙÙ‘Ø± ØªØ®ØµÙŠØµØ§Ù‹ Ø¹Ù„Ù‰ Ø§Ù„Ù…Ø¹Ø§Ù„Ø¬ØŒ ÙˆØ§Ù„Ø¹Ø¨Ø¡ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠ Ø¹Ù„Ù‰ Ø§Ù„Ø¨Ø§ÙŠØªØ§Øª Ø§Ù„Ù…Ù†Ø³ÙˆØ®Ø©. |
 
-### الجذر (Phase 4 + KI-002)
-- كل إطار فيه readback يقع في `STAGING_REQUIRED_ACTION_FLUSH_AND_STALL_ALL` (نضوب `download_staging_buffers`).
-- زمن الإطار يصبح **≈2 ثانية** (مقاس: العملية «منتظرة لا حاسبة» — ‎+3 ثوانِ معالج لكل 28 ثانية زمن).
-- ميزانية القياس (300 إطار/ذرع، وحتى 60 إطار/ذرع) **لا تكتمل** ⇒ لا رقم ⇒ لا ادّعاء.
+### Ø§Ù„Ø¬Ø°Ø± (Phase 4 + KI-002)
+- ÙƒÙ„ Ø¥Ø·Ø§Ø± ÙÙŠÙ‡ readback ÙŠÙ‚Ø¹ ÙÙŠ `STAGING_REQUIRED_ACTION_FLUSH_AND_STALL_ALL` (Ù†Ø¶ÙˆØ¨ `download_staging_buffers`).
+- Ø²Ù…Ù† Ø§Ù„Ø¥Ø·Ø§Ø± ÙŠØµØ¨Ø­ **â‰ˆ2 Ø«Ø§Ù†ÙŠØ©** (Ù…Ù‚Ø§Ø³: Ø§Ù„Ø¹Ù…Ù„ÙŠØ© Â«Ù…Ù†ØªØ¸Ø±Ø© Ù„Ø§ Ø­Ø§Ø³Ø¨Ø©Â» â€” â€Ž+3 Ø«ÙˆØ§Ù†Ù Ù…Ø¹Ø§Ù„Ø¬ Ù„ÙƒÙ„ 28 Ø«Ø§Ù†ÙŠØ© Ø²Ù…Ù†).
+- Ù…ÙŠØ²Ø§Ù†ÙŠØ© Ø§Ù„Ù‚ÙŠØ§Ø³ (300 Ø¥Ø·Ø§Ø±/Ø°Ø±Ø¹ØŒ ÙˆØ­ØªÙ‰ 60 Ø¥Ø·Ø§Ø±/Ø°Ø±Ø¹) **Ù„Ø§ ØªÙƒØªÙ…Ù„** â‡’ Ù„Ø§ Ø±Ù‚Ù… â‡’ Ù„Ø§ Ø§Ø¯Ù‘Ø¹Ø§Ø¡.
 
-### القرار (Owner، 2026-09-27)
-- **إغلاق Phase 5.1 بلا commit**، وحذف ملفَّي المشهد ⇒ لا كود ميت في المستودع.
-- **لا أرقام أداء** — «لا تراجع صامت» تنطبق على التجارب أيضاً، لا على الكود فقط.
-- **لا تعديل محرك** (اتساقاً مع KI-001 / KI-002).
+### Ø§Ù„Ù‚Ø±Ø§Ø± (OwnerØŒ 2026-09-27)
+- **Ø¥ØºÙ„Ø§Ù‚ Phase 5.1 Ø¨Ù„Ø§ commit**ØŒ ÙˆØ­Ø°Ù Ù…Ù„ÙÙŽÙ‘ÙŠ Ø§Ù„Ù…Ø´Ù‡Ø¯ â‡’ Ù„Ø§ ÙƒÙˆØ¯ Ù…ÙŠØª ÙÙŠ Ø§Ù„Ù…Ø³ØªÙˆØ¯Ø¹.
+- **Ù„Ø§ Ø£Ø±Ù‚Ø§Ù… Ø£Ø¯Ø§Ø¡** â€” Â«Ù„Ø§ ØªØ±Ø§Ø¬Ø¹ ØµØ§Ù…ØªÂ» ØªÙ†Ø·Ø¨Ù‚ Ø¹Ù„Ù‰ Ø§Ù„ØªØ¬Ø§Ø±Ø¨ Ø£ÙŠØ¶Ø§Ù‹ØŒ Ù„Ø§ Ø¹Ù„Ù‰ Ø§Ù„ÙƒÙˆØ¯ ÙÙ‚Ø·.
+- **Ù„Ø§ ØªØ¹Ø¯ÙŠÙ„ Ù…Ø­Ø±Ùƒ** (Ø§ØªØ³Ø§Ù‚Ø§Ù‹ Ù…Ø¹ KI-001 / KI-002).
 
-### لماذا B وC لا تُستحقان
-تقليل **عدد** الطلبات أو **تخصيص المعالج** لا يمس **الحجم المنسوخ لكل إطار**. البوابة الوحيدة المؤثرة هي تقليل البايتات نفسها، أي مسار رسم بدقة أقل — وهو (أ) ويفرض C++ جديداً وتغيير بكسلات ⇒ **milestone مستقل**، لا Phase 5.1.
+### Ù„Ù…Ø§Ø°Ø§ B ÙˆC Ù„Ø§ ØªÙØ³ØªØ­Ù‚Ø§Ù†
+ØªÙ‚Ù„ÙŠÙ„ **Ø¹Ø¯Ø¯** Ø§Ù„Ø·Ù„Ø¨Ø§Øª Ø£Ùˆ **ØªØ®ØµÙŠØµ Ø§Ù„Ù…Ø¹Ø§Ù„Ø¬** Ù„Ø§ ÙŠÙ…Ø³ **Ø§Ù„Ø­Ø¬Ù… Ø§Ù„Ù…Ù†Ø³ÙˆØ® Ù„ÙƒÙ„ Ø¥Ø·Ø§Ø±**. Ø§Ù„Ø¨ÙˆØ§Ø¨Ø© Ø§Ù„ÙˆØ­ÙŠØ¯Ø© Ø§Ù„Ù…Ø¤Ø«Ø±Ø© Ù‡ÙŠ ØªÙ‚Ù„ÙŠÙ„ Ø§Ù„Ø¨Ø§ÙŠØªØ§Øª Ù†ÙØ³Ù‡Ø§ØŒ Ø£ÙŠ Ù…Ø³Ø§Ø± Ø±Ø³Ù… Ø¨Ø¯Ù‚Ø© Ø£Ù‚Ù„ â€” ÙˆÙ‡Ùˆ (Ø£) ÙˆÙŠÙØ±Ø¶ C++ Ø¬Ø¯ÙŠØ¯Ø§Ù‹ ÙˆØªØºÙŠÙŠØ± Ø¨ÙƒØ³Ù„Ø§Øª â‡’ **milestone Ù…Ø³ØªÙ‚Ù„**ØŒ Ù„Ø§ Phase 5.1.
 
-### التالي
-- **015.5 Final** (إغلاق الـmilestone عند **5/8 معايير** + ثلاث KI موثّقة).
-- milestone مستقل لاحق: تقليل `bytes_copied_per_frame` عبر مسار رسم بدقة أقل.
+### Ø§Ù„ØªØ§Ù„ÙŠ
+- **015.5 Final** (Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„Ù€milestone Ø¹Ù†Ø¯ **5/8 Ù…Ø¹Ø§ÙŠÙŠØ±** + Ø«Ù„Ø§Ø« KI Ù…ÙˆØ«Ù‘Ù‚Ø©).
+- milestone Ù…Ø³ØªÙ‚Ù„ Ù„Ø§Ø­Ù‚: ØªÙ‚Ù„ÙŠÙ„ `bytes_copied_per_frame` Ø¹Ø¨Ø± Ù…Ø³Ø§Ø± Ø±Ø³Ù… Ø¨Ø¯Ù‚Ø© Ø£Ù‚Ù„.
 
 
 ## KI-007: HZB Uses AABB Occluders (Not Scene Depth)
@@ -168,7 +168,7 @@
 ## KI-012: Demo Window Size Is Externally Mutable (Pre-Existing)
 
 **Date:** 2026-09-28
-**Status:** Open - pre-existing; unrelated to 018-rev
+**Status:** ACCEPTED & DOCUMENTED (owner, 2026-09-30) - closed by decision, NOT fixed. Pre-existing external condition, unchanged by any engine work. **Reopen condition:** any criterion that must gate on a raw visible-count across differing window sizes - the real fix there is to make the scene read a fixed viewport, not to tune thresholds.
 **Severity:** Low (gated DET content proven insensitive; affects only printed counts and screenshots of spread scenes)
 **Owner:** GNE Architecture
 
@@ -223,6 +223,11 @@
 
 **Update 2026-09-28 (disposition executed - RESOLVED):** Owner decision: raise the criterion, not XFAIL. Applied in `main_008b.gd`: `SUBPIXEL_R_PX` 0.35 -> 1.0 with an in-body physical rationale (1x point sampling: a silhouette below the half-diagonal bound sqrt(2)/2 ~= 0.7071 can cover zero samples by phase; the analytic r_px estimate carries orientation/scale scatter - a 0.77 px cube still missed at 0.75 - so the round full-pixel bound 1.0 is used, matching main.gd's "< 1 projected px may legitimately rasterize zero pixels" note). Validation: scene rc=0 / miss=0 (checked=533, subpixel=260); full battery re-run: all EIGHT harnesses rc=0 with honest accounting (GT_REGRESS: PASS; 012 XFAIL reported, not masking); cross-run classification audit: no other scene changed (reg_main_011/013/014/015.txt and gt015/016/017/018/019 sigs byte-identical; other consoles identical after timing/handle normalization). Retained instrument: `demo/gpu_smoke/main_008b_dbg.gd|.tscn` (documented mirror + per-miss coverage diagnostics; keep in sync with main_008b.gd).
 
+**Update 2026-09-30 (disposition executed - ACCEPTED & DOCUMENTED, no code change):** Owner ruling on the register row that had this OPEN pending "fix demo window sizing OR accept + document": accept and document. Rationale as given - the item is a pre-existing external condition that does not touch the gne render path and is unrelated to the cluster-lighting line closed this session, so closing it by writing documentation ends the pending state without fabricating an unrequested engine fix.
+
+**What this acceptance does and does not mean.** NOTHING WAS FIXED. The behaviour described above is still true: demos still read `get_viewport().get_visible_rect().size` and still land it in `viewdata.viewport`. The stated boundary survives into the closure - affected values are printed counts and screenshots of spread scenes, and the FAIL outcome is invariant with only the sampled band size moving (miss 20 at 1152x648 vs 32 at ~1920x1009, 3680 vs 3778 visible). Therefore any harness that gates on a visible-count number must record the window size it ran at, or its criterion is not reproducible. That sentence is the actual deliverable of this closure; without it "accepted" would read as "harmless".
+
+Note the earlier 2026-09-28 update on this entry closed a DIFFERENT thing - the `main_008b.gd` `SUBPIXEL_R_PX` criterion (0.35 -> 1.0), which was a real code change and is unaffected. This closure does not disturb it.
 ## KI-014: Cluster Light Lists Under-Cover Corner Pixels (Linear-vs-Euclidean Slice Mismatch)
 
 **Date:** 2026-09-28
@@ -316,12 +321,12 @@ current boundaries. Until then: hardware RT = unavailable; designs must not assu
 **Evidence:** temp rt0_run1.log / rt0_run2.log / rt0_verbose.log; code references above.
 ## 015.5 C6 status (closed in 015.6)
 
-**الحالة:** مقبول + موثّق (double-buffering مؤجّل إلى 020) — "تقليل الحجم" يكسر DET.
-**خط الأساس المقاس (2026-09-28، main_016، wall-clock عملية كاملة تشمل الإقلاع):**
-- 5 تشغيلات (ثوانٍ): 8.76، 7.58، 8.19، 7.57، 7.41 — كلها exit=0.
-- median 7.58 · p95 ≈ 8.76 · max 8.76 · min 7.41.
-- البايتات/التشغيل: 7 قراءات × 8,294,400 = **58,060,800 B** (~55.4 MiB، بكسل فقط بلا عمق).
-- مُوسم صراحةً: wall-clock عملية، **ليس** زمن GPU (قاعدة KI-001).
+**Ø§Ù„Ø­Ø§Ù„Ø©:** Ù…Ù‚Ø¨ÙˆÙ„ + Ù…ÙˆØ«Ù‘Ù‚ (double-buffering Ù…Ø¤Ø¬Ù‘Ù„ Ø¥Ù„Ù‰ 020) â€” "ØªÙ‚Ù„ÙŠÙ„ Ø§Ù„Ø­Ø¬Ù…" ÙŠÙƒØ³Ø± DET.
+**Ø®Ø· Ø§Ù„Ø£Ø³Ø§Ø³ Ø§Ù„Ù…Ù‚Ø§Ø³ (2026-09-28ØŒ main_016ØŒ wall-clock Ø¹Ù…Ù„ÙŠØ© ÙƒØ§Ù…Ù„Ø© ØªØ´Ù…Ù„ Ø§Ù„Ø¥Ù‚Ù„Ø§Ø¹):**
+- 5 ØªØ´ØºÙŠÙ„Ø§Øª (Ø«ÙˆØ§Ù†Ù): 8.76ØŒ 7.58ØŒ 8.19ØŒ 7.57ØŒ 7.41 â€” ÙƒÙ„Ù‡Ø§ exit=0.
+- median 7.58 Â· p95 â‰ˆ 8.76 Â· max 8.76 Â· min 7.41.
+- Ø§Ù„Ø¨Ø§ÙŠØªØ§Øª/Ø§Ù„ØªØ´ØºÙŠÙ„: 7 Ù‚Ø±Ø§Ø¡Ø§Øª Ã— 8,294,400 = **58,060,800 B** (~55.4 MiBØŒ Ø¨ÙƒØ³Ù„ ÙÙ‚Ø· Ø¨Ù„Ø§ Ø¹Ù…Ù‚).
+- Ù…ÙÙˆØ³Ù… ØµØ±Ø§Ø­Ø©Ù‹: wall-clock Ø¹Ù…Ù„ÙŠØ©ØŒ **Ù„ÙŠØ³** Ø²Ù…Ù† GPU (Ù‚Ø§Ø¹Ø¯Ø© KI-001).
 
 **020 unit-3 addendum (2026-09-28):** the parked double-buffering item was tested at
 module level (see spec_020 section 14): deferred ping-pong readback = no measurable
@@ -339,7 +344,7 @@ item.
 5th-attachment change. Environment was quiet at the time (no neighbor GPU load, no
 nvlddmkm/TDR events in the logs). An immediate retry of the identical command passed
 fully (`v18|lc=20|cc=2841|ot=0|hr=0.94|d1`, EXIT=0), as did the full CVS afterwards.
-**Status:** watch item only, NOT a numbered KI — single occurrence, unreproduced, no root
+**Status:** watch item only, NOT a numbered KI â€” single occurrence, unreproduced, no root
 cause claimed. Pattern resembles the historical first-run flakes (Lesson 5 class:
 silent kills with a quiet event log), hence recorded rather than dismissed.
 Re-open as a KI only on second occurrence with logs attached.
