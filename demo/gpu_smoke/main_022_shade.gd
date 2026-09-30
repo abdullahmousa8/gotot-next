@@ -27,6 +27,7 @@ var camera: Camera3D
 var display: TextureRect
 var image_tex: ImageTexture
 var sig_file := ""
+var shot_path := ""
 
 func _mk_point(pos: Vector3, radius: float, color: Color, intensity: float) -> Dictionary:
 	return {"type": 0, "pos": pos, "range": radius, "color": color, "intensity": intensity * ISCALE}
@@ -39,6 +40,8 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--sigf="):
 			sig_file = a.split("=")[1]
+		elif a.begins_with("--png="):
+			shot_path = a.split("=")[1]
 	_setup()
 
 func _setup() -> void:
@@ -301,6 +304,16 @@ func _show(pixels: PackedByteArray) -> void:
 	else:
 		image_tex.update(img)
 	display.texture = image_tex
+	# GNE-021 visual verification (2026-09-30): the scene only ever presented
+	# through a live TextureRect, so nothing could ever be LOOKED at. Every gate
+	# in this project asserts numbers; no human or agent had seen an image. Added
+	# --png= so the lit result can be captured and inspected for cluster seams and
+	# banding, which no numeric assertion catches.
+	# Strictly additive: the sig line, the CULL_TESTS line, the CLUSTER_IDS dumps
+	# and every existing measurement are untouched.
+	if shot_path != "":
+		var err := img.save_png(shot_path)
+		print("SHADE: png saved=", err == OK, " ", shot_path)
 
 func _fail(code: int, msg: String) -> void:
 	print("SHADE: FAIL code=", code, " ", msg)
