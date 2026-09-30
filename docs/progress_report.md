@@ -1088,3 +1088,16 @@ Render Graph في `modules/gne_render`: رسم بياني موجّه acyclic ي�
 - CVS after re-baseline: 23/23 PASS (perf020 20977us worst, basis 7EFA98FA).
 - Untracked leftovers from the OpenCode session left untouched (audit_012*,
   012_*.patch) - active WIP of that workspace.
+## §56. main_022b (city-scale GI draw probe) — BLOCKED at draw (2026-09-30)
+
+- Built main_022b.gd/.tscn: 022 city (56 instances + 256 lights) + GI field + 023
+  instruments (8-bit + HDR probes, determinism, cost).
+- BLOCKED: gpu_material_draw_lights fails silently at the first draw in the city
+  scene (no [GNE] error line, rc=430). 4-box scene (main_023) draws fine.
+- Session-environment failure also recorded today (per architect directive):
+  multiple background PowerShell sessions raced on the same file; one corrupted
+  main_022b.gd to 4 bytes mid-session (caught by on-disk verify, rebuilt).
+  Single-session discipline now enforced (per workflow_v2 Golden-Update rule 3).
+- Files: demo/gpu_smoke/main_022b.gd/.tscn exist but NOT committed (blocked WIP).
+- NOT VERIFIED: city-scale GI draw integration. Do not cite 023 as evidence for
+  city-scale rendering.
