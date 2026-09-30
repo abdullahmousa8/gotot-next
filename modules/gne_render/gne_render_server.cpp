@@ -9304,13 +9304,11 @@ draw_frame_seq++;
 		return false;
 	}
 	if (!_light_ensure_geo()) {
-		print_error("[GNE] DBG: _light_ensure_geo returned false");
 		return false;
 	}
 	if (light_set0_dirty) {
 		if (!_light_build_set0()) {
 			return false;
-			print_error("[GNE] DBG: _light_build_set0 returned false");
 		}
 		// GNE-019: set 2 carries no matrices, but rebuild on the same trigger
 		// keeps the dummy/real choice in sync with the light pipeline state.

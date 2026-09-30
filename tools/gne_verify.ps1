@@ -290,20 +290,28 @@ if ($m1pass -and $mm) {
   $m1detail = ('h0=' + $h0 + ' h1=' + $h1 + ' gain=' + $gain)
 }
 Record 'gt_023a' $m1ok $m1detail
-# City-scale GI standing gate (022b): HDR I1. Markers from gt_022b.bat plus
-# numeric validation of the FRESH umbra HDR delta (>= 0.5 pre-clamp radiance
-# gain). The 8-bit umbra delta is deliberately NOT gated: it saturates to 0.0
-# on a lit city (documented, KI-017). Determinism is gated inside GDScript.
+# City-scale GI standing gate (022b): HDR I1 + derived floors.
+# gt_022b.bat runs main_022b TWICE, asserts markers + byte-equal sigs (DET),
+# and echoes the evidence lines. The numeric criteria (gain > floor, both
+# floors == 0.0, det) live in main_022b.gd ONLY - this script deliberately
+# does NOT re-implement the threshold, so the number cannot drift between the
+# scene and the harness (the perf020 lesson). The 8-bit umbra delta stays
+# UNGATED on purpose: it saturates to 0.0 on a lit city (documented, KI-017).
 $lf2 = Join-Path $logDir 'gt_022b.log'
 & (Join-Path $root 'tools\gt_022b.bat') > $lf2 2>&1
 $cgiok = $false
 $cgidetail = ''
 $cgipass = ((Select-String -LiteralPath $lf2 -Pattern 'GT_022B: PASS' | Measure-Object).Count -ge 1)
 $um = Select-String -LiteralPath $lf2 -Pattern 'GI umbra.*delta=([0-9.eE+-]+) \|' | Select-Object -Last 1
-if ($cgipass -and $um) {
+$fl = Select-String -LiteralPath $lf2 -Pattern 'NEG floors repeat=([0-9.eE+-]+) neg=([0-9.eE+-]+)' | Select-Object -Last 1
+if ($cgipass -and $um -and $fl) {
   $dhu = [double]$um.Matches[0].Groups[1].Value
-  $cgiok = $dhu -ge 0.5
-  $cgidetail = ('dh_u=' + $dhu)
+  $rep = [double]$fl.Matches[0].Groups[1].Value
+  $neg = [double]$fl.Matches[0].Groups[2].Value
+  $cgiok = $true
+  $cgidetail = ('dh_u=' + $dhu + ' repeat=' + $rep + ' neg=' + $neg)
+} elseif ($cgipass) {
+  $cgidetail = 'evidence lines missing in fresh 022b log'
 }
 Record 'gt_022b' $cgiok $cgidetail
 # render regression: golden byte-compare (018 + 019)

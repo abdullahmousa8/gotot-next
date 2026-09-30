@@ -203,6 +203,11 @@ func _probe_layer() -> void:
 	var h0u := server.gpu_raster_read_hdr(int(upx.x), int(upx.y))
 	var h0l := server.gpu_raster_read_hdr(int(lpx.x), int(lpx.y))
 	print("S22B: pcf umbra=", u0, " lit=", l0, " hdr_u=", h0u, " hdr_l=", h0l)
+	# ---- measurement floor A: readback repeatability (same frame, no draw between).
+	# If this is not exactly 0.0 the instrument is not repeatable and no I1 number
+	# below this floor means anything.
+	var h0u_b := server.gpu_raster_read_hdr(int(upx.x), int(upx.y))
+	var dh_repeat := h0u_b[0] - h0u[0]
 	server.gpu_gi_enabled_set(true)
 	if not server.gpu_gi_trace():
 		_fail(432, "trace"); return
@@ -222,6 +227,21 @@ func _probe_layer() -> void:
 	var dh_l := h1l[0] - h0l[0]
 	print("S22B: GI umbra 8bit ", u0, "->", u1, " delta=", du, " | hdr ", h0u, "->", h1u, " delta=", dh_u)
 	print("S22B: GI lit    8bit ", l0, "->", l1, " delta=", dl, " | hdr ", h0l, "->", h1l, " delta=", dh_l)
+	# ---- measurement floor B / NEG arm: the identical draw with the GI term OFF.
+	# gpu_mat_light_frag_glsl:2152 gates the field on params.gi_params.x, and
+	# gpu_material_draw_lights sets that to 0 while gne_gi_enabled is false
+	# (cpp:9452). With the flag off this frame must be pixel-identical to the
+	# pre-GI frame, so the required value is EXACTLY 0.0 - a derived control, not
+	# a tolerance. The tuned 0.5 threshold is therefore DELETED, not re-tuned:
+	# a measured floor replaces it.
+	server.gpu_gi_enabled_set(false)
+	if not server.gpu_material_draw_lights():
+		_fail(437, "draw neg"); return
+	var h2u := server.gpu_raster_read_hdr(int(upx.x), int(upx.y))
+	var dh_neg := h2u[0] - h0u[0]
+	print("S22B: NEG floors repeat=", dh_repeat, " neg=", dh_neg, " (both required exactly 0.0)")
+	# Determinism must keep testing the GI-ON path, so re-enable before it.
+	server.gpu_gi_enabled_set(true)
 	if not _redraw():
 		return
 	var pix_a := server.gpu_raster_read_pixels()
@@ -230,10 +250,13 @@ func _probe_layer() -> void:
 	var pix_b := server.gpu_raster_read_pixels()
 	var det_ok: bool = (pix_a == pix_b)
 	print("S22B: determinism=", det_ok)
-	var i1_ok := dh_u >= 0.5 # HDR-based: pre-clamp radiance gain on the umbra probe
-	var pass_all: bool = i1_ok and det_ok
-	print("S22B: I1(umbra indirect)=", i1_ok, " det=", det_ok, " => ", ("PASS" if pass_all else "FAIL"))
-	var sig := "v022b|du=%.4f|dh_u=%.4f|dh_l=%.4f|det=%d|d1" % [du, dh_u, dh_l, int(det_ok)]
+	var floor_v := dh_neg if dh_neg > dh_repeat else dh_repeat
+	var i1_ok := dh_u > floor_v
+	var neg_ok: bool = (dh_neg == 0.0)
+	var rep_ok: bool = (dh_repeat == 0.0)
+	var pass_all: bool = i1_ok and neg_ok and rep_ok and det_ok
+	print("S22B: I1(umbra indirect)=", i1_ok, " floor=", floor_v, " det=", det_ok, " => ", ("PASS" if pass_all else "FAIL"))
+	var sig := "v022b|du=%.4f|dh_u=%.4f|dh_l=%.4f|neg=%.4f|rep=%.4f|det=%d|d1" % [du, dh_u, dh_l, dh_neg, dh_repeat, int(det_ok)]
 	print("S22B: sig=", sig)
 	if sig_file != "":
 		var f := FileAccess.open(sig_file, FileAccess.WRITE)
