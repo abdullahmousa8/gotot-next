@@ -117,6 +117,15 @@ func _setup() -> void:
 		if not server.gpu_material_set_light(Vector3(0, -1, 0)):
 			_fail(2619, "set_light unlit"); return
 		print("GNE 026-pre: unlit protocol (sun straight down, ambient floor)")
+	if OS.get_cmdline_user_args().has("--direct"):
+		# Step 2 protocol: GNE has no ambient off-switch (0.1xALBEDO is
+		# hardcoded in cpp:7151), so direct-only is measured as a DIFFERENCE
+		# against the --unlitlight frame (identical geometry/camera/materials,
+		# only the sun direction differs), which cancels the ambient term
+		# exactly. The twin side can literally zero its ambient.
+		if not server.gpu_material_set_light(Vector3(0.5, 1.0, 0.5)):
+			_fail(2619, "set_light direct"); return
+		print("GNE 026-pre: direct protocol (above-front sun + ambient floor)")
 	# A/B isolation protocol flags (dormant unless passed; documented):
 	# --dump : print the readback as hex rows (GNEDUMP/GNEROW) for diffing.
 	# --unlitlight : point the instrument sun straight down so every

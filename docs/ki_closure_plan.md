@@ -43,3 +43,9 @@
 - No KI older than 3 milestones.
 - Each KI has a target + deadline.
 - If missed → Architect review.
+
+## Readback conventions (KI-021 follow-through)
+
+| Item | State | Home |
+|---|---|---|
+| GNE readback row order (bottom-up) + linear-in-8bit | DOCUMENTED 2026-10-01; comparison-side fix only | known_issues.md (KI-021) + docs/diagnostic_ab_step2.md |

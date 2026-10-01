@@ -8,6 +8,11 @@ extends Node
 # Capture: full-res viewport hex dump to STDOUT (this shell cannot rely on
 # Godot file writes) - one line per row, 6 hex chars per pixel (RRGGBB).
 
+# Phase-2 protocol flag --direct: sun ON at the canon outdoor direction
+# (normalized(-0.5,-1,-0.5) rotated to the above-front used by the GNE house,
+# i.e. (0.5,1,0.5)) and ambient ZERO (Step-2 direct-only twin capture).
+const DIRECT_LIGHT := Vector3(0.5, 1.0, 0.5)
+
 const PARTS := [
 	[[["quad", [-1000, 0, -800], [1000, 0, -800], [1000, 0, 800], [-1000, 0, 800]]], [0.25, 0.5, 0.2], 0.9],
 	[[["quad", [-80, 0.6, 200], [80, 0.6, 200], [80, 0.6, 900], [-80, 0.6, 900]]], [0.75, 0.65, 0.45], 0.9],
@@ -61,6 +66,28 @@ func _ready() -> void:
 		mat.metallic = 0.0
 		mi.material_override = mat
 		add_child(mi)
+	var direct := OS.get_cmdline_user_args().has("--direct")
+	if direct:
+		var e := ($WorldEnvironment.environment as Environment).duplicate() as Environment
+		e.ambient_light_energy = 0.0
+		$WorldEnvironment.environment = e
+		var sun := $Sun as DirectionalLight3D
+		sun.light_energy = 1.0
+		sun.light_color = Color(1, 1, 1)
+		# Godot DirectionalLight3D shines along -Z of its own basis; rotate so
+		# the light vector points FROM the sun TO the scene = -LIGHT_DIR.
+		var l := DIRECT_LIGHT.normalized()
+		# Godot's DirectionalLight3D emits along its local -Z. Build the basis
+		# so local -Z == l exactly: pick an up vector not parallel to l, then
+		# x = up.cross(l).normalized(), y = l.cross(x), z = l.
+		var basis := Basis()
+		var zaxis := -l
+		var up := Vector3.UP if absf(l.dot(Vector3.UP)) < 0.99 else Vector3.RIGHT
+		var xaxis := up.cross(zaxis).normalized()
+		var yaxis := zaxis.cross(xaxis).normalized()
+		basis.x = xaxis; basis.y = yaxis; basis.z = zaxis
+		sun.global_transform = Transform3D(basis, Vector3.ZERO)
+		print("REF: direct protocol (light_dir=", zaxis, " ambient=0)")
 	print("REF: twin ready parts=", PARTS.size())
 
 func _process(_delta: float) -> void:

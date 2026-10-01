@@ -504,3 +504,22 @@ path cannot consume (see code comment at gne_render_server.cpp:7129-7130:
 different (procedural) command layout it cannot consume").
 **Rule:** every material-draw scene must set strategy(0); measured 2026-10-01
 (0.26-pre: draw failed without it, passed with it - nothing else changed).
+
+## KI-021: GNE readback rows are bottom-up vs Godot viewport rows (Y-flip convention)
+
+**Date:** 2026-10-01
+**Status:** ACTIVE - documented convention; no engine change (measurement-side fix)
+**Severity:** Low-Medium (silent wrong-image if a diff forgets it)
+**Owner:** GNE Architecture
+
+**Finding:** A pixel-for-pixel diff between a GNE readback frame
+(gpu_raster_read_pixels) and a Godot viewport capture requires a VERTICAL
+FLIP of one side. Measured 2026-10-01 on the 0.26-pre house:
+straight-overlap 10,988 px vs vflip-overlap 495,394 px (99.4%). Without the
+flip a diff reports ~97% of the frame as mismatch and reads as a total
+catastrophe.
+**Rule:** every readback-vs-viewport comparison MUST vflip the GNE side (or
+the twin side) before differencing, and the flip must be stated in the report.
+Related: GNE stores LINEAR values into the 8-bit target (no sRGB encode),
+while the Godot viewport capture is sRGB-encoded - comparing raw bytes mixes
+two pipelines. Both conventions are recorded in docs/diagnostic_ab_step2.md.
