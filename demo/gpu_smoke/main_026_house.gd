@@ -105,12 +105,20 @@ func _setup() -> void:
 			_fail(2606, "mesh id, expected " + str(i + 1) + " got " + str(mid)); return
 		server.gpu_scene_set_instance_transform(i, Vector3.ZERO, 1.0)
 		server.gpu_scene_set_instance_mesh(i, mid)
-		if not server.gpu_material_set_albedo(i, parts[i][1]):
-			_fail(2607, "albedo " + str(i)); return
-		if not server.gpu_material_set_params(i, parts[i][2], 0.0):
-			_fail(2607, "params " + str(i)); return
-		if not server.gpu_material_set_specular(i, Color(0, 0, 0), 32.0):
-			_fail(2607, "specular " + str(i)); return
+		# D1 FIX (0.26a): the material SSBO is indexed by MESH id in the
+		# fragment shader (`uint m = v_mesh_id * 4u`, cpp:967), not by instance
+		# index. Mesh ids from gpu_mesh_create_from_arrays start at 1, so
+		# indexing materials by instance index (0-based) shifts EVERY part by
+		# one: the ground was shaded with the path's albedo, ... , and the last
+		# mesh read slot 9 which is never written (black). Measured: the 392,934
+		# px ground area carried the path albedo and the chimney read (6,6,6).
+		# Materials must therefore be addressed by mesh id.
+		if not server.gpu_material_set_albedo(mid, parts[i][1]):
+			_fail(2607, "albedo " + str(mid)); return
+		if not server.gpu_material_set_params(mid, parts[i][2], 0.0):
+			_fail(2607, "params " + str(mid)); return
+		if not server.gpu_material_set_specular(mid, Color(0, 0, 0), 32.0):
+			_fail(2607, "specular " + str(mid)); return
 	if not server.gpu_material_set_light(LIGHT_HOUSE):
 		_fail(2608, "set_light"); return
 	if OS.get_cmdline_user_args().has("--unlitlight"):
