@@ -154,3 +154,19 @@ experiment).
 **Context:** X1 (016.5 slice-1) succeeded manually for weeks without CVS registration; made fail-closed (exit 41) + wrapped (gt_016_5.bat) + rejection-tested (mutation: x1=false alone, exit 41) in one unit.
 **Lesson:** A test that succeeds by hand is NOT a gate. A gate requires exit-code enforcement AND harness integration AND a proven rejection path (something that fails on demand and is refused).
 **Rule:** Every milestone gets its blocking gate before closure; the rejection path is demonstrated, never assumed. (Lesson 6 on git-cwd and the pre-existing Lesson numbering are untouched - this is the next free number.)
+
+## Lesson 9: A Measured Difference Can Be A Design Choice
+**Date:** 2026-10-01
+**Context:** A/B isolation of the Country House against a vanilla Godot twin.
+Direct-only MAE 0.280 (matched) vs ambient-only MAE 6.87 (mismatch). The
+mismatch was GNE's tinted ambient (`0.1 x albedo`) against Godot's flat white
+ambient.
+**Lesson:** a difference is not a defect until the stage that produces it is
+isolated. Splitting the render into direct / ambient / GI stages first turned
+"the colours are wrong" into "one named term differs by design" - and the
+per-channel ratio shape (R .80 / G .25 / B .27) is what identified it as a
+COLOUR SOURCE difference rather than an energy or exposure one.
+**Rule:** before changing a number, prove which stage produces it, and check
+whether the difference is channel-uniform (energy/exposure) or
+channel-dependent (colour source). A uniform difference looks like a bug; a
+structured one often is the design.

@@ -523,3 +523,20 @@ the twin side) before differencing, and the flip must be stated in the report.
 Related: GNE stores LINEAR values into the 8-bit target (no sRGB encode),
 while the Godot viewport capture is sRGB-encoded - comparing raw bytes mixes
 two pipelines. Both conventions are recorded in docs/diagnostic_ab_step2.md.
+
+## KI-022: GNE ambient model is tinted (0.1 x albedo) vs Godot flat white - DESIGN DECISION, accepted
+
+**Date:** 2026-10-01
+**Status:** ACCEPTED as design (ADR-001). Not a bug.
+**Severity:** Informational (appearance difference only)
+**Owner:** GNE Architecture
+
+**Finding:** GNE ambient = `AMB * albedo` with AMB = 0.1 hardcoded
+(cpp:7151 push constant, cpp:1012 shader), verified to 1 LSB on four
+albedos. Godot's ambient is a flat white term x energy. A/B isolation:
+direct path MAE 0.280 (matched), ambient MAE 6.87 (channel-dependent,
+GNE/twin R 0.80 G 0.25 B 0.27). No tonemap and no sRGB encode in GNE.
+**Impact:** GNE scenes read WARMER than the Godot default. Expected.
+**Target:** Revisit in visual QA (0.26b) only if the look is judged wrong; a
+change would be one float in a push constant plus a re-baselined 0.26-pre
+metric.
