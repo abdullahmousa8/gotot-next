@@ -97,6 +97,22 @@ attachment exists today)
   - Edge density <= baseline x 1.2.
 - Measured from framebuffer (8-bit readback; HDR series available as
   cross-evidence, FVD pattern).
+- **BASELINE RE-REGISTERED (owner, 2026-10-01).** The 0.26-pre baseline
+  (contrast 1.857549 / variance 0.002933922 / edge 0.000654) was captured on
+  an integrity-BROKEN scene: the material table was indexed by mesh id while
+  the scene wrote it by instance index, so every surface carried its
+  neighbour's material and the last mesh read an unwritten (black) slot.
+  Those numbers are WITHDRAWN - a target computed against them would reward
+  the defect, not the fix.
+  **Authoritative baseline (post-D1, integrity-verified):**
+  `contrast=1.849952 | variance=0.003122088 | edge=0.000652 | det=1`
+  Scene: `demo/gpu_smoke/main_026_house.gd`, LIGHT_HOUSE instrument sun,
+  EDGE_T = 0.1, 1920x1080. Gates become contrast >= 2.034947,
+  variance >= 0.003590401, edge <= 0.000782.
+- **Rule (Lesson 10): verify scene integrity BEFORE capturing a metric
+  baseline.** Integrity check = full-frame colour census in which every
+  declared part carries a colour equal to its own albedo x k
+  (`tools/scene_defect_probe.gd`).
 
 ### 11.3 Existing APIs Audit (measured 2026-10-01 - full bind list read)
 - Scene/geometry: gpu_scene_create/dispatch, set_instance_transform/mesh,
@@ -122,6 +138,6 @@ attachment exists today)
 ### 11.4 Phase Split (binding order)
 - 0.26-pre: Scene + metric + audit. NOTHING else starts before its approval.
 - 0.26a: Scene fix.
-- 0.26b: Visual (needs the new-API justification from §11.3 first).
+- 0.26b: Visual (needs the new-API justification from ï¿½11.3 first).
 - 0.26c: KI-019.
 - D11-1..D11-5 status: OPEN (recorded, not decided - no Architect answers yet).

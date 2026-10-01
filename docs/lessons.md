@@ -170,3 +170,19 @@ COLOUR SOURCE difference rather than an energy or exposure one.
 whether the difference is channel-uniform (energy/exposure) or
 channel-dependent (colour source). A uniform difference looks like a bug; a
 structured one often is the design.
+
+## Lesson 10: Verify Scene Integrity BEFORE Capturing a Baseline
+**Date:** 2026-10-01
+**Context:** 0.26-pre captured contrast/variance/edge on the Country House.
+0.26a then found the scene was rendering with the WRONG MATERIALS (material
+table indexed by mesh id, scene wrote it by instance index), so the baseline
+measured a broken frame; fixing it moved variance +6.4% CORRECTLY, which a
+target built on the old number would have scored as a change against a
+phantom reference.
+**Lesson:** a metric is only as valid as the integrity of the thing it
+measures. Capture the baseline on a scene that has been PROVEN to carry its
+own materials - a full-frame colour census where each declared part matches
+its own albedo x k is that proof, and it costs one frame.
+**Rule:** integrity census -> then baseline -> then targets. Never the other
+way round. A re-baseline after a real defect fix is not a moving target; a
+baseline captured on a broken scene is a defect preserved as a specification.

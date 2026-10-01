@@ -91,3 +91,40 @@ relinked. `det=1` in-process preserved.
 `tools/scene_defect_probe.gd` + `docs/playbook_scene_defect_diagnosis.md` -
 the general-purpose diagnosis kit and method, usable by any AI agent on any
 scene.
+---
+
+# FINAL (2026-10-01, after owner approval)
+
+## Closure status
+| Item | State |
+|---|---|
+| D1 - black roof apex | **FIXED** - root cause = material indexed by mesh id while the scene wrote instance index (off-by-one). 3 lines of scene data. |
+| D2 - back wall | **ACCEPTED** - geometric occlusion by design (owner Option A), no fix |
+| D3 - path | **CLOSED** - not coplanar, z-fight impossible, carries its own albedo |
+| Negative control (D1) | **PROVEN** - revert restores 1.857549/0.002933922/0.000654 exactly; fix gives 1.849952/0.003122088/0.000652 |
+| Provenance | clean - no C++ touched in this unit, module digest unchanged, binary not relinked |
+| Determinism | det=1, exit 0, byte-identical across two fresh processes |
+
+## Baseline re-registration (owner decision 2026-10-01)
+The 0.26-pre baseline was captured on an integrity-broken scene and is
+**WITHDRAWN**:
+`contrast 1.857549 / variance 0.002933922 / edge 0.000654`
+
+**Authoritative baseline (integrity-verified, post-D1, stable d1/d2):**
+`contrast 1.849952 | variance 0.003122088 | edge 0.000652 | det=1`
+
+0.26b gates derived from it (SPEC 0.26 section 11.2 + contract_026_visual.md):
+- contrast >= **2.034947** (x1.10)
+- variance >= **0.003590401** (x1.15)
+- edge <= **0.000782** (x1.20)
+
+Lesson 10 registered: integrity census BEFORE baseline capture. The
+integrity proof is `tools/scene_defect_probe.gd` - every declared part must
+carry a colour equal to its own albedo x k.
+
+## What 0.26a did NOT do
+- No C++ change, no relink, no lighting change, no ambient change (ADR-001),
+  no new API.
+- A genuine 1-2 row seam at the roof ridge cannot be excluded from the
+  current evidence and is NOT closed here; it needs a targeted probe and is
+  left as an open item rather than claimed fixed.
