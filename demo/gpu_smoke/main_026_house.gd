@@ -222,6 +222,8 @@ func _measure() -> void:
 		print("GNE 026-pre: shot saved")
 	var m := _metric(pix_a)
 	print("GNE 026-pre: BASELINE contrast=%.6f variance=%.9f edge=%.6f" % [m[0], m[1], m[2]])
+	if OS.get_cmdline_user_args().has("--probe"):
+		_probe(pix_a)
 	if OS.get_cmdline_user_args().has("--dump"):
 		print("GNEDUMP: begin ", RASTER_W, "x", RASTER_H)
 		for y in range(RASTER_H):
@@ -242,6 +244,50 @@ func _measure() -> void:
 			fl.store_string(sig + "\n")
 	server.gpu_scene_destroy()
 	get_tree().quit(0)
+
+const PART_PROBES := [
+	["ground", Vector3(600, 0, 400)],
+	["path", Vector3(0, 0.6, 600)],
+	["body_front", Vector3(0, 150, 70)],
+	["roof_ridge", Vector3(0, 380, 90)],
+	["roof_slope_L", Vector3(-130, 315, 90)],
+	["roof_slope_R", Vector3(130, 315, 90)],
+	["gable_front", Vector3(0, 320, 70)],
+	["backwall", Vector3(0, 150, -420)],
+	["backwall_rimL", Vector3(-230, 150, -420)],
+	["backwall_rimR", Vector3(230, 150, -420)],
+	["backwall_top", Vector3(0, 290, -420)],
+	["chimney", Vector3(120, 370, -160)],
+]
+
+# Diagnostic probe (0.26a D11-9): project each named part point with the
+# server's OWN VP (never a hand-rolled projection) and print the pixel there.
+# y convention is resolved by trying both and reporting the pair, so the
+# readback orientation is measured, not assumed (KI-021).
+func _probe(pixels: PackedByteArray) -> void:
+	var vp := server.gpu_scene_get_vp()
+	print("GNE 026-pre: PROBE vp_len=", vp.size())
+	for pr in PART_PROBES:
+		var name: String = pr[0]
+		var p: Vector3 = pr[1]
+		var cx: float = vp[0] * p.x + vp[4] * p.y + vp[8] * p.z + vp[12]
+		var cy: float = vp[1] * p.x + vp[5] * p.y + vp[9] * p.z + vp[13]
+		var cw: float = vp[3] * p.x + vp[7] * p.y + vp[11] * p.z + vp[15]
+		if cw <= 0.0:
+			print("GNE 026-pre: PROBE ", name, " behind camera")
+			continue
+		var px := (cx / cw * 0.5 + 0.5) * float(RASTER_W)
+		var yA := int((cy / cw * 0.5 + 0.5) * float(RASTER_H))
+		var yB := int((0.5 - cy / cw * 0.5) * float(RASTER_H))
+		var xi := int(px)
+		var out := ""
+		for yy in [yA, yB]:
+			if xi < 0 or xi >= RASTER_W or yy < 0 or yy >= RASTER_H:
+				out += " oob"
+			else:
+				var o: int = (yy * RASTER_W + xi) * 4
+				out += " (%d,%d,%d)" % [pixels[o], pixels[o + 1], pixels[o + 2]]
+		print("GNE 026-pre: PROBE ", name, " px=", xi, " yA=", yA, " yB=", yB, out)
 
 func _fail(code: int, msg: String) -> void:
 	print("GNE 026-pre: FAIL code=", code, " ", msg)
